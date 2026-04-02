@@ -1,0 +1,165 @@
+@using EChat.Core.Models
+@using EChat.Core.Data
+@using Microsoft.EntityFrameworkCore
+
+<div class="modal-overlay @(IsVisible ? "visible" : "")" @onclick="Close">
+    <div class="modal-content" @onclick:stopPropagation="true">
+        <div class="modal-header">
+            <h2>Chat Info</h2>
+            <button class="close-btn" @onclick="Close">✕</button>
+        </div>
+
+        @if (chat != null)
+        {
+            <div class="modal-body">
+                <div class="info-row">
+                    <strong>Name:</strong> @chat.Name
+                </div>
+                <div class="info-row">
+                    <strong>Type:</strong> @chat.Type
+                </div>
+                <div class="info-row">
+                    <strong>Created:</strong> @chat.CreatedAt.ToString("yyyy-MM-dd HH:mm")
+                </div>
+                <div class="info-row">
+                    <strong>Messages:</strong> @messageCount
+                </div>
+                <div class="info-row">
+                    <strong>Priority:</strong>
+                    <select value="@chat.Priority" @onchange="@(e => UpdatePriority(Enum.Parse<ChatPriority>(e.Value!.ToString()!)))">
+                        <option value="@ChatPriority.High">High</option>
+                        <option value="@ChatPriority.Normal">Normal</option>
+                        <option value="@ChatPriority.Low">Low</option>
+                        <option value="@ChatPriority.Muted">Muted</option>
+                    </select>
+                </div>
+
+                @if (chat.Type == ChatType.Group && members != null)
+                {
+                    <div class="info-section">
+                        <h3>Members (@members.Count)</h3>
+                        @foreach (var member in members)
+                        {
+                            <div class="member-item">
+                                @member.MemberEmail
+                                @if (member.Role == GroupRole.Admin)
+                                {
+                                    <span class="admin-badge">Admin</span>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+
+                <div class="info-actions">
+                    <label>
+                        <input type="checkbox" checked="@chat.Muted" @onchange="@(e => UpdateMuted((bool)e.Value!))" />
+                        Muted
+                    </label>
+                    @if (chat.Archived)
+                    {
+                        <button class="info-archive-btn info-unarchive-btn" @onclick="UnarchiveChat">
+                            Unarchive chat
+                        </button>
+                    }
+                    else
+                    {
+                        <button class="info-archive-btn" @onclick="ArchiveChat">
+                            Archive chat
+                        </button>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter]
+    public bool IsVisible { get; set; }
+
+    [Parameter]
+    public string? ChatId { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnChatArchived { get; set; }
+
+    [Parameter]
+    public EventCallback OnChatUnarchived { get; set; }
+
+    [Inject]
+    public ChatDbContext DbContext { get; set; } = null!;
+
+    private Chat? chat;
+    private int messageCount;
+    private List<GroupMember>? members;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsVisible && !string.IsNullOrEmpty(ChatId))
+        {
+            await LoadChatInfoAsync();
+        }
+    }
+
+    private async Task LoadChatInfoAsync()
+    {
+        chat = await DbContext.Chats.FindAsync(ChatId);
+
+        if (chat != null)
+        {
+            messageCount = await DbContext.Messages.CountAsync(m => m.ChatId == ChatId);
+
+            if (chat.Type == ChatType.Group)
+            {
+                members = await DbContext.GroupMembers
+                    .Where(m => m.GroupId == ChatId)
+                    .ToListAsync();
+            }
+        }
+    }
+
+    private async Task UpdatePriority(ChatPriority value)
+    {
+        if (chat != null)
+        {
+            chat.Priority = value;
+            await DbContext.SaveChangesAsync();
+        }
+    }
+
+    private async Task UpdateMuted(bool value)
+    {
+        if (chat != null)
+        {
+            chat.Muted = value;
+            await DbContext.SaveChangesAsync();
+        }
+    }
+
+    private async Task ArchiveChat()
+    {
+        if (chat == null) return;
+        chat.Archived = true;
+        await DbContext.SaveChangesAsync();
+        await OnClose.InvokeAsync();
+        await OnChatArchived.InvokeAsync(chat.ChatId);
+    }
+
+    private async Task UnarchiveChat()
+    {
+        if (chat == null) return;
+        chat.Archived = false;
+        await DbContext.SaveChangesAsync();
+        await OnClose.InvokeAsync();
+        await OnChatUnarchived.InvokeAsync();
+    }
+
+    private async Task Close()
+    {
+        await OnClose.InvokeAsync();
+    }
+}

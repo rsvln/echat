@@ -1,0 +1,96 @@
+using EChat.Core.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace EChat.Core.Data;
+
+public class ChatDbContext : DbContext
+{
+    public DbSet<ChatMessage> Messages => Set<ChatMessage>();
+    public DbSet<Chat> Chats => Set<Chat>();
+    public DbSet<Contact> Contacts => Set<Contact>();
+    public DbSet<ChatGroup> Groups => Set<ChatGroup>();
+    public DbSet<GroupMember> GroupMembers => Set<GroupMember>();
+    public DbSet<GroupOperation> GroupOperations => Set<GroupOperation>();
+    public DbSet<Setting> Settings => Set<Setting>();
+    public DbSet<Account> Accounts => Set<Account>();
+    
+    public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options)
+    {
+    }
+    
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        
+        // ChatMessage
+        modelBuilder.Entity<ChatMessage>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.MessageId, e.ChatId }).IsUnique();
+            entity.HasIndex(e => e.MessageId);
+            entity.HasIndex(e => new { e.ChatId, e.Timestamp });
+            entity.HasIndex(e => e.Sender);
+            entity.HasOne(e => e.Chat)
+                  .WithMany(c => c.Messages)
+                  .HasForeignKey(e => e.ChatId);
+        });
+        
+        // Chat
+        modelBuilder.Entity<Chat>(entity =>
+        {
+            entity.HasKey(e => e.ChatId);
+            entity.HasIndex(e => e.LastActivityAt);
+            entity.HasIndex(e => new { e.Archived, e.LastActivityAt });
+            entity.HasIndex(e => e.AccountId);
+        });
+
+        // Account
+        modelBuilder.Entity<Account>(entity =>
+        {
+            entity.HasKey(e => e.AccountId);
+            entity.HasIndex(e => e.Email).IsUnique();
+            entity.HasIndex(e => e.IsActive);
+        });
+        
+        // Contact
+        modelBuilder.Entity<Contact>(entity =>
+        {
+            entity.HasKey(e => e.Email);
+            entity.HasIndex(e => e.Verified);
+        });
+        
+        // ChatGroup
+        modelBuilder.Entity<ChatGroup>(entity =>
+        {
+            entity.HasKey(e => e.GroupId);
+            entity.HasIndex(e => e.Version);
+        });
+        
+        // GroupMember
+        modelBuilder.Entity<GroupMember>(entity =>
+        {
+            entity.HasKey(e => new { e.GroupId, e.MemberEmail });
+            entity.HasOne(e => e.Group)
+                  .WithMany(g => g.Members)
+                  .HasForeignKey(e => e.GroupId);
+            entity.HasIndex(e => e.MemberEmail);
+        });
+        
+        // GroupOperation
+        modelBuilder.Entity<GroupOperation>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.GroupId, e.Version });
+            entity.HasIndex(e => e.Applied);
+            entity.HasOne(e => e.Group)
+                  .WithMany()
+                  .HasForeignKey(e => e.GroupId);
+        });
+        
+        // Setting
+        modelBuilder.Entity<Setting>(entity =>
+        {
+            entity.HasKey(e => e.Key);
+        });
+    }
+}

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="456" height="456" viewBox="0 0 456 456" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="456" height="456" fill="#1565C0"/>
+
+  <!--
+    Epsilon (ε) drawn as three stroked paths, centered at (228,228).
+    Circle radius = 120. Opening faces LEFT (210° upper, 150° lower).
+
+    Upper-left opening (210°): (228 + 120·cos210°, 228 + 120·sin210°) = (124, 168)
+    Lower-left opening (150°): (228 + 120·cos150°, 228 + 120·sin150°) = (124, 288)
+    Right convergence (0°):    (348, 228)
+  -->
+
+  <!-- Top arc: right → counterclockwise over top → upper-left opening -->
+  <path d="M 348,228 A 120,120 0 0 0 124,168"
+        fill="none" stroke="white" stroke-width="56" stroke-linecap="round"/>
+
+  <!-- Middle bar -->
+  <line x1="108" y1="228" x2="348" y2="228"
+        stroke="white" stroke-width="56" stroke-linecap="round"/>
+
+  <!-- Bottom arc: lower-left opening → counterclockwise through bottom → right -->
+  <path d="M 124,288 A 120,120 0 0 0 348,228"
+        fill="none" stroke="white" stroke-width="56" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,37 @@
+@page "/settings"
+@inject NavigationManager Navigation
+
+<div class="settings-page">
+    <div class="settings-page-header">
+        <button class="back-btn" @onclick="GoBack">←</button>
+        <h1>App Settings</h1>
+    </div>
+
+    <div class="settings-body">
+        <div class="settings-section">
+            <h2>About</h2>
+            <div class="settings-info-row">
+                <span>εChat (Epsilon Chat)</span>
+            </div>
+            <div class="settings-info-row">
+                <span class="settings-info-label">Version</span>
+                <span>0.1.0</span>
+            </div>
+            <div class="settings-info-row">
+                <span class="settings-info-label">Protocol</span>
+                <span>Email / IMAP + SMTP</span>
+            </div>
+        </div>
+
+        <div class="settings-section">
+            <h2>Accounts</h2>
+            <button class="btn btn-primary" @onclick="@(() => Navigation.NavigateTo("/setup"))">
+                Add Account
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private void GoBack() => Navigation.NavigateTo("/chats");
+}

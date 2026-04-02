@@ -1,0 +1,51 @@
+@using EChat.Core.Models
+
+<div class="chat-list-item @(Chat.UnreadCount > 0 ? "unread" : "")" @onclick="OnClick">
+    <div class="chat-avatar">
+        @GetInitials(Chat.Name)
+    </div>
+    <div class="chat-info">
+        <div class="chat-name">@Chat.Name</div>
+        <div class="chat-last-activity">
+            @FormatLastActivity(Chat.LastActivityAt)
+        </div>
+    </div>
+    @if (Chat.UnreadCount > 0)
+    {
+        <div class="unread-badge">@Chat.UnreadCount</div>
+    }
+    @if (Chat.Muted)
+    {
+        <div class="muted-icon">🔕</div>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public Chat Chat { get; set; } = null!;
+    
+    [Parameter]
+    public EventCallback OnClick { get; set; }
+    
+    private string GetInitials(string name)
+    {
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "?";
+        if (parts.Length == 1) return parts[0].Substring(0, Math.Min(2, parts[0].Length)).ToUpper();
+        return $"{parts[0][0]}{parts[^1][0]}".ToUpper();
+    }
+    
+    private string FormatLastActivity(DateTimeOffset? lastActivity)
+    {
+        if (!lastActivity.HasValue) return "";
+        
+        var diff = DateTimeOffset.Now - lastActivity.Value;
+        
+        if (diff.TotalMinutes < 1) return "just now";
+        if (diff.TotalHours < 1) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalDays < 1) return $"{(int)diff.TotalHours}h ago";
+        if (diff.TotalDays < 7) return $"{(int)diff.TotalDays}d ago";
+        
+        return lastActivity.Value.ToString("MMM d");
+    }
+}

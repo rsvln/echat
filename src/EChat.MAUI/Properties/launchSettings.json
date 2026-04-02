@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Windows Machine": {
+      "commandName": "Project"
+    },
+    "Android Emulator": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet ef:*)",
+      "Bash(node -e \":*)",
+      "Bash(del \"E:\\\\YandexDisk\\\\work_back\\\\programming\\\\echat\\\\src\\\\EChat.MAUI\\\\Resources\\\\Images\\\\dotnet_bot.svg\")",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:johnnys.news)",
+      "Bash(dotnet publish:*)",
+      "Bash(cmd /c \"rmdir /s /q \"\"E:\\\\YandexDisk\\\\work_back\\\\programming\\\\echat\\\\src\\\\EChat.MAUI\\\\obj\"\"\")",
+      "Bash(cmd /c \"rmdir /s /q \"\"E:\\\\YandexDisk\\\\work_back\\\\programming\\\\echat\\\\src\\\\EChat.MAUI\\\\bin\\\\Debug\"\"\")",
+      "Bash(cmd /c \"rmdir /s /q \"\"E:\\\\YandexDisk\\\\work_back\\\\programming\\\\echat\\\\src\\\\EChat.MAUI\\\\obj\\\\Release\\\\net10.0-android\"\"\")"
+    ]
+  }
+}

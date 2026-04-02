@@ -1,0 +1,1501 @@
+@page "/chats"
+@using EChat.Core.Models
+@using EChat.Core.Data
+@using EChat.Core.Protocol
+@using EChat.Core.Transport
+@using EChat.UI.Services
+@using EChat.UI.Components
+@using Microsoft.EntityFrameworkCore
+@using Net.Codecrete.QrCodeGenerator
+@inject ChatDbContext DbContext
+@inject NavigationManager Navigation
+@inject EmailTransportService TransportService
+@inject UserContextService UserContext
+@inject IPlatformService PlatformService
+@inject IAppPreferences Prefs
+@inject IJSRuntime JS
+@inject ChatEventService ChatEvents
+@implements IDisposable
+
+@if (PlatformService.IsDesktop)
+{
+    <!-- ══════════════════════════════════════
+         Windows — three-column desktop layout
+    ══════════════════════════════════════ -->
+    <div class="desktop-layout">
+
+        <!-- ─── Account column ─── -->
+        <div class="account-column">
+            @if (accounts != null)
+            {
+                @foreach (var acc in accounts)
+                {
+                    <div style="position:relative;display:inline-block;">
+                        <button class="account-avatar-btn @(acc.AccountId == activeAccountId ? "active" : "")"
+                                title="@acc.DisplayName (@acc.Email)"
+                                style="background-color: @(acc.AvatarColor ?? "#5BA642")"
+                                @onclick="@(() => SwitchAccount(acc.AccountId))">
+                            @acc.DisplayName.Substring(0, 1).ToUpper()
+                        </button>
+                        @if (accountUnreadCounts.GetValueOrDefault(acc.AccountId) > 0 && acc.AccountId != activeAccountId)
+                        {
+                            <span style="position:absolute;top:-4px;right:-4px;background:#e53935;color:#fff;border-radius:999px;min-width:16px;height:16px;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 3px;pointer-events:none;">
+                                @accountUnreadCounts[acc.AccountId]
+                            </span>
+                        }
+                    </div>
+                }
+            }
+            <button class="account-add-btn" title="Add account"
+                    @onclick="@(() => Navigation.NavigateTo("/setup"))">+</button>
+            <div class="account-spacer"></div>
+            <button class="account-settings-btn" title="Account settings"
+                    @onclick="OpenAccountSettings">⚙</button>
+            <button class="account-global-btn" title="App settings"
+                    @onclick="@(() => Navigation.NavigateTo("/settings"))">☰</button>
+        </div>
+
+        <!-- ─── Chat list panel ─── -->
+        <div class="left-panel">
+            <div class="left-header">
+                <span class="app-title">@(activeAccount?.DisplayName ?? "εChat")</span>
+                <button class="icon-btn" title="New chat" @onclick="OpenNewChat">(+)</button>
+            </div>
+
+            <div class="search-bar">
+                <div style="display:flex;flex-direction:row;align-items:center;gap:8px;width:100%;">
+                    <span style="flex:0 0 26px;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border-radius:2px;font-size:12px;font-weight:700;cursor:pointer;user-select:none;border:1px solid @(showArchived ? "var(--primary)" : "rgba(0,0,0,0.22)");background:@(showArchived ? "var(--primary)" : "rgba(0,0,0,0.04)");color:@(showArchived ? "#fff" : "var(--text-secondary)");text-decoration:@(showArchived ? "none" : "line-through");"
+                          title="@(showArchived ? "Hide archived" : "Show archived")"
+                          @onclick="async () => { showArchived = !showArchived; await LoadChatsAsync(); }">A</span>
+                    <input type="text"
+                           class="search-input"
+                           style="flex:1 1 0;min-width:0;"
+                           placeholder="Search chats..."
+                           @bind="searchQuery"
+                           @bind:event="oninput" />
+                </div>
+            </div>
+
+            <div class="chat-list">
+                @if (chats == null)
+                {
+                    <div class="empty-state"><p>Loading...</p></div>
+                }
+                else if (!FilteredChats.Any())
+                {
+                    <div class="empty-state">
+                        <div class="empty-state-icon">💬</div>
+                        <p>@(string.IsNullOrEmpty(searchQuery) ? "No chats yet" : "No chats found")</p>
+                    </div>
+                }
+                else
+                {
+                    @foreach (var chat in FilteredChats)
+                    {
+                        <div class="chat-item @(chat.ChatId == selectedChatId ? "active" : "") @(chat.Archived ? "chat-item-archived" : "")"
+                             @onclick="@(() => SelectChat(chat.ChatId))">
+                            <div class="chat-avatar @(chat.Type == ChatType.Group ? "chat-avatar-group" : "")">
+                                @chat.Name.Substring(0, 1).ToUpper()
+                            </div>
+                            <div class="chat-content">
+                                <div class="chat-item-top">
+                                    <span class="chat-name">@chat.Name</span>
+                                    <span class="chat-time">@FormatTime(chat.LastActivityAt)</span>
+                                </div>
+                                <div class="chat-preview">
+                                    @if (chat.Archived)
+                                    {
+                                        <a class="unarchive-link"
+                                           href="javascript:void(0)"
+                                           @onclick:stopPropagation="true"
+                                           @onclick="@(() => ToggleArchiveFromMenu(chat.ChatId, false))">Unarchive</a>
+                                    }
+                                    else if (chat.UnreadCount > 0)
+                                    {
+                                        <span>New messages</span>
+                                        <span class="chat-badge">@chat.UnreadCount</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="preview-placeholder">···</span>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+
+        <!-- ─── Chat view panel ─── -->
+        <div class="right-panel">
+            @if (selectedChatId == null)
+            {
+                <div class="no-chat-selected">
+                    <div class="no-chat-icon">💬</div>
+                    <p>Select a chat to start messaging</p>
+                </div>
+            }
+            else
+            {
+                <div class="chat-view-header">
+                    <div class="chat-view-header-info">
+                        <div class="chat-view-avatar @(selectedChat?.Type == ChatType.Group ? "chat-avatar-group" : "")">
+                            @(selectedChat?.Name.Substring(0, 1).ToUpper())
+                        </div>
+                        <span class="chat-view-name">@selectedChat?.Name</span>
+                    </div>
+                    <button class="icon-btn icon-btn-dark" @onclick="ShowChatInfo" title="Chat info">ℹ</button>
+                </div>
+
+                <div class="messages-container" @ref="messagesContainer">
+                    @if (messages == null)
+                    {
+                        <p class="loading">Loading messages...</p>
+                    }
+                    else if (!messages.Any())
+                    {
+                        <div class="messages-empty"><p>No messages yet. Say hello!</p></div>
+                    }
+                    else
+                    {
+                        @foreach (var message in messages)
+                        {
+                            var quotedMsg = message.InReplyTo != null
+                                ? messagesById.GetValueOrDefault(message.InReplyTo)
+                                : null;
+                            var quotedSender = quotedMsg != null
+                                ? contactNames.GetValueOrDefault(quotedMsg.Sender, quotedMsg.Sender.Split('@')[0])
+                                : null;
+                            <MessageBubble Message="@message"
+                                           IsOwn="@IsOwnMessage(message)"
+                                           SenderDisplayName="@(contactNames.GetValueOrDefault(message.Sender, message.Sender.Split('@')[0]))"
+                                           QuotedMessage="@quotedMsg"
+                                           QuotedSenderName="@quotedSender"
+                                           OnReply="@StartReply"
+                                           OnEdit="@StartEdit"
+                                           OnDeleteForMe="@DeleteMessageForMe"
+                                           OnDeleteForAll="@DeleteMessageForAll"
+                                           OnForward="@StartForward"
+                                           OnScrollToQuoted="@ScrollToMessage" />
+                        }
+                    }
+                </div>
+
+                @if (!string.IsNullOrEmpty(sendError))
+                {
+                    <div class="send-error">@sendError</div>
+                }
+
+                @* ── Reply / Edit strip ──────────────────────────────── *@
+                @if (replyingToMessage != null)
+                {
+                    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;
+                                background:rgba(91,166,66,.08);border-top:1px solid rgba(91,166,66,.3);">
+                        <div style="flex:1;border-left:3px solid var(--primary,#5BA642);padding-left:8px;font-size:12px;">
+                            <div style="font-weight:600;color:var(--primary,#5BA642);">
+                                @(contactNames.GetValueOrDefault(replyingToMessage.Sender, replyingToMessage.Sender.Split('@')[0]))
+                            </div>
+                            <div style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px;">
+                                @(replyingToMessage.Content.Length > 60 ? replyingToMessage.Content[..60] + "…" : replyingToMessage.Content)
+                            </div>
+                        </div>
+                        <button style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;"
+                                @onclick="CancelReply">✕</button>
+                    </div>
+                }
+                @if (editingMessage != null)
+                {
+                    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;
+                                background:rgba(255,165,0,.08);border-top:1px solid rgba(255,165,0,.3);">
+                        <div style="flex:1;font-size:12px;color:#888;">✏ Editing message</div>
+                        <button style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;"
+                                @onclick="CancelEdit">✕</button>
+                    </div>
+                }
+
+                <div class="message-input-bar">
+                    <textarea class="message-textarea"
+                              placeholder="@(editingMessage != null ? "Edit message…" : "Write a message...")"
+                              @bind="messageText"
+                              @bind:event="oninput"
+                              @onkeydown="OnKeyDown"
+                              rows="1"></textarea>
+                    <button class="send-btn"
+                            @onclick="SendMessage"
+                            disabled="@(string.IsNullOrWhiteSpace(messageText))">
+                        ➤
+                    </button>
+                </div>
+            }
+        </div>
+
+    </div>
+
+    <ChatInfoModal IsVisible="@showChatInfo"
+                   ChatId="@selectedChatId"
+                   OnClose="@(() => showChatInfo = false)"
+                   OnChatArchived="@OnChatArchived"
+                   OnChatUnarchived="@OnChatUnarchived" />
+
+}
+else
+{
+    <!-- ══════════════════════════════════════
+         Android / iOS — mobile layout
+    ══════════════════════════════════════ -->
+    <div class="app-container">
+        <div class="app-header">
+            <h1>εChat</h1>
+            <div class="app-header-actions">
+                <button class="header-icon" @onclick="OpenNewChat" title="New chat">✏</button>
+                <button class="header-icon" @onclick="OpenAccountSettings" title="Settings">⚙</button>
+            </div>
+        </div>
+
+        <div class="search-bar">
+            <input type="text"
+                   class="search-input"
+                   placeholder="Search chats..."
+                   @bind="searchQuery"
+                   @bind:event="oninput" />
+        </div>
+
+        <div class="chat-list">
+            @if (chats == null)
+            {
+                <div class="empty-state">
+                    <div class="empty-state-icon">💬</div>
+                    <p>Loading chats...</p>
+                </div>
+            }
+            else if (!FilteredChats.Any())
+            {
+                <div class="empty-state">
+                    <div class="empty-state-icon">💬</div>
+                    <p>@(string.IsNullOrEmpty(searchQuery) ? "No chats yet" : "No chats found")</p>
+                </div>
+            }
+            else
+            {
+                @foreach (var chat in FilteredChats)
+                {
+                    <div class="chat-item" @onclick="@(() => Navigation.NavigateTo($"/chat/{chat.ChatId}"))">
+                        <div class="chat-avatar @(chat.Type == ChatType.Group ? "chat-avatar-group" : "")">
+                            @chat.Name.Substring(0, 1).ToUpper()
+                        </div>
+                        <div class="chat-content">
+                            <div class="chat-header">
+                                <span class="chat-name">@chat.Name</span>
+                                <span class="chat-time">@FormatTime(chat.LastActivityAt)</span>
+                            </div>
+                            @if (chat.UnreadCount > 0)
+                            {
+                                <div class="chat-preview">
+                                    New messages
+                                    <span class="chat-badge">@chat.UnreadCount</span>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="chat-preview">Tap to open chat</div>
+                            }
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+}
+
+<!-- ══════════════════════════════════════
+     Forward message dialog
+══════════════════════════════════════ -->
+@if (showForwardDialog && forwardingMessage != null)
+{
+    <div class="nc-overlay" @onclick="@(() => showForwardDialog = false)">
+        <div class="new-chat-modal" style="max-height:70vh;display:flex;flex-direction:column;" @onclick:stopPropagation>
+            <div class="new-chat-modal-header">
+                <span style="font-weight:600;font-size:15px;flex:1;">Forward to...</span>
+                <button class="new-chat-close" @onclick="@(() => showForwardDialog = false)">✕</button>
+            </div>
+            <div style="overflow-y:auto;flex:1;padding:4px 0;">
+                @if (chats != null)
+                {
+                    @foreach (var chat in chats.Where(c => c.ChatId != selectedChatId))
+                    {
+                        <div class="chat-item" @onclick="@(() => ForwardToChat(chat))" @onclick:stopPropagation>
+                            <div class="chat-avatar @(chat.Type == ChatType.Group ? "chat-avatar-group" : "")">
+                                @chat.Name.Substring(0, 1).ToUpper()
+                            </div>
+                            <div class="chat-content">
+                                <div class="chat-name">@chat.Name</div>
+                            </div>
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ══════════════════════════════════════
+     New Chat modal (shared, both platforms)
+══════════════════════════════════════ -->
+@if (showNewChat)
+{
+    <div class="nc-overlay" @onclick="CloseNewChat">
+        <div class="new-chat-modal" @onclick:stopPropagation>
+
+            <!-- Tabs -->
+            <div class="new-chat-modal-header">
+                <button class="new-chat-tab @(newChatTab == "invite" ? "active" : "")"
+                        @onclick="@(() => SwitchTab("invite"))">My Invite</button>
+                <button class="new-chat-tab @(newChatTab == "add" ? "active" : "")"
+                        @onclick="@(() => SwitchTab("add"))">Add Contact</button>
+                <button class="new-chat-tab @(newChatTab == "group" ? "active" : "")"
+                        @onclick="@(() => SwitchTab("group"))">New Group</button>
+                <button class="new-chat-close" @onclick="CloseNewChat">✕</button>
+            </div>
+
+            <!-- ── MY INVITE tab ── -->
+            @if (newChatTab == "invite")
+            {
+                <div class="new-chat-body">
+                    <p class="new-chat-hint">
+                        Share this invite with your contact so they can add you with verified encryption.
+                    </p>
+
+                    <!-- QR code -->
+                    <div class="invite-qr-box">
+                        @myInviteQr
+                    </div>
+
+                    <!-- Invite code — display only, for visual identification -->
+                    <div class="invite-code-row">
+                        <span class="invite-code-label">ID</span>
+                        <span class="invite-code">@myInviteCode</span>
+                    </div>
+
+                    <!-- Copy button — always copies the full link (contains public key) -->
+                    <div class="invite-link-row">
+                        <button class="invite-copy-btn invite-copy-primary" @onclick="@(() => CopyToClipboard(myInviteLink))">
+                            @(copied == "link" ? "✓ Copied!" : "Copy invite link")
+                        </button>
+                    </div>
+
+                    <p class="invite-note">
+                        Scan the QR code or share the link — it includes your public key so your contact can write to you with encryption from the first message.
+                    </p>
+                </div>
+            }
+
+            <!-- ── ADD CONTACT tab ── -->
+            @if (newChatTab == "add")
+            {
+                <div class="new-chat-body">
+                    <div class="new-chat-field">
+                        <label class="new-chat-label">Invite code or link</label>
+                        <input type="text"
+                               class="new-chat-input"
+                               placeholder="ABCDE-FGHJ2  or  echat://invite?..."
+                               @bind="inviteInput"
+                               @bind:event="oninput"
+                               @onkeydown="OnAddContactKeyDown" />
+                        <p class="invite-field-hint">Paste the code or link your contact shared with you</p>
+                    </div>
+
+                    <div class="invite-divider"><span>or add by email (unverified)</span></div>
+
+                    <div class="new-chat-field">
+                        <input type="email"
+                               class="new-chat-input"
+                               placeholder="contact@example.com"
+                               @bind="newChatEmail"
+                               @bind:event="oninput"
+                               @onkeydown="OnNewChatKeyDown" />
+                    </div>
+
+                    @if (filteredContacts.Any() && !string.IsNullOrEmpty(newChatEmail))
+                    {
+                        <div class="new-chat-contacts">
+                            @foreach (var contact in filteredContacts)
+                            {
+                                <div class="new-chat-contact-item" @onclick="@(() => SelectContact(contact.Email))">
+                                    <div class="contact-avatar">
+                                        @((contact.DisplayName ?? contact.Email).Substring(0, 1).ToUpper())
+                                    </div>
+                                    <div class="contact-info">
+                                        <span class="contact-name">@(contact.DisplayName ?? contact.Email)</span>
+                                        <span class="contact-email">@contact.Email</span>
+                                        @if (contact.Verified)
+                                        {
+                                            <span class="contact-verified">✓ verified</span>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrEmpty(newChatError))
+                    {
+                        <p class="new-chat-error">@newChatError</p>
+                    }
+
+                    <div class="new-chat-actions">
+                        <button class="new-chat-btn-primary"
+                                @onclick="AddContactFromInviteOrEmail"
+                                disabled="@(string.IsNullOrWhiteSpace(inviteInput) && string.IsNullOrWhiteSpace(newChatEmail))">
+                            Start Chat
+                        </button>
+                    </div>
+                </div>
+            }
+
+            <!-- ── NEW GROUP tab ── -->
+            @if (newChatTab == "group")
+            {
+                <div class="new-chat-body">
+                    <div class="new-chat-field">
+                        <label class="new-chat-label">Group name</label>
+                        <input type="text"
+                               class="new-chat-input"
+                               placeholder="My Group"
+                               @bind="newGroupName"
+                               @bind:event="oninput" />
+                    </div>
+
+                    <div class="new-chat-field">
+                        <label class="new-chat-label">Members</label>
+                        @for (int i = 0; i < groupMemberEmails.Count; i++)
+                        {
+                            var idx = i;
+                            <div class="group-member-row">
+                                <input type="email"
+                                       class="new-chat-input"
+                                       placeholder="member@example.com"
+                                       value="@groupMemberEmails[idx]"
+                                       @oninput="@(e => groupMemberEmails[idx] = e.Value?.ToString() ?? "")" />
+                                <button class="group-member-remove"
+                                        @onclick="@(() => RemoveGroupMember(idx))"
+                                        disabled="@(groupMemberEmails.Count <= 1)">✕</button>
+                            </div>
+                        }
+                        <button class="new-chat-btn-secondary" @onclick="AddGroupMember">+ Add member</button>
+                    </div>
+
+                    @if (!string.IsNullOrEmpty(newChatError))
+                    {
+                        <p class="new-chat-error">@newChatError</p>
+                    }
+
+                    <div class="new-chat-actions">
+                        <button class="new-chat-btn-primary"
+                                @onclick="CreateGroup"
+                                disabled="@string.IsNullOrWhiteSpace(newGroupName)">
+                            Create Group
+                        </button>
+                    </div>
+                </div>
+            }
+
+        </div>
+    </div>
+}
+
+@code {
+    // Accounts
+    private List<Account>? accounts;
+    private string? activeAccountId;
+    private Account? activeAccount;
+    private string _subjectTemplate = "[εChat] {chatName}";
+
+    // Shared
+    private List<Chat>? chats;
+    private string searchQuery = string.Empty;
+
+    private IEnumerable<Chat> FilteredChats =>
+        chats?.Where(c => string.IsNullOrEmpty(searchQuery) ||
+                          c.Name.Contains(searchQuery, StringComparison.OrdinalIgnoreCase))
+              .OrderByDescending(c => c.LastActivityAt) ?? Enumerable.Empty<Chat>();
+
+    // Desktop only
+    private string? selectedChatId;
+    private Chat? selectedChat;
+    private List<ChatMessage>? messages;
+    private List<string>? recipients;
+    private string messageText = string.Empty;
+    private ElementReference messagesContainer;
+    private bool showChatInfo = false;
+    private bool _scrollToBottom = false;
+
+    // Archived chats toggle
+    private bool showArchived = false;
+
+    // Contact display names: email → name
+    private Dictionary<string, string> contactNames = new(StringComparer.OrdinalIgnoreCase);
+
+    // Unread counts per account (sum of non-muted, non-archived chats)
+    private Dictionary<string, int> accountUnreadCounts = new(StringComparer.OrdinalIgnoreCase);
+
+    // MessageId → ChatMessage for quick quoted-message lookup
+    private Dictionary<string, ChatMessage> messagesById = new(StringComparer.OrdinalIgnoreCase);
+
+    // Reply / edit / forward state
+    private ChatMessage? replyingToMessage;
+    private ChatMessage? editingMessage;
+    private ChatMessage? forwardingMessage;
+    private bool showForwardDialog;
+
+    // New chat modal
+    private bool showNewChat = false;
+    private string newChatTab = "invite";
+    private string newChatEmail = string.Empty;
+    private string inviteInput = string.Empty;
+    private string newGroupName = string.Empty;
+    private List<string> groupMemberEmails = new() { "" };
+    private string newChatError = string.Empty;
+    private string copied = string.Empty;
+    private List<Contact> allContacts = new();
+
+    // My invite data
+    private string myInviteCode = string.Empty;
+    private string myInviteLink = string.Empty;
+    private MarkupString myInviteQr;
+
+    private IEnumerable<Contact> filteredContacts =>
+        string.IsNullOrWhiteSpace(newChatEmail)
+            ? Enumerable.Empty<Contact>()
+            : allContacts.Where(c =>
+                c.Email.Contains(newChatEmail, StringComparison.OrdinalIgnoreCase) ||
+                (c.DisplayName ?? "").Contains(newChatEmail, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAccountsAsync();
+        await LoadChatsAsync();
+        allContacts = await DbContext.Contacts.OrderBy(c => c.DisplayName).ToListAsync();
+        contactNames = allContacts.ToDictionary(c => c.Email, c => c.DisplayName ?? c.Email.Split('@')[0], StringComparer.OrdinalIgnoreCase);
+        ChatEvents.ChatUpdated += OnChatUpdated;
+    }
+
+    public void Dispose()
+    {
+        ChatEvents.ChatUpdated -= OnChatUpdated;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_scrollToBottom)
+        {
+            _scrollToBottom = false;
+            try
+            {
+                await JS.InvokeVoidAsync("eval",
+                    "var el=document.querySelector('.messages-container');" +
+                    "if(el)el.scrollTop=el.scrollHeight;");
+            }
+            catch { }
+        }
+    }
+
+    private void OnChatUpdated(string chatId)
+    {
+        InvokeAsync(async () =>
+        {
+            await LoadChatsAsync();
+            if (selectedChatId == chatId)
+            {
+                await LoadMessagesAsync();
+                await ClearUnreadAsync(chatId); // auto-clear if user is already reading
+                _scrollToBottom = true;
+            }
+            StateHasChanged();
+        });
+    }
+
+    private async Task LoadAccountsAsync()
+    {
+        accounts = await DbContext.Accounts.ToListAsync();
+        activeAccount = accounts.FirstOrDefault(a => a.IsActive)
+                        ?? accounts.FirstOrDefault();
+        activeAccountId = activeAccount?.AccountId;
+
+        if (activeAccount != null && string.IsNullOrEmpty(UserContext.AccountId))
+        {
+            var deviceId = Prefs.Get("device_id", string.Empty);
+            UserContext.Initialize(activeAccount.AccountId, activeAccount.Email, deviceId);
+        }
+
+        await LoadSubjectTemplateAsync();
+    }
+
+    private async Task LoadSubjectTemplateAsync()
+    {
+        if (activeAccountId == null) return;
+        var setting = await DbContext.Settings.FindAsync($"acct_{activeAccountId}_subject_template");
+        _subjectTemplate = setting?.Value ?? "[εChat] {chatName}";
+    }
+
+    private async Task LoadChatsAsync()
+    {
+        // AsNoTracking is critical: the long-lived Blazor DbContext caches entities via
+        // the identity map. Without it, UnreadCount incremented by IncomingMessageService
+        // (separate scope) would be silently returned as the old tracked value (0).
+        var query = DbContext.Chats.AsNoTracking().AsQueryable();
+        if (!showArchived)
+            query = query.Where(c => !c.Archived);
+        if (!string.IsNullOrEmpty(activeAccountId))
+            query = query.Where(c => c.AccountId == activeAccountId || c.AccountId == null);
+
+        var list = await query.ToListAsync();
+        chats = list.OrderByDescending(c => c.LastActivityAt).ToList();
+
+        await UpdateAccountUnreadCountsAsync();
+    }
+
+    private async Task UpdateAccountUnreadCountsAsync()
+    {
+        if (accounts == null) return;
+        var unreadChats = await DbContext.Chats
+            .AsNoTracking()
+            .Where(c => !c.Muted && !c.Archived && c.UnreadCount > 0 && c.AccountId != null)
+            .ToListAsync();
+        accountUnreadCounts = accounts.ToDictionary(
+            a => a.AccountId,
+            a => unreadChats.Where(c => c.AccountId == a.AccountId).Sum(c => c.UnreadCount),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task OnChatArchived(string chatId)
+    {
+        await LoadChatsAsync();
+        // If the archived chat was selected, deselect it (unless showing archived)
+        if (!showArchived && selectedChatId == chatId)
+        {
+            selectedChatId = null;
+            selectedChat = null;
+            messages = null;
+            recipients = null;
+        }
+        StateHasChanged();
+    }
+
+    private async Task OnChatUnarchived()
+    {
+        await LoadChatsAsync();
+        StateHasChanged();
+    }
+
+    private async Task ToggleArchiveFromMenu(string chatId, bool archive)
+    {
+        var chat = await DbContext.Chats.FindAsync(chatId);
+        if (chat == null) return;
+        chat.Archived = archive;
+        await DbContext.SaveChangesAsync();
+        if (archive)
+            await OnChatArchived(chatId);
+        else
+            await OnChatUnarchived();
+    }
+
+    private async Task SwitchAccount(string accountId)
+    {
+        if (accountId == activeAccountId) return;
+
+        var oldAccountId = activeAccountId!;
+
+        foreach (var acc in accounts!)
+            acc.IsActive = acc.AccountId == accountId;
+        await DbContext.SaveChangesAsync();
+
+        activeAccountId = accountId;
+        activeAccount = accounts.First(a => a.AccountId == accountId);
+        selectedChatId = null;
+        selectedChat = null;
+        messages = null;
+        recipients = null;
+        messageText = string.Empty;
+        replyingToMessage = null;
+        editingMessage = null;
+        sendError = string.Empty;
+
+        var deviceId = Prefs.Get("device_id", string.Empty);
+        UserContext.Initialize(activeAccount.AccountId, activeAccount.Email, deviceId);
+        Prefs.Set("user_email", activeAccount.Email);
+        Prefs.Set("active_account_id", activeAccount.AccountId);
+
+        // Notify MultiAccountImapManager to start worker for old account, stop worker for new
+        ChatEvents.NotifyAccountSwitched(oldAccountId, accountId);
+
+        _ = Task.Run(async () =>
+        {
+            try { await TransportService.ReconnectAsync(activeAccount, deviceId); }
+            catch { /* non-fatal */ }
+        });
+
+        await LoadSubjectTemplateAsync();
+        await LoadChatsAsync();
+    }
+
+    private void OpenAccountSettings()
+    {
+        if (activeAccountId != null)
+            Navigation.NavigateTo($"/account-settings/{activeAccountId}");
+        else
+            Navigation.NavigateTo("/settings");
+    }
+
+    // ── New chat modal ──────────────────────────────────
+
+    private void OpenNewChat()
+    {
+        newChatEmail = string.Empty;
+        inviteInput = string.Empty;
+        newGroupName = string.Empty;
+        groupMemberEmails = new List<string> { "" };
+        newChatError = string.Empty;
+        copied = string.Empty;
+        newChatTab = "invite";
+        BuildMyInvite();
+        showNewChat = true;
+    }
+
+    private void CloseNewChat() => showNewChat = false;
+
+    private void SwitchTab(string tab)
+    {
+        newChatTab = tab;
+        newChatError = string.Empty;
+    }
+
+    private void BuildMyInvite()
+    {
+        if (activeAccount == null) return;
+        var token = activeAccount.InviteToken ?? "?????-?????";
+        myInviteCode = token;
+        var tokenRaw = token.Replace("-", "");
+        var email = Uri.EscapeDataString(activeAccount.Email);
+        var name = Uri.EscapeDataString(activeAccount.DisplayName);
+        myInviteLink = $"echat://invite?e={email}&n={name}&t={tokenRaw}";
+        if (activeAccount.PublicKey != null)
+            myInviteLink += $"&k={Uri.EscapeDataString(activeAccount.PublicKey)}";
+
+        try
+        {
+            var qr = QrCode.EncodeText(myInviteLink, QrCode.Ecc.Medium);
+            var svg = qr.ToSvgString(3);
+            // Inject styling: rounded, coloured
+            svg = svg.Replace(
+                "<svg ",
+                "<svg style=\"width:100%;height:100%;\" ");
+            myInviteQr = new MarkupString(svg);
+        }
+        catch
+        {
+            myInviteQr = new MarkupString("<div style='color:#aaa;text-align:center;padding:20px'>QR unavailable</div>");
+        }
+    }
+
+    private async Task CopyToClipboard(string text)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+        }
+        catch
+        {
+            // Fallback: execCommand for older WebView contexts
+            await JS.InvokeVoidAsync("eval",
+                $"(function(){{var t=document.createElement('textarea');t.value={System.Text.Json.JsonSerializer.Serialize(text)};document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);}})()");
+        }
+
+        copied = "link";
+        StateHasChanged();
+        await Task.Delay(1500);
+        copied = string.Empty;
+        StateHasChanged();
+    }
+
+    private void SelectContact(string email) => newChatEmail = email;
+
+    private async Task OnNewChatKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await AddContactFromInviteOrEmail();
+    }
+
+    private async Task OnAddContactKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await AddContactFromInviteOrEmail();
+    }
+
+    private async Task AddContactFromInviteOrEmail()
+    {
+        newChatError = string.Empty;
+
+        // Prefer invite input if provided
+        if (!string.IsNullOrWhiteSpace(inviteInput))
+        {
+            await CreateChatFromInvite(inviteInput.Trim());
+            return;
+        }
+
+        await CreateDirectChat();
+    }
+
+    private async Task CreateChatFromInvite(string input)
+    {
+        string email;
+        string displayName;
+        bool verified = true;
+
+        // Try parse as echat:// link
+        string? invitePublicKey = null;
+        if (input.StartsWith("echat://invite", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var uri = new Uri(input);
+                var pairs = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(p => p.Split('=', 2))
+                    .Where(p => p.Length == 2)
+                    .ToDictionary(p => Uri.UnescapeDataString(p[0]), p => Uri.UnescapeDataString(p[1]),
+                                  StringComparer.OrdinalIgnoreCase);
+                email = pairs.GetValueOrDefault("e", string.Empty);
+                displayName = pairs.GetValueOrDefault("n", string.Empty);
+                invitePublicKey = pairs.GetValueOrDefault("k");
+            }
+            catch
+            {
+                newChatError = "Invalid invite link.";
+                return;
+            }
+        }
+        // Looks like a code: XXXXX-YYYYY
+        else if (System.Text.RegularExpressions.Regex.IsMatch(input, @"^[A-Z0-9]{5}-[A-Z0-9]{5}$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        {
+            // Code-only invite: we need email too. Ask for email.
+            newChatError = "Invite code recognized. Please also enter their email address below.";
+            return;
+        }
+        else
+        {
+            newChatError = "Unrecognized invite format. Expected a code (XXXXX-YYYYY) or echat:// link.";
+            return;
+        }
+
+        if (string.IsNullOrEmpty(email) || !email.Contains('@'))
+        {
+            newChatError = "Invite does not contain a valid email.";
+            return;
+        }
+
+        await StartOrOpenChat(email, displayName, verified, invitePublicKey);
+    }
+
+    private async Task CreateDirectChat()
+    {
+        newChatError = string.Empty;
+        var email = newChatEmail.Trim();
+
+        if (string.IsNullOrEmpty(email) || !email.Contains('@'))
+        {
+            newChatError = "Enter a valid email address.";
+            return;
+        }
+
+        if (email.Equals(UserContext.UserEmail, StringComparison.OrdinalIgnoreCase))
+        {
+            newChatError = "You can't chat with yourself.";
+            return;
+        }
+
+        await StartOrOpenChat(email, email.Split('@')[0], verified: false, publicKey: null);
+    }
+
+    private async Task StartOrOpenChat(string email, string displayName, bool verified, string? publicKey = null)
+    {
+        // Find existing chat with this contact
+        var existingMessages = await DbContext.Messages
+            .Where(m => m.Sender == email)
+            .Select(m => m.ChatId)
+            .Distinct()
+            .ToListAsync();
+
+        var existingChat = await DbContext.Chats
+            .Where(c => c.Type == ChatType.OneToOne &&
+                        (c.AccountId == activeAccountId || c.AccountId == null) &&
+                        existingMessages.Contains(c.ChatId))
+            .FirstOrDefaultAsync();
+
+        if (existingChat == null)
+        {
+            // Also check by chat name (for newly created chats with no messages yet)
+            existingChat = await DbContext.Chats
+                .Where(c => c.Type == ChatType.OneToOne &&
+                            (c.AccountId == activeAccountId || c.AccountId == null) &&
+                            c.Name == (string.IsNullOrEmpty(displayName) ? email.Split('@')[0] : displayName))
+                .FirstOrDefaultAsync();
+        }
+
+        if (existingChat != null)
+        {
+            // Unarchive if it was archived
+            if (existingChat.Archived)
+            {
+                existingChat.Archived = false;
+                await DbContext.SaveChangesAsync();
+                await LoadChatsAsync();
+            }
+            // Update public key if provided
+            if (publicKey != null)
+            {
+                var c = await DbContext.Contacts.FindAsync(email);
+                if (c != null && c.PublicKey != publicKey)
+                {
+                    c.PublicKey = publicKey;
+                    await DbContext.SaveChangesAsync();
+                }
+            }
+            CloseNewChat();
+            if (PlatformService.IsDesktop)
+                await SelectChat(existingChat.ChatId);
+            else
+                Navigation.NavigateTo($"/chat/{existingChat.ChatId}");
+            return;
+        }
+
+        // Ensure contact exists / update verification and public key
+        var contact = await DbContext.Contacts.FindAsync(email);
+        if (contact == null)
+        {
+            contact = new Contact
+            {
+                Email = email,
+                DisplayName = string.IsNullOrEmpty(displayName) ? email.Split('@')[0] : displayName,
+                Verified = verified,
+                PublicKey = publicKey
+            };
+            DbContext.Contacts.Add(contact);
+        }
+        else
+        {
+            if (verified && !contact.Verified)
+                contact.Verified = true;
+            if (!string.IsNullOrEmpty(displayName))
+                contact.DisplayName = displayName;
+            if (publicKey != null)
+                contact.PublicKey = publicKey;
+        }
+
+        var chatName = contact.DisplayName ?? email.Split('@')[0];
+        var chatId = Guid.NewGuid().ToString();
+        var chat = new Chat
+        {
+            ChatId = chatId,
+            Type = ChatType.OneToOne,
+            Name = chatName,
+            AccountId = activeAccountId,
+            CreatedAt = DateTimeOffset.UtcNow,
+            LastActivityAt = DateTimeOffset.UtcNow
+        };
+        DbContext.Chats.Add(chat);
+        await DbContext.SaveChangesAsync();
+
+        allContacts = await DbContext.Contacts.OrderBy(c => c.DisplayName).ToListAsync();
+        await LoadChatsAsync();
+
+        CloseNewChat();
+        if (PlatformService.IsDesktop)
+            await SelectChat(chatId);
+        else
+            Navigation.NavigateTo($"/chat/{chatId}");
+    }
+
+    private void AddGroupMember()
+    {
+        groupMemberEmails.Add(string.Empty);
+    }
+
+    private void RemoveGroupMember(int index)
+    {
+        if (groupMemberEmails.Count > 1)
+            groupMemberEmails.RemoveAt(index);
+    }
+
+    private async Task CreateGroup()
+    {
+        newChatError = string.Empty;
+        var name = newGroupName.Trim();
+
+        if (string.IsNullOrEmpty(name))
+        {
+            newChatError = "Group name is required.";
+            return;
+        }
+
+        var validEmails = groupMemberEmails
+            .Select(e => e.Trim())
+            .Where(e => !string.IsNullOrEmpty(e) && e.Contains('@'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var chatId = Guid.NewGuid().ToString();
+
+        var chat = new Chat
+        {
+            ChatId = chatId,
+            Type = ChatType.Group,
+            Name = name,
+            AccountId = activeAccountId,
+            CreatedAt = DateTimeOffset.UtcNow,
+            LastActivityAt = DateTimeOffset.UtcNow
+        };
+        DbContext.Chats.Add(chat);
+
+        var group = new ChatGroup
+        {
+            GroupId = chatId,
+            Name = name,
+            Version = 1,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        DbContext.Groups.Add(group);
+
+        // Add current user as admin
+        if (!string.IsNullOrEmpty(UserContext.UserEmail))
+        {
+            DbContext.GroupMembers.Add(new GroupMember
+            {
+                GroupId = chatId,
+                MemberEmail = UserContext.UserEmail,
+                Role = GroupRole.Admin,
+                AddedAt = DateTimeOffset.UtcNow
+            });
+        }
+
+        // Add members
+        foreach (var email in validEmails)
+        {
+            if (email.Equals(UserContext.UserEmail, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            DbContext.GroupMembers.Add(new GroupMember
+            {
+                GroupId = chatId,
+                MemberEmail = email,
+                Role = GroupRole.Member,
+                AddedAt = DateTimeOffset.UtcNow,
+                AddedBy = UserContext.UserEmail
+            });
+
+            // Ensure contact exists
+            if (await DbContext.Contacts.FindAsync(email) == null)
+            {
+                DbContext.Contacts.Add(new Contact
+                {
+                    Email = email,
+                    DisplayName = email.Split('@')[0]
+                });
+            }
+        }
+
+        await DbContext.SaveChangesAsync();
+        allContacts = await DbContext.Contacts.OrderBy(c => c.DisplayName).ToListAsync();
+        await LoadChatsAsync();
+
+        CloseNewChat();
+        if (PlatformService.IsDesktop)
+            await SelectChat(chatId);
+        else
+            Navigation.NavigateTo($"/chat/{chatId}");
+    }
+
+    // ── Desktop chat selection ──────────────────────────
+
+    private async Task SelectChat(string chatId)
+    {
+        selectedChatId = chatId;
+        selectedChat = chats?.FirstOrDefault(c => c.ChatId == chatId);
+        showChatInfo = false;
+        messages = null;
+        messageText = string.Empty;
+        replyingToMessage = null;
+        editingMessage = null;
+        sendError = string.Empty;
+        await LoadMessagesAsync();
+        await LoadRecipientsAsync();
+        await ClearUnreadAsync(chatId);
+        _ = Task.Run(() => InvokeAsync(() => SendReadReceiptsAsync(chatId)));
+        _scrollToBottom = true;
+    }
+
+    private async Task SendReadReceiptsAsync(string chatId)
+    {
+        if (selectedChat?.Type == ChatType.Group) return; // groups: skip for now
+        var myEmail = UserContext.UserEmail;
+        if (string.IsNullOrEmpty(myEmail)) return;
+
+        // Collect MessageIds of messages we received (not sent by us) in this chat
+        var receivedIds = await DbContext.Messages
+            .AsNoTracking()
+            .Where(m => m.ChatId == chatId && m.Sender != myEmail)
+            .Select(m => new { m.MessageId, m.Sender })
+            .ToListAsync();
+
+        if (receivedIds.Count == 0) return;
+
+        // Send one read receipt per distinct sender
+        var bySender = receivedIds.GroupBy(m => m.Sender);
+        foreach (var grp in bySender)
+        {
+            try
+            {
+                await TransportService.SendMessageAsync(new OutgoingMessage
+                {
+                    MessageId = Guid.NewGuid().ToString(),
+                    Content = "read-notification",  // non-empty body; SMTP rejects empty
+                    Recipients = new List<string> { grp.Key },
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Type = MessageType.ReadReceipt,
+                    ReadOf = grp.Select(m => m.MessageId).ToList(),
+                    Tier = BatchTier.System   // deferred, goes through batch queue
+                });
+            }
+            catch { /* non-fatal */ }
+        }
+    }
+
+    private async Task ClearUnreadAsync(string chatId)
+    {
+        // ExecuteUpdateAsync issues a direct SQL UPDATE, bypassing the EF change tracker.
+        // This is critical: FindAsync returns the tracker-cached entity (UnreadCount=0 from
+        // a previous clear), causing an early return even when the DB has UnreadCount>0
+        // (written by IncomingMessageService via a separate DbContext scope).
+        var affected = await DbContext.Chats
+            .Where(c => c.ChatId == chatId && c.UnreadCount > 0)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.UnreadCount, 0));
+        if (affected == 0) return;
+        var local = chats?.FirstOrDefault(c => c.ChatId == chatId);
+        if (local != null) local.UnreadCount = 0;
+        await UpdateAccountUnreadCountsAsync();
+    }
+
+    private async Task LoadMessagesAsync()
+    {
+        if (selectedChatId == null) return;
+        var list = await DbContext.Messages
+            .AsNoTracking()
+            .Where(m => m.ChatId == selectedChatId)
+            .ToListAsync();
+        messages = list.OrderBy(m => m.DisplayTimestamp).ToList();
+        messagesById = messages.ToDictionary(m => m.MessageId, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task LoadRecipientsAsync()
+    {
+        if (selectedChatId == null || selectedChat == null) return;
+
+        if (selectedChat.Type == ChatType.Group)
+        {
+            recipients = await DbContext.GroupMembers
+                .Where(m => m.GroupId == selectedChatId)
+                .Select(m => m.MemberEmail)
+                .ToListAsync();
+            return;
+        }
+
+        // 1. Try to find from existing messages (most reliable)
+        var myEmail = UserContext.UserEmail;
+        var otherSender = await DbContext.Messages
+            .Where(m => m.ChatId == selectedChatId && m.Sender != myEmail)
+            .Select(m => m.Sender)
+            .FirstOrDefaultAsync();
+
+        if (otherSender != null)
+        {
+            recipients = new List<string> { otherSender };
+            return;
+        }
+
+        // 2. Look up contact by DisplayName or Email matching the chat name
+        var chatName = selectedChat.Name;
+        var contact = await DbContext.Contacts.FirstOrDefaultAsync(c =>
+            c.DisplayName == chatName || c.Email == chatName);
+
+        if (contact != null)
+        {
+            recipients = new List<string> { contact.Email };
+            return;
+        }
+
+        // 3. Chat name looks like an email address
+        if (chatName.Contains('@'))
+        {
+            recipients = new List<string> { chatName };
+            return;
+        }
+
+        recipients = new List<string>();
+    }
+
+    private string sendError = string.Empty;
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(messageText) || selectedChat == null) return;
+
+        var text = messageText.Trim();
+        messageText = string.Empty;
+
+        // ── Edit mode ──────────────────────────────────────────────────
+        if (editingMessage != null)
+        {
+            var editing = editingMessage;
+            editingMessage = null;
+
+            await DbContext.Messages
+                .Where(m => m.MessageId == editing.MessageId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(m => m.Content, text)
+                    .SetProperty(m => m.IsEdited, true)
+                    .SetProperty(m => m.EditVersion, editing.EditVersion + 1));
+
+            await LoadMessagesAsync();
+            _scrollToBottom = true;
+
+            if (recipients != null && recipients.Any())
+            {
+                await TransportService.SendMessageAsync(new OutgoingMessage
+                {
+                    MessageId = Guid.NewGuid().ToString(),
+                    Content = text,
+                    Recipients = recipients,
+                    GroupId = selectedChat.Type == ChatType.Group ? selectedChatId : null,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Type = MessageType.Edit,
+                    EditOf = editing.MessageId,
+                    EditVersion = editing.EditVersion + 1,
+                    Tier = BatchTier.Immediate,
+                    Subject = _subjectTemplate.Replace("{chatName}", selectedChat.Name)
+                });
+            }
+            return;
+        }
+
+        // ── Regular / reply mode ────────────────────────────────────────
+        if (recipients == null || !recipients.Any())
+        {
+            sendError = "Cannot determine recipient. Try re-opening this chat.";
+            return;
+        }
+        sendError = string.Empty;
+
+        var msgId = Guid.NewGuid().ToString();
+        var now = DateTimeOffset.UtcNow;
+        var replyTo = replyingToMessage;
+        replyingToMessage = null;
+
+        DbContext.Messages.Add(new ChatMessage
+        {
+            MessageId = msgId,
+            ChatId = selectedChatId!,
+            Sender = UserContext.UserEmail,
+            Content = text,
+            Timestamp = now,
+            DisplayTimestamp = now,
+            ReceivedAt = now,
+            InReplyTo = replyTo?.MessageId,
+            Status = MessageStatus.Sending
+        });
+        var trackedChat = await DbContext.Chats.FindAsync(selectedChatId);
+        if (trackedChat != null) trackedChat.LastActivityAt = now;
+        await DbContext.SaveChangesAsync();
+        if (selectedChat != null) selectedChat.LastActivityAt = now;
+        await LoadMessagesAsync();
+        _scrollToBottom = true;
+
+        await TransportService.SendMessageAsync(new OutgoingMessage
+        {
+            MessageId = msgId,
+            Content = text,
+            Recipients = recipients,
+            GroupId = selectedChat.Type == ChatType.Group ? selectedChatId : null,
+            Timestamp = now,
+            InReplyTo = replyTo?.MessageId,
+            Tier = BatchTier.Immediate,
+            Subject = _subjectTemplate.Replace("{chatName}", selectedChat.Name)
+        });
+
+        // Mark as Sent once SMTP confirmed
+        await DbContext.Messages
+            .Where(m => m.MessageId == msgId)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.Status, MessageStatus.Sent));
+        await LoadMessagesAsync();
+    }
+
+    // ── Reply / Edit / Delete actions ────────────────────────────────────
+
+    private void StartReply(ChatMessage msg)
+    {
+        editingMessage = null;
+        replyingToMessage = msg;
+    }
+
+    private void StartEdit(ChatMessage msg)
+    {
+        replyingToMessage = null;
+        editingMessage = msg;
+        messageText = msg.Content;
+    }
+
+    private void CancelReply() => replyingToMessage = null;
+    private void CancelEdit() { editingMessage = null; messageText = string.Empty; }
+
+    private async Task DeleteMessageForMe(ChatMessage msg)
+    {
+        await DbContext.Messages
+            .Where(m => m.MessageId == msg.MessageId)
+            .ExecuteDeleteAsync();
+        await LoadMessagesAsync();
+    }
+
+    private async Task DeleteMessageForAll(ChatMessage msg)
+    {
+        await DbContext.Messages
+            .Where(m => m.MessageId == msg.MessageId)
+            .ExecuteDeleteAsync();
+        await LoadMessagesAsync();
+
+        if (recipients != null && recipients.Any())
+        {
+            await TransportService.SendMessageAsync(new OutgoingMessage
+            {
+                MessageId = Guid.NewGuid().ToString(),
+                Content = string.Empty,
+                Recipients = recipients,
+                GroupId = selectedChat?.Type == ChatType.Group ? selectedChatId : null,
+                Timestamp = DateTimeOffset.UtcNow,
+                Type = MessageType.Delete,
+                DeleteOf = msg.MessageId,
+                Tier = BatchTier.Immediate
+            });
+        }
+    }
+
+    private void StartForward(ChatMessage msg)
+    {
+        var otherChats = chats?.Where(c => c.ChatId != selectedChatId).ToList();
+        if (otherChats == null || otherChats.Count == 0) return;
+        forwardingMessage = msg;
+        showForwardDialog = true;
+    }
+
+    private async Task ForwardToChat(Chat targetChat)
+    {
+        showForwardDialog = false;
+        if (forwardingMessage == null) return;
+
+        var msg = forwardingMessage;
+        forwardingMessage = null;
+
+        var targetRecipients = await GetRecipientsForChatAsync(targetChat);
+        if (targetRecipients.Count == 0) return;
+
+        var msgId = Guid.NewGuid().ToString();
+        var now = DateTimeOffset.UtcNow;
+
+        DbContext.Messages.Add(new ChatMessage
+        {
+            MessageId = msgId,
+            ChatId = targetChat.ChatId,
+            Sender = UserContext.UserEmail,
+            Content = msg.Content,
+            Timestamp = now,
+            DisplayTimestamp = now,
+            ReceivedAt = now
+        });
+        var trackedChat = await DbContext.Chats.FindAsync(targetChat.ChatId);
+        if (trackedChat != null) trackedChat.LastActivityAt = now;
+        await DbContext.SaveChangesAsync();
+
+        await TransportService.SendMessageAsync(new OutgoingMessage
+        {
+            MessageId = msgId,
+            Content = msg.Content,
+            Recipients = targetRecipients,
+            GroupId = targetChat.Type == ChatType.Group ? targetChat.ChatId : null,
+            Timestamp = now,
+            Tier = BatchTier.Immediate
+        });
+
+        if (selectedChatId == targetChat.ChatId)
+        {
+            await LoadMessagesAsync();
+            _scrollToBottom = true;
+        }
+        await LoadChatsAsync();
+    }
+
+    private async Task<List<string>> GetRecipientsForChatAsync(Chat chat)
+    {
+        if (chat.Type == ChatType.Group)
+        {
+            return await DbContext.GroupMembers
+                .Where(m => m.GroupId == chat.ChatId)
+                .Select(m => m.MemberEmail)
+                .ToListAsync();
+        }
+
+        var myEmail = UserContext.UserEmail;
+        var otherSender = await DbContext.Messages
+            .Where(m => m.ChatId == chat.ChatId && m.Sender != myEmail)
+            .Select(m => m.Sender)
+            .FirstOrDefaultAsync();
+        if (otherSender != null) return new List<string> { otherSender };
+
+        var contact = await DbContext.Contacts.FirstOrDefaultAsync(c =>
+            c.DisplayName == chat.Name || c.Email == chat.Name);
+        if (contact != null) return new List<string> { contact.Email };
+
+        if (chat.Name.Contains('@')) return new List<string> { chat.Name };
+
+        return new List<string>();
+    }
+
+    private async Task ScrollToMessage(string messageId)
+    {
+        // Scroll the messages container to the element with this ID
+        try
+        {
+            await JS.InvokeVoidAsync("eval",
+                $"var el=document.getElementById('msg-{messageId}');" +
+                "if(el)el.scrollIntoView({behavior:'smooth',block:'center'});");
+        }
+        catch { }
+    }
+
+    private bool IsOwnMessage(ChatMessage message) => message.Sender == UserContext.UserEmail;
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+            await SendMessage();
+    }
+
+    private void ShowChatInfo() => showChatInfo = true;
+
+    private string FormatTime(DateTimeOffset? time)
+    {
+        if (!time.HasValue) return "";
+        var now = DateTimeOffset.Now;
+        var diff = now - time.Value;
+        var local = time.Value.ToLocalTime();
+        if (diff.TotalMinutes < 1) return "now";
+        if (diff.TotalHours < 1) return $"{(int)diff.TotalMinutes}m";
+        if (diff.TotalDays < 1) return local.ToString("HH:mm");
+        if (diff.TotalDays < 7) return local.ToString("ddd");
+        return local.ToString("MMM d");
+    }
+}

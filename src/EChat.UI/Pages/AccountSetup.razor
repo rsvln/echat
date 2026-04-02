@@ -1,0 +1,292 @@
+@page "/setup"
+@using EChat.Core.Data
+@using EChat.Core.Models
+@using EChat.Core.Transport
+@using EChat.UI.Services
+@using Microsoft.EntityFrameworkCore
+@inject ChatDbContext DbContext
+@inject NavigationManager Navigation
+@inject UserContextService UserContext
+@inject EmailTransportService TransportService
+@inject IAppPreferences Prefs
+@inject EChat.Core.Crypto.PgpService PgpService
+
+<div class="setup-page">
+    <div class="setup-card">
+
+        @if (hasExistingAccounts)
+        {
+            <button class="back-btn" style="align-self:flex-start;color:var(--text-secondary);margin-bottom:8px;"
+                    @onclick="@(() => Navigation.NavigateTo("/chats"))">← Back</button>
+        }
+
+        <div class="setup-logo">ε</div>
+        <h1 class="setup-title">εChat</h1>
+        <p class="setup-subtitle">Secure Email Messenger</p>
+
+        @if (errorMessage != null)
+        {
+            <div class="setup-error">@errorMessage</div>
+        }
+
+        <div class="setup-form">
+            <div class="setup-field">
+                <label>Display name</label>
+                <input type="text"
+                       placeholder="Your name"
+                       @bind="displayName" />
+            </div>
+
+            <div class="setup-field">
+                <label>Email address</label>
+                <input type="email"
+                       placeholder="you@example.com"
+                       @bind="email"
+                       @bind:event="oninput"
+                       @onblur="AutoDetectServers" />
+            </div>
+
+            <div class="setup-field">
+                <label>Password</label>
+                <input type="password"
+                       placeholder="Email account password"
+                       @bind="password" />
+            </div>
+
+            <div class="setup-advanced-toggle" @onclick="ToggleAdvanced">
+                <span>@(showAdvanced ? "▾" : "▸") Advanced settings</span>
+                @if (serversDetected)
+                {
+                    <span class="detected-badge">auto-detected</span>
+                }
+            </div>
+
+            @if (showAdvanced)
+            {
+                <div class="setup-advanced">
+                    <p class="advanced-section-label">IMAP (incoming)</p>
+                    <div class="setup-field-row">
+                        <div class="setup-field grow">
+                            <label>Server</label>
+                            <input type="text" placeholder="imap.example.com" @bind="imapServer" />
+                        </div>
+                        <div class="setup-field narrow">
+                            <label>Port</label>
+                            <input type="number" @bind="imapPort" />
+                        </div>
+                    </div>
+                    <div class="setup-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" @bind="imapUseSsl" /> Use SSL/TLS
+                        </label>
+                    </div>
+
+                    <p class="advanced-section-label">SMTP (outgoing)</p>
+                    <div class="setup-field-row">
+                        <div class="setup-field grow">
+                            <label>Server</label>
+                            <input type="text" placeholder="smtp.example.com" @bind="smtpServer" />
+                        </div>
+                        <div class="setup-field narrow">
+                            <label>Port</label>
+                            <input type="number" @bind="smtpPort" />
+                        </div>
+                    </div>
+                    <div class="setup-field">
+                        <label class="checkbox-label">
+                            <input type="checkbox" @bind="smtpUseSsl" /> Use SSL/TLS
+                        </label>
+                    </div>
+                </div>
+            }
+
+            <button class="setup-btn-primary"
+                    @onclick="CreateProfile"
+                    disabled="@(isSaving || !CanCreate)">
+                @(isSaving ? "Creating..." : "Create Profile")
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private string displayName = string.Empty;
+    private string email = string.Empty;
+    private string password = string.Empty;
+    private string imapServer = string.Empty;
+    private int imapPort = 993;
+    private bool imapUseSsl = true;
+    private string smtpServer = string.Empty;
+    private int smtpPort = 587;
+    private bool smtpUseSsl = true;
+    private bool showAdvanced = false;
+    private bool serversDetected = false;
+    private bool isSaving = false;
+    private bool hasExistingAccounts = false;
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        hasExistingAccounts = await DbContext.Accounts.AnyAsync();
+    }
+
+    private bool CanCreate =>
+        !string.IsNullOrWhiteSpace(email) &&
+        !string.IsNullOrWhiteSpace(password) &&
+        !string.IsNullOrWhiteSpace(imapServer) &&
+        !string.IsNullOrWhiteSpace(smtpServer);
+
+    private static readonly Dictionary<string, (string imap, int imapPort, string smtp, int smtpPort)> KnownProviders = new()
+    {
+        ["gmail.com"]       = ("imap.gmail.com",              993, "smtp.gmail.com",              587),
+        ["googlemail.com"]  = ("imap.gmail.com",              993, "smtp.gmail.com",              587),
+        ["outlook.com"]     = ("outlook.office365.com",       993, "smtp.office365.com",          587),
+        ["hotmail.com"]     = ("outlook.office365.com",       993, "smtp.office365.com",          587),
+        ["live.com"]        = ("outlook.office365.com",       993, "smtp.office365.com",          587),
+        ["yahoo.com"]       = ("imap.mail.yahoo.com",         993, "smtp.mail.yahoo.com",         587),
+        ["mail.ru"]         = ("imap.mail.ru",                993, "smtp.mail.ru",                465),
+        ["yandex.ru"]       = ("imap.yandex.ru",              993, "smtp.yandex.ru",              465),
+        ["yandex.com"]      = ("imap.yandex.ru",              993, "smtp.yandex.ru",              465),
+        ["icloud.com"]      = ("imap.mail.me.com",            993, "smtp.mail.me.com",            587),
+        ["me.com"]          = ("imap.mail.me.com",            993, "smtp.mail.me.com",            587),
+    };
+
+    private void AutoDetectServers()
+    {
+        serversDetected = false;
+        var atIndex = email.IndexOf('@');
+        if (atIndex < 0) return;
+
+        var domain = email[(atIndex + 1)..].Trim().ToLowerInvariant();
+        if (!KnownProviders.TryGetValue(domain, out var cfg)) return;
+
+        imapServer = cfg.imap;
+        imapPort = cfg.imapPort;
+        smtpServer = cfg.smtp;
+        smtpPort = cfg.smtpPort;
+        serversDetected = true;
+
+        if (!showAdvanced)
+            showAdvanced = false; // keep closed, badge shows it worked
+    }
+
+    private void ToggleAdvanced() => showAdvanced = !showAdvanced;
+
+    // Mid-tone saturated palette — readable on both dark and light backgrounds
+    private static readonly string[] AvatarPalette =
+    [
+        "#E53935", "#D81B60", "#8E24AA", "#5E35B1", "#3949AB",
+        "#1E88E5", "#039BE5", "#00ACC1", "#00897B", "#43A047",
+        "#7CB342", "#F4511E", "#FB8C00", "#F59300", "#6D4C41",
+    ];
+
+    private static string PickAvatarColor(string seed, ICollection<string> usedColors)
+    {
+        // Prefer a color not yet used by any existing account
+        var unused = AvatarPalette.Except(usedColors).ToArray();
+        var pool = unused.Length > 0 ? unused : AvatarPalette;
+
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(seed));
+        return pool[hash[0] % pool.Length];
+    }
+
+    private static string GenerateInviteToken(string accountId)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(accountId));
+        // Crockford base32 — exactly 32 unambiguous chars (no I/L/O/U)
+        const string chars = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        ulong n = BitConverter.ToUInt64(hash, 0);
+        var result = new char[10];
+        for (int i = 9; i >= 0; i--)
+        {
+            result[i] = chars[(int)(n % 32)];
+            n /= 32;
+        }
+        return $"{new string(result, 0, 5)}-{new string(result, 5, 5)}";
+    }
+
+    private async Task CreateProfile()
+    {
+        errorMessage = null;
+
+        var trimmedEmail = email.Trim();
+        var exists = await DbContext.Accounts.AnyAsync(a => a.Email == trimmedEmail);
+        if (exists)
+        {
+            errorMessage = "An account with this email already exists.";
+            return;
+        }
+
+        isSaving = true;
+
+        // Deactivate any current active account
+        var activeAccounts = await DbContext.Accounts.Where(a => a.IsActive).ToListAsync();
+        foreach (var a in activeAccounts)
+            a.IsActive = false;
+
+        var accountId = Guid.NewGuid().ToString();
+        var usedColors = await DbContext.Accounts
+            .Where(a => a.AvatarColor != null)
+            .Select(a => a.AvatarColor!)
+            .ToListAsync();
+        // Generate PGP key pair for this account
+        string? publicKey = null;
+        string? privateKey = null;
+        string? keyFingerprint = null;
+        try
+        {
+            var (pub, priv) = PgpService.GenerateKeyPair(trimmedEmail, password);
+            publicKey = pub;
+            privateKey = priv;
+            keyFingerprint = PgpService.GetFingerprint(pub);
+        }
+        catch (Exception ex)
+        {
+            // Key generation failure is non-fatal — account works without encryption
+        }
+
+        var account = new Account
+        {
+            AccountId      = accountId,
+            AvatarColor    = PickAvatarColor(accountId, usedColors),
+            DisplayName    = string.IsNullOrWhiteSpace(displayName) ? trimmedEmail : displayName.Trim(),
+            Email          = trimmedEmail,
+            Password       = password,
+            ImapServer     = imapServer.Trim(),
+            ImapPort       = imapPort,
+            ImapUseSsl     = imapUseSsl,
+            SmtpServer     = smtpServer.Trim(),
+            SmtpPort       = smtpPort,
+            SmtpUseSsl     = smtpUseSsl,
+            IsActive       = true,
+            CreatedAt      = DateTimeOffset.UtcNow,
+            InviteToken    = GenerateInviteToken(accountId),
+            PublicKey      = publicKey,
+            PrivateKey     = privateKey,
+            KeyFingerprint = keyFingerprint
+        };
+
+        DbContext.Accounts.Add(account);
+        await DbContext.SaveChangesAsync();
+
+        // Persist to Preferences so transport services pick it up on next cold start
+        Prefs.Set("user_email", account.Email);
+        Prefs.Set("active_account_id", account.AccountId);
+
+        // Update context for the current session
+        var deviceId = Prefs.Get("device_id", string.Empty);
+        UserContext.Initialize(account.AccountId, account.Email, deviceId);
+
+        // Hot-connect transport with new account credentials (fire-and-forget, non-fatal)
+        _ = Task.Run(async () =>
+        {
+            try { await TransportService.ReconnectAsync(account, deviceId); }
+            catch { /* connection errors are non-fatal; user can retry via Account Settings */ }
+        });
+
+        isSaving = false;
+        Navigation.NavigateTo("/chats", replace: true);
+    }
+}

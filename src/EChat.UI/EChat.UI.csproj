@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<RootNamespace>EChat.UI</RootNamespace>
+		<AddRazorSupportForMvc>true</AddRazorSupportForMvc>
+		<DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>
+		<DebugSymbols Condition="'$(Configuration)'=='Release'">false</DebugSymbols>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<SupportedPlatform Include="browser" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="10.0.0" />
+		<PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="2.0.3" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\EChat.Core\EChat.Core.csproj" />
+	</ItemGroup>
+
+</Project>

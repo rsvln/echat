@@ -1,0 +1,181 @@
+@page "/chat/{ChatId}"
+@using EChat.Core.Models
+@using EChat.Core.Data
+@using EChat.Core.Protocol
+@using EChat.Core.Transport
+@using EChat.UI.Services
+@using EChat.UI.Components
+@using Microsoft.EntityFrameworkCore
+@inject ChatDbContext DbContext
+@inject EmailTransportService TransportService
+@inject UserContextService UserContext
+@inject NavigationManager Navigation
+@inject ChatEventService ChatEvents
+@implements IDisposable
+
+<div class="chat-view-container">
+    <div class="chat-header">
+        <button class="back-btn" @onclick="GoBack">←</button>
+        <h2>@chat?.Name</h2>
+        <button class="info-btn" @onclick="ShowChatInfo">ℹ️</button>
+    </div>
+    
+    <div class="messages-container" @ref="messagesContainer">
+        @if (messages == null)
+        {
+            <p class="loading">Loading messages...</p>
+        }
+        else
+        {
+            @foreach (var message in messages)
+            {
+                <MessageBubble Message="@message" IsOwn="@IsOwnMessage(message)" />
+            }
+        }
+    </div>
+    
+    <div class="message-input">
+        <textarea placeholder="Type a message..." 
+                  @bind="messageText" 
+                  @bind:event="oninput"
+                  @onkeydown="OnKeyDown"
+                  rows="1"></textarea>
+        <button class="send-btn" @onclick="SendMessage" disabled="@(string.IsNullOrWhiteSpace(messageText))">
+            Send
+        </button>
+    </div>
+    
+    <ChatInfoModal IsVisible="@showChatInfo" 
+                   ChatId="@ChatId" 
+                   OnClose="@(() => showChatInfo = false)" />
+</div>
+
+@code {
+    [Parameter]
+    public string ChatId { get; set; } = string.Empty;
+    
+    private Chat? chat;
+    private List<ChatMessage>? messages;
+    private List<string>? recipients;
+    private string messageText = string.Empty;
+    private ElementReference messagesContainer;
+    private bool showChatInfo = false;
+    
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadChatAsync();
+        await LoadMessagesAsync();
+        await LoadRecipientsAsync();
+        ChatEvents.ChatUpdated += OnChatUpdated;
+    }
+
+    public void Dispose()
+    {
+        ChatEvents.ChatUpdated -= OnChatUpdated;
+    }
+
+    private void OnChatUpdated(string chatId)
+    {
+        if (chatId != ChatId) return;
+        InvokeAsync(async () =>
+        {
+            await LoadMessagesAsync();
+            StateHasChanged();
+        });
+    }
+    
+    private async Task LoadChatAsync()
+    {
+        chat = await DbContext.Chats.FindAsync(ChatId);
+    }
+    
+    private async Task LoadMessagesAsync()
+    {
+        var list = await DbContext.Messages
+            .Where(m => m.ChatId == ChatId)
+            .ToListAsync();
+        messages = list.OrderBy(m => m.DisplayTimestamp).ToList();
+    }
+    
+    private async Task LoadRecipientsAsync()
+    {
+        if (chat?.Type == ChatType.Group)
+        {
+            recipients = await DbContext.GroupMembers
+                .Where(m => m.GroupId == ChatId)
+                .Select(m => m.MemberEmail)
+                .ToListAsync();
+        }
+        else
+        {
+            var allMessages = await DbContext.Messages
+                .Where(m => m.ChatId == ChatId && m.Sender != UserContext.UserEmail)
+                .ToListAsync();
+            var lastMessage = allMessages.OrderByDescending(m => m.Timestamp).FirstOrDefault();
+            
+            recipients = lastMessage != null 
+                ? new List<string> { lastMessage.Sender }
+                : new List<string>();
+        }
+    }
+    
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(messageText) || chat == null || recipients == null || !recipients.Any())
+            return;
+
+        var msgId = Guid.NewGuid().ToString();
+        var now = DateTimeOffset.UtcNow;
+        var text = messageText.Trim();
+        messageText = string.Empty;
+
+        DbContext.Messages.Add(new ChatMessage
+        {
+            MessageId = msgId,
+            ChatId = ChatId,
+            Sender = UserContext.UserEmail,
+            Content = text,
+            Timestamp = now,
+            DisplayTimestamp = now,
+            ReceivedAt = now
+        });
+        chat.LastActivityAt = now;
+        await DbContext.SaveChangesAsync();
+        await LoadMessagesAsync();
+
+        var outgoing = new OutgoingMessage
+        {
+            MessageId = msgId,
+            Content = text,
+            Recipients = recipients,
+            GroupId = chat.Type == ChatType.Group ? ChatId : null,
+            Timestamp = now,
+            Tier = BatchTier.Immediate
+        };
+
+        await TransportService.SendMessageAsync(outgoing);
+    }
+    
+    private bool IsOwnMessage(ChatMessage message)
+    {
+        return message.Sender == UserContext.UserEmail;
+    }
+    
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            await SendMessage();
+        }
+    }
+    
+    private void GoBack()
+    {
+        Navigation.NavigateTo("/chats");
+    }
+    
+    private void ShowChatInfo()
+    {
+        showChatInfo = true;
+    }
+}

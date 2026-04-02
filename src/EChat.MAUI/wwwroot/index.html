@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>εChat</title>
+    <base href="/" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link href="css/app.css" rel="stylesheet" />
+</head>
+<body>
+    <div id="app">Loading...</div>
+    <script src="_framework/blazor.webview.js"></script>
+    <script>
+        window.getSelectedText = () => window.getSelection()?.toString() ?? '';
+        window.copyToClipboard = (text) => navigator.clipboard.writeText(text);
+    </script>
+</body>
+</html>

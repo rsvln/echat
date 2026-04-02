@@ -1,0 +1,229 @@
+@using EChat.Core.Models
+@using static EChat.Core.Models.MessageStatus
+@inject IJSRuntime JS
+
+<div class="message-bubble-wrap @(IsOwn ? "own" : "other")"
+     id="msg-@Message.MessageId"
+     style="position:relative;display:flex;flex-direction:column;align-items:@(IsOwn ? "flex-end" : "flex-start");margin-bottom:2px;"
+     @oncontextmenu="ShowContextMenu"
+     @oncontextmenu:preventDefault="true">
+
+    @* ── Main bubble ─────────────────────────────────────────────────── *@
+    <div class="message-bubble @(IsOwn ? "own" : "other")">
+        @if (!IsOwn)
+        {
+            <div class="message-sender">@(SenderDisplayName ?? Message.Sender)</div>
+        }
+
+        @* ── Quoted / replied-to message (inside bubble, like Telegram) ── *@
+        @if (QuotedMessage != null)
+        {
+            <div style="display:flex;flex-direction:row;align-items:stretch;
+                        border-radius:2px;margin-bottom:6px;cursor:pointer;overflow:hidden;
+                        background:@(IsOwn ? "rgba(0,0,0,0.08)" : "rgba(91,166,66,0.12)");"
+                 @onclick="@(() => OnScrollToQuoted.InvokeAsync(QuotedMessage.MessageId))"
+                 @onclick:stopPropagation="true">
+                <div style="width:3px;flex-shrink:0;background:#5BA642;border-radius:3px 0 0 3px;"></div>
+                <div style="padding:5px 8px;overflow:hidden;min-width:0;">
+                    <div style="font-size:12px;font-weight:700;color:#5BA642;
+                                white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:1px;">
+                        @(QuotedSenderName ?? QuotedMessage.Sender.Split('@')[0])
+                    </div>
+                    <div style="font-size:12px;opacity:0.7;white-space:nowrap;
+                                overflow:hidden;text-overflow:ellipsis;">
+                        @(QuotedMessage.Content.Length > 100 ? QuotedMessage.Content[..100] + "…" : QuotedMessage.Content)
+                    </div>
+                </div>
+            </div>
+        }
+
+        <div class="message-content" style="white-space:pre-wrap;word-break:break-word;">@Message.Content</div>
+        <div class="message-footer">
+            @if (Message.IsEdited)
+            {
+                <span style="font-size:10px;color:#999;">edited</span>
+            }
+            <span class="message-time">@FormatTime(Message.DisplayTimestamp)</span>
+            @if (Message.ClockSkewDetected)
+            {
+                <span title="Clock skew detected">⏰</span>
+            }
+            @if (Message.Encrypted)
+            {
+                <span>🔒</span>
+            }
+            @if (IsOwn)
+            {
+                @switch (Message.Status)
+                {
+                    case MessageStatus.Sending:
+                        <span title="Sending…" style="font-size:13px;opacity:0.5;line-height:1;">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                                <circle cx="12" cy="12" r="9"/>
+                                <polyline points="12 7 12 12 15 14"/>
+                            </svg>
+                        </span>
+                        break;
+                    case MessageStatus.Sent:
+                        <span title="Sent" style="font-size:13px;opacity:0.55;line-height:1;">
+                            <svg width="15" height="11" viewBox="0 0 15 11" fill="none"
+                                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="1.5 5.5 5.5 9.5 13.5 1.5"/>
+                            </svg>
+                        </span>
+                        break;
+                    case MessageStatus.Read:
+                        <span title="Read" style="font-size:13px;color:#4FC3F7;line-height:1;">
+                            <svg width="19" height="11" viewBox="0 0 19 11" fill="none"
+                                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="1.5 5.5 5.5 9.5 13.5 1.5"/>
+                                <polyline points="6 5.5 10 9.5 18 1.5"/>
+                            </svg>
+                        </span>
+                        break;
+                }
+            }
+        </div>
+    </div>
+</div>
+
+@* ── Context menu ─────────────────────────────────────────────────── *@
+@if (_showMenu)
+{
+    <div style="position:fixed;inset:0;z-index:999;" @onclick="CloseMenu" @onclick:stopPropagation="true"></div>
+    <div style="position:fixed;left:@(_menuX)px;top:@(_menuY)px;
+                background:#fff;border:1px solid #e8e8e8;border-radius:2px;padding:4px 0;
+                z-index:1000;box-shadow:0 8px 24px rgba(0,0,0,.15);min-width:210px;">
+        @if (!string.IsNullOrEmpty(_selectedText))
+        {
+            <div class="ctx-item" @onclick="ReplyWithQuoteClicked" @onclick:stopPropagation="true">
+                <span class="ctx-icon">↩</span> Reply with quote
+            </div>
+        }
+        <div class="ctx-item" @onclick="ReplyClicked" @onclick:stopPropagation="true">
+            <span class="ctx-icon">↩</span> Reply
+        </div>
+        <div class="ctx-item" @onclick="CopyClicked" @onclick:stopPropagation="true">
+            <span class="ctx-icon">⎘</span> Copy text
+        </div>
+        <div class="ctx-item" @onclick="ForwardClicked" @onclick:stopPropagation="true">
+            <span class="ctx-icon">↪</span> Forward
+        </div>
+        @if (IsOwn)
+        {
+            <div class="ctx-item" @onclick="EditClicked" @onclick:stopPropagation="true">
+                <span class="ctx-icon">✏</span> Edit
+            </div>
+        }
+        <div style="border-top:1px solid #f0f0f0;margin:4px 0;"></div>
+        <div class="ctx-item ctx-danger" @onclick="DeleteForMeClicked" @onclick:stopPropagation="true">
+            <span class="ctx-icon">🗑</span> Delete for me
+        </div>
+        @if (IsOwn)
+        {
+            <div class="ctx-item ctx-danger" @onclick="DeleteForAllClicked" @onclick:stopPropagation="true">
+                <span class="ctx-icon">🗑</span> Delete for everyone
+            </div>
+        }
+    </div>
+}
+
+<style>
+    .ctx-item {
+        padding: 9px 16px;
+        cursor: pointer;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #222;
+        user-select: none;
+        white-space: nowrap;
+    }
+    .ctx-item:hover { background: #f5f5f5; }
+    .ctx-icon { font-size: 16px; width: 20px; text-align: center; }
+    .ctx-danger { color: #e53935; }
+    .ctx-danger .ctx-icon { color: #e53935; }
+</style>
+
+@code {
+    [Parameter] public ChatMessage Message { get; set; } = null!;
+    [Parameter] public bool IsOwn { get; set; }
+    [Parameter] public string? SenderDisplayName { get; set; }
+    [Parameter] public ChatMessage? QuotedMessage { get; set; }
+    [Parameter] public string? QuotedSenderName { get; set; }
+    [Parameter] public EventCallback<ChatMessage> OnReply { get; set; }
+    [Parameter] public EventCallback<ChatMessage> OnEdit { get; set; }
+    [Parameter] public EventCallback<ChatMessage> OnDeleteForMe { get; set; }
+    [Parameter] public EventCallback<ChatMessage> OnDeleteForAll { get; set; }
+    [Parameter] public EventCallback<ChatMessage> OnForward { get; set; }
+    [Parameter] public EventCallback<string> OnScrollToQuoted { get; set; }
+
+    private bool _showMenu;
+    private double _menuX, _menuY;
+    private string _selectedText = "";
+
+    private async Task ShowContextMenu(MouseEventArgs e)
+    {
+        _selectedText = await JS.InvokeAsync<string>("getSelectedText");
+        _menuX = e.ClientX;
+        _menuY = e.ClientY;
+        _showMenu = true;
+    }
+
+    private void CloseMenu() => _showMenu = false;
+
+    private async Task ReplyClicked()
+    {
+        _showMenu = false;
+        await OnReply.InvokeAsync(Message);
+    }
+
+    private async Task ReplyWithQuoteClicked()
+    {
+        _showMenu = false;
+        await OnReply.InvokeAsync(Message);
+    }
+
+    private async Task CopyClicked()
+    {
+        _showMenu = false;
+        var text = string.IsNullOrEmpty(_selectedText) ? Message.Content : _selectedText;
+        await JS.InvokeVoidAsync("copyToClipboard", text);
+    }
+
+    private async Task EditClicked()
+    {
+        _showMenu = false;
+        await OnEdit.InvokeAsync(Message);
+    }
+
+    private async Task DeleteForMeClicked()
+    {
+        _showMenu = false;
+        await OnDeleteForMe.InvokeAsync(Message);
+    }
+
+    private async Task DeleteForAllClicked()
+    {
+        _showMenu = false;
+        await OnDeleteForAll.InvokeAsync(Message);
+    }
+
+    private async Task ForwardClicked()
+    {
+        _showMenu = false;
+        await OnForward.InvokeAsync(Message);
+    }
+
+    private string FormatTime(DateTimeOffset timestamp)
+    {
+        var local = timestamp.ToLocalTime();
+        var now = DateTimeOffset.Now;
+        var diff = now - timestamp;
+        if (diff.TotalDays < 1) return local.ToString("HH:mm");
+        if (diff.TotalDays < 7) return local.ToString("ddd HH:mm");
+        return local.ToString("MMM d, HH:mm");
+    }
+}

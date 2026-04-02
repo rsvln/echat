@@ -1,0 +1,243 @@
+@page "/account-settings/{AccountId}"
+@using EChat.Core.Data
+@using EChat.Core.Models
+@using EChat.Core.Transport
+@using EChat.UI.Services
+@using Microsoft.EntityFrameworkCore
+@inject ChatDbContext DbContext
+@inject NavigationManager Navigation
+@inject EmailTransportService TransportService
+@inject UserContextService UserContext
+@inject IAppPreferences Prefs
+
+<div class="settings-page">
+    <div class="settings-page-header">
+        <button class="back-btn" @onclick="GoBack">←</button>
+        <h1>Account Settings</h1>
+    </div>
+
+    <div class="settings-body">
+        @if (account == null)
+        {
+            <p style="padding:20px;color:var(--text-secondary)">Loading...</p>
+        }
+        else
+        {
+            <div class="settings-section">
+                <h2>Profile</h2>
+                <div class="settings-field">
+                    <label>Display name</label>
+                    <input type="text" @bind="account.DisplayName" />
+                </div>
+                <div class="settings-field">
+                    <label>Email</label>
+                    <input type="email" @bind="account.Email" />
+                </div>
+                <div class="settings-field">
+                    <label>Password</label>
+                    <input type="password" @bind="account.Password" />
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h2>IMAP (Incoming mail)</h2>
+                <div class="settings-field-row">
+                    <div class="settings-field grow">
+                        <label>Server</label>
+                        <input type="text" @bind="account.ImapServer" />
+                    </div>
+                    <div class="settings-field narrow">
+                        <label>Port</label>
+                        <input type="number" @bind="account.ImapPort" />
+                    </div>
+                </div>
+                <div class="settings-field">
+                    <div class="settings-checkbox">
+                        <input type="checkbox" id="imapSsl" @bind="account.ImapUseSsl" />
+                        <label for="imapSsl">Use SSL/TLS</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h2>SMTP (Outgoing mail)</h2>
+                <div class="settings-field-row">
+                    <div class="settings-field grow">
+                        <label>Server</label>
+                        <input type="text" @bind="account.SmtpServer" />
+                    </div>
+                    <div class="settings-field narrow">
+                        <label>Port</label>
+                        <input type="number" @bind="account.SmtpPort" />
+                    </div>
+                </div>
+                <div class="settings-field">
+                    <div class="settings-checkbox">
+                        <input type="checkbox" id="smtpSsl" @bind="account.SmtpUseSsl" />
+                        <label for="smtpSsl">Use SSL/TLS</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h2>Sync</h2>
+                <div class="settings-field">
+                    <label>Sync mode</label>
+                    <select @bind="syncProfile">
+                        <option value="@SyncProfile.Realtime">Realtime</option>
+                        <option value="@SyncProfile.Balanced">Balanced (Recommended)</option>
+                        <option value="@SyncProfile.PowerSaver">Power Saver</option>
+                        <option value="@SyncProfile.Manual">Manual</option>
+                        <option value="@SyncProfile.Custom">Custom</option>
+                    </select>
+                </div>
+                <div class="settings-field">
+                    <div class="settings-checkbox">
+                        <input type="checkbox" id="cellular" @bind="allowCellularSync" />
+                        <label for="cellular">Sync on cellular</label>
+                    </div>
+                </div>
+                <div class="settings-field">
+                    <div class="settings-checkbox">
+                        <input type="checkbox" id="metered" @bind="syncOnMetered" />
+                        <label for="metered">Sync on metered connections</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h2>Quiet Hours</h2>
+                <div class="time-inputs">
+                    <div class="time-input-group">
+                        <label>Start</label>
+                        <input type="time" @bind="quietHoursStart" />
+                    </div>
+                    <div class="time-input-group">
+                        <label>End</label>
+                        <input type="time" @bind="quietHoursEnd" />
+                    </div>
+                </div>
+                <div class="settings-field" style="margin-top:12px">
+                    <label>Quiet hours mode</label>
+                    <select @bind="quietHoursProfile">
+                        <option value="@SyncProfile.PowerSaver">Power Saver</option>
+                        <option value="@SyncProfile.Manual">Manual</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h2>Email Folders</h2>
+                <div class="settings-field">
+                    <label>Chat folder name</label>
+                    <input type="text" @bind="chatFolderName" />
+                </div>
+                <div class="settings-field">
+                    <label>Subject template</label>
+                    <input type="text" @bind="subjectTemplate" placeholder="[εChat] {chatName}" />
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <button class="btn btn-primary" @onclick="SaveSettings">Save</button>
+            </div>
+
+            <div class="settings-section settings-danger">
+                <h2>Danger Zone</h2>
+                <button class="btn btn-danger" @onclick="DeleteAccount">Remove Account</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string AccountId { get; set; } = string.Empty;
+
+    private Account? account;
+
+    private SyncProfile syncProfile = SyncProfile.Balanced;
+    private bool allowCellularSync = true;
+    private bool syncOnMetered = false;
+    private TimeOnly quietHoursStart = new(22, 0);
+    private TimeOnly quietHoursEnd = new(8, 0);
+    private SyncProfile quietHoursProfile = SyncProfile.PowerSaver;
+    private string chatFolderName = "EpsilonChat";
+    private string subjectTemplate = "[εChat] {chatName}";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        account = await DbContext.Accounts.FindAsync(AccountId);
+        await LoadSyncSettingsAsync();
+    }
+
+    private async Task LoadSyncSettingsAsync()
+    {
+        var prefix = $"acct_{AccountId}_";
+        var settings = await DbContext.Settings
+            .Where(s => s.Key.StartsWith(prefix))
+            .ToListAsync();
+        var dict = settings.ToDictionary(s => s.Key[prefix.Length..], s => s.Value);
+
+        if (dict.TryGetValue("sync_profile", out var sp)) syncProfile = Enum.Parse<SyncProfile>(sp);
+        if (dict.TryGetValue("allow_cellular", out var ac)) allowCellularSync = bool.Parse(ac);
+        if (dict.TryGetValue("sync_metered", out var sm)) syncOnMetered = bool.Parse(sm);
+        if (dict.TryGetValue("quiet_start", out var qs)) quietHoursStart = TimeOnly.Parse(qs);
+        if (dict.TryGetValue("quiet_end", out var qe)) quietHoursEnd = TimeOnly.Parse(qe);
+        if (dict.TryGetValue("quiet_profile", out var qp)) quietHoursProfile = Enum.Parse<SyncProfile>(qp);
+        if (dict.TryGetValue("folder_name", out var fn)) chatFolderName = fn;
+        if (dict.TryGetValue("subject_template", out var st)) subjectTemplate = st;
+    }
+
+    private async Task SaveSettings()
+    {
+        if (account == null) return;
+        await DbContext.SaveChangesAsync(); // saves account (email, password, servers)
+
+        // Update UserContextService
+        var deviceId = Prefs.Get("device_id", string.Empty);
+        UserContext.Initialize(account.AccountId, account.Email, deviceId);
+        Prefs.Set("user_email", account.Email);
+
+        // Hot-reconnect transport with updated credentials
+        _ = Task.Run(async () =>
+        {
+            try { await TransportService.ReconnectAsync(account, deviceId); }
+            catch { /* non-fatal; user will see connection errors when sending */ }
+        });
+
+        var prefix = $"acct_{AccountId}_";
+        await UpsertSettingAsync(prefix + "sync_profile", syncProfile.ToString());
+        await UpsertSettingAsync(prefix + "allow_cellular", allowCellularSync.ToString());
+        await UpsertSettingAsync(prefix + "sync_metered", syncOnMetered.ToString());
+        await UpsertSettingAsync(prefix + "quiet_start", quietHoursStart.ToString("HH:mm"));
+        await UpsertSettingAsync(prefix + "quiet_end", quietHoursEnd.ToString("HH:mm"));
+        await UpsertSettingAsync(prefix + "quiet_profile", quietHoursProfile.ToString());
+        await UpsertSettingAsync(prefix + "folder_name", chatFolderName);
+        await UpsertSettingAsync(prefix + "subject_template", subjectTemplate);
+        await DbContext.SaveChangesAsync();
+
+        GoBack();
+    }
+
+    private async Task UpsertSettingAsync(string key, string value)
+    {
+        var setting = await DbContext.Settings.FindAsync(key);
+        if (setting == null)
+            DbContext.Settings.Add(new Setting { Key = key, Value = value, UpdatedAt = DateTimeOffset.UtcNow });
+        else
+        {
+            setting.Value = value;
+            setting.UpdatedAt = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private async Task DeleteAccount()
+    {
+        if (account == null) return;
+        DbContext.Accounts.Remove(account);
+        await DbContext.SaveChangesAsync();
+        Navigation.NavigateTo("/", replace: true);
+    }
+
+    private void GoBack() => Navigation.NavigateTo("/chats");
+}

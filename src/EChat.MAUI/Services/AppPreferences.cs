@@ -1,12 +1,3 @@
-using EChat.UI.Services;
-
+// AppPreferences has been replaced by EChat.Core.Services.DbAppPreferences.
+// This file is kept as a placeholder so the project structure is preserved.
 namespace EChat.Maui.Services;
-
-public class AppPreferences : IAppPreferences
-{
-    public string Get(string key, string defaultValue) =>
-        Microsoft.Maui.Storage.Preferences.Get(key, defaultValue);
-
-    public void Set(string key, string value) =>
-        Microsoft.Maui.Storage.Preferences.Set(key, value);
-}

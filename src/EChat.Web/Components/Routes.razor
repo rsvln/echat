@@ -1,0 +1,11 @@
+@using Microsoft.AspNetCore.Components.Routing
+@using EChat.UI.Pages
+
+<Router AppAssembly="typeof(EChat.UI.Pages.Index).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" />
+    </Found>
+    <NotFound>
+        <p>Page not found</p>
+    </NotFound>
+</Router>

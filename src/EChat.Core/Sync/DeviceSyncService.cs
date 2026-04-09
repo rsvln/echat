@@ -82,7 +82,9 @@ public class DeviceSyncService
             Recipients = new List<string> { _accountConfig.Email },
             Tier = BatchTier.LowPriority,
             Timestamp = payload.Timestamp,
-            Type = MessageType.Regular
+            Type = MessageType.Regular,
+            SyncType = payload.SyncType,
+            SyncDeviceId = payload.DeviceId
         };
         
         await _transportService.SendMessageAsync(message);

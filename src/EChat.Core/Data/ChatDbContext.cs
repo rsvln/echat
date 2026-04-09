@@ -13,6 +13,9 @@ public class ChatDbContext : DbContext
     public DbSet<GroupOperation> GroupOperations => Set<GroupOperation>();
     public DbSet<Setting> Settings => Set<Setting>();
     public DbSet<Account> Accounts => Set<Account>();
+    public DbSet<GroupKeyPair> GroupKeyPairs => Set<GroupKeyPair>();
+    public DbSet<Attachment> Attachments => Set<Attachment>();
+    public DbSet<MessageReaction> MessageReactions => Set<MessageReaction>();
     
     public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options)
     {
@@ -42,6 +45,7 @@ public class ChatDbContext : DbContext
             entity.HasIndex(e => e.LastActivityAt);
             entity.HasIndex(e => new { e.Archived, e.LastActivityAt });
             entity.HasIndex(e => e.AccountId);
+            entity.HasIndex(e => new { e.AccountId, e.PartnerEmail });
         });
 
         // Account
@@ -91,6 +95,28 @@ public class ChatDbContext : DbContext
         modelBuilder.Entity<Setting>(entity =>
         {
             entity.HasKey(e => e.Key);
+        });
+
+        // GroupKeyPair
+        modelBuilder.Entity<GroupKeyPair>(entity =>
+        {
+            entity.HasKey(e => e.GroupId);
+            entity.HasIndex(e => e.Fingerprint);
+        });
+
+        // Attachment
+        modelBuilder.Entity<Attachment>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.MessageId);
+        });
+
+        // MessageReaction
+        modelBuilder.Entity<MessageReaction>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.MessageId);
+            entity.HasIndex(e => new { e.MessageId, e.Emoji, e.Sender });
         });
     }
 }

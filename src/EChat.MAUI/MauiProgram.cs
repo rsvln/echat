@@ -9,6 +9,16 @@ public static class MauiProgram
 {
     public static MauiApp CreateMauiApp()
     {
+#if WINDOWS
+        // WebView2 по умолчанию пишет данные рядом с exe-шником.
+        // Если приложение установлено в Program Files — нет прав.
+        // Явно перенаправляем в %LocalAppData%\echat\WebView2.
+        Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER",
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "echat", "WebView2"));
+#endif
+
         var builder = MauiApp.CreateBuilder();
 
         builder
@@ -20,12 +30,26 @@ public static class MauiProgram
 
         builder.Services.AddMauiBlazorWebView();
 
-//#if DEBUG
-//        builder.Services.AddBlazorWebViewDeveloperTools();
-//        builder.Logging.SetMinimumLevel(LogLevel.Debug);
-//#endif
+#if DEBUG
+        builder.Services.AddBlazorWebViewDeveloperTools();
+        builder.Logging.SetMinimumLevel(LogLevel.Debug);
+#endif
 
+
+#if WINDOWS
+        // Windows: %LocalAppData%\echat\db
+        var dbDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "echat", "db");
+#elif ANDROID
+        // Android: use external storage so user can access via file manager
+        // /storage/emulated/0/Android/data/com.echat.app/files/db
+        var externalDir = Android.App.Application.Context.GetExternalFilesDir(null);
+        var dbDir = Path.Combine(externalDir!.AbsolutePath, "db");
+#else
+        // iOS: app-private storage
         var dbDir = Path.Combine(FileSystem.AppDataDirectory, "db");
+#endif
         Directory.CreateDirectory(dbDir);
         var dbPath = Path.Combine(dbDir, "echat.db");
         var deviceId = Preferences.Get("device_id", Guid.NewGuid().ToString());
@@ -33,11 +57,7 @@ public static class MauiProgram
 
         builder.Services.AddEChatCore(dbPath, deviceId);
         builder.Services.AddSingleton<UserContextService>();
-        builder.Services.AddSingleton<ChatEventService>();
         builder.Services.AddSingleton<IPlatformService, PlatformService>();
-        builder.Services.AddSingleton<IAppPreferences, AppPreferences>();
-        builder.Services.AddSingleton<IncomingMessageService>();
-        builder.Services.AddSingleton<MultiAccountImapManager>();
 
         return builder.Build();
     }

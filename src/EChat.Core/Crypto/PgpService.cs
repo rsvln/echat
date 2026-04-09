@@ -42,13 +42,32 @@ public class PgpService
 
     public async Task<string> EncryptAsync(string plainText, string publicKeyBase64)
     {
-        if (string.IsNullOrWhiteSpace(publicKeyBase64))
-            throw new ArgumentException("Public key is empty", nameof(publicKeyBase64));
+        return await EncryptAsync(plainText, new[] { publicKeyBase64 });
+    }
 
-        var publicKeyBytes = Convert.FromBase64String(publicKeyBase64);
-        using var publicKeyStream = new MemoryStream(publicKeyBytes);
+    public async Task<string> EncryptAsync(string plainText, IEnumerable<string> publicKeyBase64s)
+    {
+        var keys = publicKeyBase64s.Where(k => !string.IsNullOrWhiteSpace(k)).ToList();
+        if (keys.Count == 0)
+            throw new ArgumentException("No public keys provided", nameof(publicKeyBase64s));
 
-        var encryptionKeys = new EncryptionKeys(publicKeyStream);
+        var streams = new List<MemoryStream>();
+        foreach (var k in keys)
+        {
+            try
+            {
+                streams.Add(new MemoryStream(Convert.FromBase64String(k)));
+            }
+            catch (FormatException ex)
+            {
+                _logger.LogWarning(ex, "Invalid base64 in public key, skipping (length={Len})", k.Length);
+            }
+        }
+
+        if (streams.Count == 0)
+            throw new ArgumentException("No valid public keys after filtering", nameof(publicKeyBase64s));
+
+        var encryptionKeys = new EncryptionKeys(streams);
         using var pgp = new PGP(encryptionKeys);
 
         using var inputStream = new MemoryStream(Encoding.UTF8.GetBytes(plainText));
@@ -60,8 +79,32 @@ public class PgpService
 
     public async Task<string> DecryptAsync(string encryptedBase64, string privateKeyBase64, string password)
     {
-        var encryptedBytes = Convert.FromBase64String(encryptedBase64);
-        var privateKeyBytes = Convert.FromBase64String(privateKeyBase64);
+        if (string.IsNullOrWhiteSpace(encryptedBase64))
+            throw new ArgumentException("Encrypted content is empty", nameof(encryptedBase64));
+        if (string.IsNullOrWhiteSpace(privateKeyBase64))
+            throw new ArgumentException("Private key is empty", nameof(privateKeyBase64));
+
+        byte[] encryptedBytes;
+        try
+        {
+            encryptedBytes = Convert.FromBase64String(encryptedBase64);
+        }
+        catch (FormatException ex)
+        {
+            _logger.LogWarning(ex, "Invalid base64 in encrypted content (length={Len})", encryptedBase64.Length);
+            throw;
+        }
+
+        byte[] privateKeyBytes;
+        try
+        {
+            privateKeyBytes = Convert.FromBase64String(privateKeyBase64);
+        }
+        catch (FormatException ex)
+        {
+            _logger.LogWarning(ex, "Invalid base64 in private key (length={Len})", privateKeyBase64.Length);
+            throw;
+        }
 
         using var inputStream = new MemoryStream(encryptedBytes);
         using var privateKeyStream = new MemoryStream(privateKeyBytes);
@@ -76,7 +119,20 @@ public class PgpService
 
     public string GetFingerprint(string publicKeyBase64)
     {
-        var publicKeyBytes = Convert.FromBase64String(publicKeyBase64);
+        if (string.IsNullOrWhiteSpace(publicKeyBase64))
+            throw new ArgumentException("Public key is empty", nameof(publicKeyBase64));
+
+        byte[] publicKeyBytes;
+        try
+        {
+            publicKeyBytes = Convert.FromBase64String(publicKeyBase64);
+        }
+        catch (FormatException ex)
+        {
+            _logger.LogWarning(ex, "Invalid base64 in public key for fingerprint (length={Len})", publicKeyBase64.Length);
+            throw;
+        }
+
         using var publicKeyStream = new MemoryStream(publicKeyBytes);
 
         var encryptionKeys = new EncryptionKeys(publicKeyStream);

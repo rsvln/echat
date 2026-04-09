@@ -7,7 +7,22 @@
 @code {
     protected override async Task OnInitializedAsync()
     {
-        var hasAccount = await DbContext.Accounts.AnyAsync();
-        Navigation.NavigateTo(hasAccount ? "/chats" : "/setup", replace: true);
+        // On fresh install DB migrations run in a background Task — wait up to 5 s for the table to appear
+        for (int i = 0; i < 50; i++)
+        {
+            try
+            {
+                var hasAccount = await DbContext.Accounts.AnyAsync();
+                Navigation.NavigateTo(hasAccount ? "/chats" : "/setup", replace: true);
+                return;
+            }
+            catch (Exception)
+            {
+                if (i < 49)
+                    await Task.Delay(100);
+            }
+        }
+        // Fallback after 5 s: assume no accounts yet
+        Navigation.NavigateTo("/setup", replace: true);
     }
 }

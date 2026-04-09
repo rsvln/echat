@@ -1,0 +1,70 @@
+@using static Microsoft.AspNetCore.Components.Web.RenderMode
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>εChat</title>
+    <base href="/" />
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/app.css" />
+</head>
+
+<body>
+    <Routes @rendermode="InteractiveServer" />
+    <script src="_framework/blazor.web.js"></script>
+    <script>
+        window.getSelectedText = function () { return window.getSelection()?.toString() ?? ''; };
+        window.copyToClipboard = function (text) { return navigator.clipboard.writeText(text); };
+        window.getChatScrollTop = function () {
+            var el = document.querySelector('.messages-container');
+            return el ? el.scrollTop : 0;
+        };
+        window.setChatScrollTop = function (pos) {
+            requestAnimationFrame(function () {
+                var el = document.querySelector('.messages-container');
+                if (el) el.scrollTop = pos;
+            });
+        };
+        window.scrollChatToBottom = function () {
+            requestAnimationFrame(function () {
+                var el = document.querySelector('.messages-container');
+                if (el) el.scrollTop = el.scrollHeight;
+            });
+        };
+        window.isChatAtBottom = function () {
+            var el = document.querySelector('.messages-container');
+            if (!el) return true;
+            return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        };
+        window.resetTextareaHeight = function () {
+            var el = document.querySelector('.message-input');
+            if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
+        };
+        window.handleMessageInputKey = function (event, sendOnEnter) {
+            if (event.key === 'Enter') {
+                if (event.shiftKey || (!sendOnEnter && !event.ctrlKey) || (sendOnEnter && event.ctrlKey)) {
+                    return null;
+                }
+                event.preventDefault();
+                var textarea = document.querySelector('.message-input textarea');
+                var text = textarea ? textarea.value : '';
+                if (textarea) { textarea.value = ''; textarea.style.height = 'auto'; }
+                return text;
+            }
+            return null;
+        };
+        window.downloadBytes = function (filename, bytes) {
+            var blob = new Blob([new Uint8Array(bytes)], { type: 'application/zip' });
+            var url  = URL.createObjectURL(blob);
+            var a    = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click();
+            document.body.removeChild(a);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        };
+    </script>
+</body>
+
+</html>

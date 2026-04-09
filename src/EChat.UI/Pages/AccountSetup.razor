@@ -4,12 +4,16 @@
 @using EChat.Core.Transport
 @using EChat.UI.Services
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Forms
 @inject ChatDbContext DbContext
 @inject NavigationManager Navigation
 @inject UserContextService UserContext
 @inject EmailTransportService TransportService
 @inject IAppPreferences Prefs
 @inject EChat.Core.Crypto.PgpService PgpService
+@inject EChat.Core.Services.BackupService BackupSvc
+@inject IPlatformService Platform
+@inject IJSRuntime JS
 
 <div class="setup-page">
     <div class="setup-card">
@@ -105,6 +109,40 @@
                     disabled="@(isSaving || !CanCreate)">
                 @(isSaving ? "Creating..." : "Create Profile")
             </button>
+
+            @if (!hasExistingAccounts)
+            {
+            <div class="setup-divider">
+                <span>or</span>
+            </div>
+
+            @if (importError != null)
+            {
+                <div class="setup-error">
+                    @importError
+                    <button class="setup-error-close" @onclick="@(() => importError = null)">✕</button>
+                </div>
+            }
+
+            @if (Platform.SupportsMauiFilePicker)
+            {
+                <button class="setup-btn-secondary"
+                        @onclick="ImportBackupMauiAsync"
+                        disabled="@(isSaving || importBusy)">
+                    @(importBusy ? "Importing…" : "Restore from Backup")
+                </button>
+            }
+            else
+            {
+                <label class="setup-btn-secondary" style="cursor:pointer; text-align:center;">
+                    @(importBusy ? "Importing…" : "Restore from Backup")
+                    <InputFile OnChange="ImportBackupWebAsync"
+                               accept=".zip"
+                               style="display:none;"
+                               disabled="@(isSaving || importBusy)" />
+                </label>
+            }
+            } @* end !hasExistingAccounts *@
         </div>
     </div>
 </div>
@@ -124,6 +162,10 @@
     private bool isSaving = false;
     private bool hasExistingAccounts = false;
     private string? errorMessage;
+
+    // ── Import backup ────────────────────────────────────────────────────────
+    private bool importBusy = false;
+    private string? importError;
 
     protected override async Task OnInitializedAsync()
     {
@@ -205,6 +247,46 @@
             n /= 32;
         }
         return $"{new string(result, 0, 5)}-{new string(result, 5, 5)}";
+    }
+
+    private async Task ImportBackupMauiAsync()
+    {
+        importBusy = true; importError = null;
+        StateHasChanged();
+        try
+        {
+            using var stream = await Platform.PickFileAsync();
+            if (stream == null) return;
+            await RestoreAndRestartAsync(stream);
+        }
+        catch (Exception ex) { importError = $"Import failed: {ex.Message}"; }
+        finally { importBusy = false; StateHasChanged(); }
+    }
+
+    private async Task ImportBackupWebAsync(InputFileChangeEventArgs e)
+    {
+        importBusy = true; importError = null;
+        StateHasChanged();
+        try
+        {
+            await using var stream = e.File.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024);
+            await RestoreAndRestartAsync(stream);
+        }
+        catch (Exception ex) { importError = $"Import failed: {ex.Message}"; }
+        finally { importBusy = false; StateHasChanged(); }
+    }
+
+    private async Task RestoreAndRestartAsync(Stream stream)
+    {
+        if (!EChat.Core.Services.BackupService.IsValidBackup(stream))
+            throw new InvalidDataException("File is not a valid EChat backup.");
+
+        await BackupSvc.RestoreBackupAsync(stream);
+
+        if (Platform.SupportsMauiFilePicker)
+            Platform.RestartApp();
+        else
+            Navigation.NavigateTo("/", forceLoad: true);
     }
 
     private async Task CreateProfile()

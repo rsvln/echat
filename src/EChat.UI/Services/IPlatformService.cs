@@ -3,4 +3,25 @@ namespace EChat.UI.Services;
 public interface IPlatformService
 {
     bool IsDesktop { get; }
+
+    /// <summary>
+    /// true на MAUI (FileSaver + FilePicker доступны).
+    /// false на Web (экспорт через JS download, импорт через &lt;InputFile&gt;).
+    /// </summary>
+    bool SupportsMauiFilePicker { get; }
+
+    /// <summary>Сохраняет байты как файл через нативный диалог (MAUI).</summary>
+    Task SaveFileAsync(string filename, byte[] content, CancellationToken ct = default, string? mimeType = null, string? title = null);
+
+    /// <summary>
+    /// Открывает нативный файловый пикер для выбора .zip (MAUI).
+    /// На Web возвращает null — импорт ведётся через &lt;InputFile&gt; в UI.
+    /// </summary>
+    Task<Stream?> PickFileAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Перезапускает приложение (MAUI).
+    /// На Web — no-op; компонент должен вызвать NavigationManager.NavigateTo("/", forceLoad:true).
+    /// </summary>
+    void RestartApp();
 }

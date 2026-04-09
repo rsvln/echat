@@ -1,0 +1,44 @@
+<Project>
+  <PropertyGroup>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <!--
+    Read full version from version.txt at evaluation time (not in a target!)
+    Format: "Major.Minor.Patch" e.g. "0.1.64"
+  -->
+  <PropertyGroup>
+    <EChatVersionFile>$(MSBuildProjectDirectory)\version.txt</EChatVersionFile>
+    <EChatVersionRaw Condition="Exists('$(EChatVersionFile)')">$([System.IO.File]::ReadAllText('$(EChatVersionFile)').Trim())</EChatVersionRaw>
+    <EChatVersion Condition="'$(EChatVersionRaw)' != ''">$(EChatVersionRaw)</EChatVersion>
+    <EChatVersion Condition="'$(EChatVersion)' == ''">0.1.1</EChatVersion>
+
+    <EChatMajor>$([System.Version]::Parse('$(EChatVersion)').Major)</EChatMajor>
+    <EChatMinor>$([System.Version]::Parse('$(EChatVersion)').Minor)</EChatMinor>
+    <EChatPatch>$([System.Version]::Parse('$(EChatVersion)').Build)</EChatPatch>
+
+    <Version>$(EChatVersion)</Version>
+    <PackageVersion>$(EChatVersion)</PackageVersion>
+    <AssemblyVersion>$(EChatMajor).$(EChatMinor).$(EChatPatch).0</AssemblyVersion>
+    <FileVersion>$(EChatMajor).$(EChatMinor).$(EChatPatch).0</FileVersion>
+    <EChatBuildDate>$([System.DateTime]::UtcNow.ToString("yyyy.MM.dd"))</EChatBuildDate>
+    <InformationalVersion>$(EChatVersion)+$(EChatBuildDate)</InformationalVersion>
+  </PropertyGroup>
+
+  <!--
+    Auto-increment version.txt after successful build.
+    Guard with EChatVersionIncremented to prevent double-run on MAUI multi-targeting.
+  -->
+  <Target Name="IncrementEChatVersion" AfterTargets="Build"
+          Condition="'$(EChatVersionIncremented)' != 'true'">
+    <PropertyGroup>
+      <EChatNextPatch>$([MSBuild]::Add('$(EChatPatch)', '1'))</EChatNextPatch>
+      <EChatNextVersion>$(EChatMajor).$(EChatMinor).$(EChatNextPatch)</EChatNextVersion>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(EChatVersionFile)" Lines="$(EChatNextVersion)" Overwrite="true" />
+    <PropertyGroup>
+      <EChatVersionIncremented>true</EChatVersionIncremented>
+    </PropertyGroup>
+    <Message Text="$(MSBuildProjectName): version $(EChatVersion) -> $(EChatNextVersion)" Importance="high" />
+  </Target>
+</Project>

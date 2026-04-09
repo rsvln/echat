@@ -3,131 +3,522 @@
 @using EChat.Core.Data
 @using EChat.Core.Protocol
 @using EChat.Core.Transport
+@using EChat.Core.Sync
 @using EChat.UI.Services
 @using EChat.UI.Components
+@using Microsoft.AspNetCore.Components.Forms
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.DependencyInjection
+@inject IServiceScopeFactory ScopeFactory
 @inject ChatDbContext DbContext
+@inject NavigationManager Navigation
 @inject EmailTransportService TransportService
 @inject UserContextService UserContext
-@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject IAppPreferences Prefs
 @inject ChatEventService ChatEvents
+@inject EChat.Core.Services.FileLogger FileLogger
 @implements IDisposable
 
-<div class="chat-view-container">
-    <div class="chat-header">
-        <button class="back-btn" @onclick="GoBack">←</button>
-        <h2>@chat?.Name</h2>
-        <button class="info-btn" @onclick="ShowChatInfo">ℹ️</button>
-    </div>
-    
-    <div class="messages-container" @ref="messagesContainer">
-        @if (messages == null)
-        {
-            <p class="loading">Loading messages...</p>
-        }
-        else
-        {
-            @foreach (var message in messages)
+<div class="mobile-chat-view">
+    @if (selectedChat != null)
+    {
+        <div class="mobile-chat-header">
+            @if (_selectedMessage != null)
             {
-                <MessageBubble Message="@message" IsOwn="@IsOwnMessage(message)" />
+                <button class="mobile-back-btn" @onclick="ClearSelection">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+                <div style="flex:1"></div>
+                @if (IsOwnMessage(_selectedMessage))
+                {
+                    <button class="mobile-info-btn" @onclick="EditSelected" title="Edit">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
+                }
+                <button class="mobile-info-btn" @onclick="ReplySelected" title="Reply">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+                </button>
+                <button class="mobile-info-btn" @onclick="CopySelected" title="Copy">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                </button>
+                <button class="mobile-info-btn" @onclick="ForwardSelected" title="Forward">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>
+                </button>
+                <button class="mobile-info-btn" @onclick="DeleteSelected" title="Delete" style="color:#e53935;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                </button>
             }
+            else
+            {
+                <button class="mobile-back-btn" @onclick="GoBack">←</button>
+                <div class="mobile-chat-header-info" @onclick="ShowChatInfo">
+                    <div class="mobile-chat-name">@selectedChat.Name</div>
+                </div>
+                <button class="mobile-info-btn" @onclick="ShowChatInfo" title="Chat info">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                </button>
+            }
+        </div>
+
+        <div class="mobile-messages-container" @ref="messagesContainer" @onclick="ClearSelection">
+            @if (messages != null && messages.Count > 0)
+            {
+                @foreach (var message in messages)
+                {
+                    var quotedMsg = message.InReplyTo != null
+                        ? messagesById.GetValueOrDefault(message.InReplyTo)
+                        : null;
+                    var quotedSender = quotedMsg != null
+                        ? contactNames.GetValueOrDefault(quotedMsg.Sender, quotedMsg.Sender.Split('@')[0])
+                        : null;
+                    _messageAttachments.TryGetValue(message.MessageId, out var atts);
+                    _messageReactions.TryGetValue(message.MessageId, out var reacts);
+                    <MessageBubble Message="@message"
+                                   IsOwn="@IsOwnMessage(message)"
+                                   SenderDisplayName="@(contactNames.GetValueOrDefault(message.Sender, message.Sender.Split('@')[0]))"
+                                   QuotedMessage="@quotedMsg"
+                                   QuotedSenderName="@quotedSender"
+                                   Attachments="@(atts ?? new List<Attachment>())"
+                                   Reactions="@(reacts ?? new List<MessageReaction>())"
+                                   UserEmail="@UserContext.UserEmail"
+                                   OnReply="@StartReply"
+                                   OnEdit="@StartEdit"
+                                   OnDeleteForMe="@DeleteMessageForMe"
+                                   OnDeleteForAll="@DeleteMessageForAll"
+                                   OnForward="@StartForward"
+                                   OnScrollToQuoted="@ScrollToMessage"
+                                   OnReact="@HandleReaction"
+                                   MobileMode="true"
+                                   IsSelected="@(_selectedMessage?.MessageId == message.MessageId)"
+                                   OnSelected="@SelectMessage" />
+                }
+            }
+            else
+            {
+                <div class="empty-state">
+                    <div class="empty-state-icon">💬</div>
+                    <div>No messages yet</div>
+                </div>
+            }
+        </div>
+
+        @if (!string.IsNullOrEmpty(sendError))
+        {
+            <div class="send-error">@sendError</div>
         }
-    </div>
-    
-    <div class="message-input">
-        <textarea placeholder="Type a message..." 
-                  @bind="messageText" 
-                  @bind:event="oninput"
-                  @onkeydown="OnKeyDown"
-                  rows="1"></textarea>
-        <button class="send-btn" @onclick="SendMessage" disabled="@(string.IsNullOrWhiteSpace(messageText))">
-            Send
-        </button>
-    </div>
-    
-    <ChatInfoModal IsVisible="@showChatInfo" 
-                   ChatId="@ChatId" 
-                   OnClose="@(() => showChatInfo = false)" />
+
+        @if (replyingToMessage != null)
+        {
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;
+                        background:rgba(91,166,66,.08);border-top:1px solid rgba(91,166,66,.3);">
+                <div style="flex:1;border-left:3px solid var(--primary,#5BA642);padding-left:8px;font-size:12px;">
+                    <div style="font-weight:600;color:var(--primary,#5BA642);">
+                        @(contactNames.GetValueOrDefault(replyingToMessage.Sender, replyingToMessage.Sender.Split('@')[0]))
+                    </div>
+                    <div style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px;">
+                        @(replyingToMessage.Content.Length > 60 ? replyingToMessage.Content[..60] + "…" : replyingToMessage.Content)
+                    </div>
+                </div>
+                <button style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;"
+                        @onclick="CancelReply">✕</button>
+            </div>
+        }
+
+        @if (editingMessage != null)
+        {
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;
+                        background:rgba(255,193,7,.08);border-top:1px solid rgba(255,193,7,.3);">
+                <div style="flex:1;border-left:3px solid #ffc107;padding-left:8px;font-size:12px;">
+                    <div style="font-weight:600;color:#ffc107;">Editing message</div>
+                    <div style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px;">
+                        @(editingMessage.Content.Length > 60 ? editingMessage.Content[..60] + "…" : editingMessage.Content)
+                    </div>
+                </div>
+                <button style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;"
+                        @onclick="CancelEdit">✕</button>
+            </div>
+        }
+
+        @if (pendingAttachments.Count > 0)
+        {
+            <div class="attachment-previews">
+                @foreach (var att in pendingAttachments)
+                {
+                    <div class="attachment-preview-item">
+                        @if (att.IsImage)
+                        {
+                            <img class="attachment-preview-img" src="@att.DataUrl" alt="@att.FileName" />
+                        }
+                        else
+                        {
+                            <div class="attachment-preview-file">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                <span>@att.FileName</span>
+                            </div>
+                        }
+                        <input class="attachment-caption"
+                               placeholder="Add a caption..."
+                               value="@att.Caption"
+                               @oninput="@(e => att.Caption = e.Value?.ToString() ?? "")" />
+                        <button class="attachment-remove" @onclick="@(() => pendingAttachments.Remove(att))">✕</button>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (_selectedMessage != null)
+        {
+            <div class="mob-reaction-strip" @onclick:stopPropagation>
+                @foreach (var emoji in _quickReactions)
+                {
+                    var msg = _selectedMessage;
+                    var isActive = _messageReactions.TryGetValue(msg.MessageId, out var reacts) && reacts.Any(r => r.Emoji == emoji && r.Sender == UserContext.UserEmail);
+                    <button class="ctx-reaction-btn @(isActive ? "active" : "")"
+                            @onclick="@(async () => { await HandleReaction((emoji, msg)); ClearSelection(); })">@emoji</button>
+                }
+            </div>
+        }
+
+        <div class="message-input-bar">
+            <div class="attach-wrap">
+                <button class="input-btn" @onclick="ShowAttachMenu" @onclick:stopPropagation title="Attach">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+                </button>
+                @if (showAttachMenu)
+                {
+                    <div class="attach-menu-popup" @onclick:stopPropagation>
+                        <button class="attach-option" @onclick="SelectPhoto">
+                            <svg class="attach-svg-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                            <span>Photo</span>
+                        </button>
+                        <button class="attach-option" @onclick="SelectFile">
+                            <svg class="attach-svg-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                            <span>File</span>
+                        </button>
+                    </div>
+                }
+            </div>
+            <textarea class="message-textarea"
+                      id="messageInput"
+                      placeholder="@(editingMessage != null ? "Edit message…" : "Write a message...")"
+                      value="@messageText"
+                      @oninput="OnMessageTextInput"
+                      @onkeydown="OnMessageKeyDown"
+                      @onfocus="ClosePopups"
+                      rows="1"></textarea>
+            <button class="input-btn" @onclick="ToggleEmojiPicker" title="Emoji">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+            </button>
+            <button class="send-btn @(string.IsNullOrWhiteSpace(messageText) && pendingAttachments.Count == 0 ? "send-btn-disabled" : "")"
+                    @onclick="SendMessage"
+                    disabled="@(string.IsNullOrWhiteSpace(messageText) && pendingAttachments.Count == 0)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            </button>
+        </div>
+
+        <InputFile id="photoInput" accept="image/*" multiple style="display:none" OnChange="OnPhotoSelected" />
+        <InputFile id="fileInput" multiple style="display:none" OnChange="OnFileSelected" />
+
+        @if (showEmojiPicker)
+        {
+            <div class="emoji-picker-popup" @onclick:stopPropagation>
+                <div class="emoji-picker-header">
+                    <span>Emoji</span>
+                    <button class="emoji-close" @onclick="() => showEmojiPicker = false">✕</button>
+                </div>
+                <div class="emoji-grid">
+                    @foreach (var emoji in emojiList)
+                    {
+                        <button class="emoji-btn" @onclick="@(() => InsertEmoji(emoji))">@emoji</button>
+                    }
+                </div>
+            </div>
+        }
+
+        @if (showForwardDialog)
+        {
+            <div class="modal-overlay visible" @onclick="() => showForwardDialog = false">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h2>Forward to</h2>
+                        <button class="close-btn" @onclick="() => showForwardDialog = false">✕</button>
+                    </div>
+                    <div class="modal-body">
+                        @foreach (var c in chats?.Where(x => x.ChatId != forwardingMessage?.ChatId).OrderByDescending(x => x.LastActivityAt) ?? Enumerable.Empty<Chat>())
+                        {
+                            <div class="new-chat-contact-item" @onclick="@(() => ForwardToChat(c))">
+                                <div class="chat-avatar @(c.Type == ChatType.Group ? "chat-avatar-group" : "") @(GetAvatarColorClass(c.Name))">
+                                    @c.Name.Substring(0, 1).ToUpper()
+                                </div>
+                                <div class="chat-name">@c.Name</div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        }
+    }
 </div>
 
+<ChatInfoModal IsVisible="@showChatInfo"
+               ChatId="@ChatId"
+               OnClose="@(() => showChatInfo = false)"
+               OnChatArchived="@OnChatArchived"
+               OnChatUnarchived="@OnChatUnarchived"
+               OnChatDeleted="@DeleteChatRemote"
+               OnGroupLeft="@LeaveGroupRemote" />
+
 @code {
-    [Parameter]
-    public string ChatId { get; set; } = string.Empty;
-    
-    private Chat? chat;
+    [Parameter] public string ChatId { get; set; } = string.Empty;
+
+    private Chat? selectedChat;
     private List<ChatMessage>? messages;
     private List<string>? recipients;
     private string messageText = string.Empty;
     private ElementReference messagesContainer;
     private bool showChatInfo = false;
-    
+    private bool _scrollToBottom = false;
+    private bool _wasNearBottom = true;
+    private Dictionary<string, List<Attachment>> _messageAttachments = new();
+    private Dictionary<string, List<MessageReaction>> _messageReactions = new();
+    private List<PendingAttachment> pendingAttachments = new();
+    private Dictionary<string, ChatMessage> messagesById = new(StringComparer.OrdinalIgnoreCase);
+    private ChatMessage? replyingToMessage;
+    private ChatMessage? editingMessage;
+    private ChatMessage? forwardingMessage;
+    private bool showForwardDialog;
+    private bool sendOnEnter = true;
+    private bool showEmojiPicker = false;
+    private bool showAttachMenu = false;
+    private string sendError = string.Empty;
+    private ChatMessage? _selectedMessage;
+    private readonly string[] _quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
+    private List<Chat>? chats;
+    private Dictionary<string, string> contactNames = new(StringComparer.OrdinalIgnoreCase);
+    private List<Contact> allContacts = new();
+
+    private readonly string[] emojiList = new[] {
+        "😀","😃","😄","😁","😅","😂","🤣","😊","😇","🥰","😍","🤩","😘","😗","😚","😙",
+        "🥲","😋","😛","😜","🤪","😝","🤑","🤗","🤭","🤫","🤔","🫡","🤐","🤨","😐","😑",
+        "😶","🫥","😏","😒","🙄","😬","🤥","😌","😔","😪","🤤","😴","😷","🤒","🤕","🤢",
+        "🤮","🥵","🥶","🥴","😵","🤯","🤠","🥳","🥸","😎","🤓","🧐","😕","🫤","😟","🙁",
+        "😮","😯","😲","😳","🥺","🥹","😦","😧","😨","😰","😥","😢","😭","😱","😖","😣",
+        "😞","😓","😩","😫","🥱","😤","😡","😠","🤬","😈","👿","💀","☠️","💩","🤡","👹",
+        "👺","👻","👽","👾","🤖","😺","😸","😹","😻","😼","😽","🙀","😿","😾","🙈","🙉",
+        "🙊","💋","💌","💘","💝","💖","💗","💓","💞","💕","💟","❣️","💔","❤️‍🔥","❤️‍🩹",
+        "❤️","🧡","💛","💚","💙","💜","🤎","🖤","🤍","💯","💢","💥","💫","💦","💨","🕳️",
+        "👍","👎","👊","✊","🤛","🤜","👏","🙌","🫶","👐","🤲","🤝","🙏","✌️","🤞","🫰",
+        "🤟","🤘","👌","🤌","🤏","👈","👉","👆","👇","☝️","✋","🤚","🖐️","🖖","🫱","🫲",
+        "🫳","🫴","👋","🤙","💪","🦾","🖕","✍️","🎉","🎊","🎈","🎁","🎀","🎗️","🏆","🥇",
+        "🥈","🥉","⚽","🏀","🏈","⚾","🥎","🎾","🏐","🏉","🥏","🎱","🪀","🏓","🏸","🏒",
+        "🔥","⭐","🌟","✨","💫","🌈","☀️","🌤️","⛅","🌥️","☁️","🌦️","🌧️","⛈️","🌩️","🌪️",
+        "🌫️","🌬️","🌀","💧","💦","☔","☂️","🌊","🌴","🌵","🌾","🌿","☘️","🍀","🍁","🍂","🍃"
+    };
+
     protected override async Task OnInitializedAsync()
     {
-        await LoadChatAsync();
-        await LoadMessagesAsync();
-        await LoadRecipientsAsync();
+        sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+        allContacts = await db.Contacts.AsNoTracking().OrderBy(c => c.DisplayName).ToListAsync();
+        contactNames = allContacts.ToDictionary(c => c.Email, c => c.DisplayName ?? c.Email.Split('@')[0], StringComparer.OrdinalIgnoreCase);
+        chats = await db.Chats.AsNoTracking().Where(c => !c.Deleted).ToListAsync();
         ChatEvents.ChatUpdated += OnChatUpdated;
+        ChatEvents.AccountSwitched += OnAccountSwitched;
     }
 
     public void Dispose()
     {
         ChatEvents.ChatUpdated -= OnChatUpdated;
+        ChatEvents.AccountSwitched -= OnAccountSwitched;
     }
+
+    private int _loadGeneration; // incremented on each load to cancel stale concurrent loads
 
     private void OnChatUpdated(string chatId)
     {
         if (chatId != ChatId) return;
         InvokeAsync(async () =>
         {
-            await LoadMessagesAsync();
-            StateHasChanged();
+            try
+            {
+                // Check if user is near the bottom before reloading messages
+                _wasNearBottom = await JS.InvokeAsync<bool>("eval",
+                    "var el=document.querySelector('.mobile-messages-container');" +
+                    "el && el.scrollHeight - el.scrollTop - el.clientHeight < 80;");
+                await LoadMessagesAsync();
+                await LoadReactionsAsync();
+                _scrollToBottom = _wasNearBottom;
+                StateHasChanged();
+            }
+            catch { /* don't crash the component on background update */ }
         });
     }
-    
-    private async Task LoadChatAsync()
+
+    protected override async Task OnParametersSetAsync()
     {
-        chat = await DbContext.Chats.FindAsync(ChatId);
+        if (!string.IsNullOrEmpty(ChatId))
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            selectedChat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.ChatId == ChatId);
+            if (selectedChat != null)
+            {
+                await LoadMessagesAsync();
+                await LoadRecipientsAsync();
+                await LoadReactionsAsync();
+                await ClearUnreadAsync(ChatId);
+                _scrollToBottom = true;
+                StateHasChanged();
+            }
+        }
     }
-    
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("setupTextareaResize");
+        }
+        if (_scrollToBottom)
+        {
+            _scrollToBottom = false;
+            try
+            {
+                await Task.Yield();
+                await JS.InvokeVoidAsync("eval",
+                    "var el=document.querySelector('.mobile-messages-container');" +
+                    "if(el)el.scrollTop=el.scrollHeight;");
+            }
+            catch (Exception ex) 
+            { 
+                FileLogger.Write("ERROR", "Scroll", $"Scroll failed: {ex.Message}"); 
+            }
+        }
+    }
+
     private async Task LoadMessagesAsync()
     {
-        var list = await DbContext.Messages
+        if (string.IsNullOrEmpty(ChatId)) return;
+        var gen = ++_loadGeneration;
+
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+        var list = await db.Messages
+            .AsNoTracking()
             .Where(m => m.ChatId == ChatId)
             .ToListAsync();
+
+        if (gen != _loadGeneration) return; // superseded by a newer load
+
         messages = list.OrderBy(m => m.DisplayTimestamp).ToList();
+        messagesById = messages.ToDictionary(m => m.MessageId, StringComparer.OrdinalIgnoreCase);
+
+        var msgIds = messages.Select(m => m.MessageId).ToList();
+        var atts = await db.Attachments
+            .AsNoTracking()
+            .Where(a => msgIds.Contains(a.MessageId))
+            .ToListAsync();
+        _messageAttachments = atts.GroupBy(a => a.MessageId)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
     }
-    
+
     private async Task LoadRecipientsAsync()
     {
-        if (chat?.Type == ChatType.Group)
+        if (selectedChat == null) return;
+        if (selectedChat.Type == ChatType.Group)
         {
-            recipients = await DbContext.GroupMembers
-                .Where(m => m.GroupId == ChatId)
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            recipients = await db.GroupMembers
+                .AsNoTracking()
+                .Where(m => m.GroupId == ChatId && m.MemberEmail != UserContext.UserEmail)
                 .Select(m => m.MemberEmail)
                 .ToListAsync();
         }
         else
         {
-            var allMessages = await DbContext.Messages
-                .Where(m => m.ChatId == ChatId && m.Sender != UserContext.UserEmail)
-                .ToListAsync();
-            var lastMessage = allMessages.OrderByDescending(m => m.Timestamp).FirstOrDefault();
-            
-            recipients = lastMessage != null 
-                ? new List<string> { lastMessage.Sender }
-                : new List<string>();
+            recipients = await GetRecipientsForChatAsync(selectedChat);
         }
     }
-    
+
+    private async Task LoadReactionsAsync()
+    {
+        if (string.IsNullOrEmpty(ChatId)) return;
+        var msgIds = messages?.Select(m => m.MessageId).ToList();
+        if (msgIds == null || msgIds.Count == 0) return;
+
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+        var reacts = await db.MessageReactions
+            .AsNoTracking()
+            .Where(r => msgIds.Contains(r.MessageId))
+            .ToListAsync();
+
+        _messageReactions = reacts.GroupBy(r => r.MessageId)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task ClearUnreadAsync(string chatId)
+    {
+        await DbContext.Messages
+            .Where(m => m.ChatId == chatId && m.Sender != UserContext.UserEmail)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.Status, MessageStatus.Read));
+        await DbContext.Chats
+            .Where(c => c.ChatId == chatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.UnreadCount, 0));
+    }
+
     private async Task SendMessage()
     {
-        if (string.IsNullOrWhiteSpace(messageText) || chat == null || recipients == null || !recipients.Any())
+        if ((string.IsNullOrWhiteSpace(messageText) && pendingAttachments.Count == 0) || selectedChat == null) return;
+        var text = messageText.Trim();
+        messageText = string.Empty;
+
+        if (editingMessage != null)
+        {
+            var editing = editingMessage;
+            editingMessage = null;
+            await DbContext.Messages
+                .Where(m => m.MessageId == editing.MessageId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(m => m.Content, text)
+                    .SetProperty(m => m.IsEdited, true)
+                    .SetProperty(m => m.EditVersion, editing.EditVersion + 1));
+            await LoadMessagesAsync();
+            _scrollToBottom = true;
+            if (recipients != null && recipients.Any())
+            {
+                await TransportService.SendMessageAsync(new OutgoingMessage
+                {
+                    MessageId = Guid.NewGuid().ToString(),
+                    Content = text,
+                    Recipients = recipients,
+                    GroupId = selectedChat.Type == ChatType.Group ? ChatId : null,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Type = MessageType.Edit,
+                    EditOf = editing.MessageId,
+                    EditVersion = editing.EditVersion + 1,
+                    Tier = BatchTier.Immediate,
+                    Subject = "[eChat]"
+                });
+            }
             return;
+        }
+
+        if (recipients == null || !recipients.Any())
+        {
+            sendError = "Cannot determine recipient.";
+            return;
+        }
+        sendError = string.Empty;
 
         var msgId = Guid.NewGuid().ToString();
         var now = DateTimeOffset.UtcNow;
-        var text = messageText.Trim();
-        messageText = string.Empty;
+        var replyTo = replyingToMessage;
+        replyingToMessage = null;
 
         DbContext.Messages.Add(new ChatMessage
         {
@@ -137,45 +528,337 @@
             Content = text,
             Timestamp = now,
             DisplayTimestamp = now,
-            ReceivedAt = now
+            ReceivedAt = now,
+            InReplyTo = replyTo?.MessageId,
+            Status = MessageStatus.Sending
         });
-        chat.LastActivityAt = now;
+
+        var attachmentsToSend = new List<AttachmentInfo>();
+        foreach (var att in pendingAttachments)
+        {
+            var attPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "EChat", "attachments", $"{msgId}_{att.FileName}");
+            Directory.CreateDirectory(Path.GetDirectoryName(attPath)!);
+            await File.WriteAllBytesAsync(attPath, att.Data);
+
+            DbContext.Attachments.Add(new Attachment
+            {
+                Id = Guid.NewGuid().ToString(),
+                MessageId = msgId,
+                FileName = att.FileName,
+                ContentType = att.ContentType,
+                Size = att.Size,
+                FilePath = attPath,
+                Caption = att.Caption,
+                IsImage = att.IsImage
+            });
+
+            attachmentsToSend.Add(new AttachmentInfo
+            {
+                FileName = att.FileName,
+                ContentType = att.ContentType,
+                Size = att.Size,
+                Data = att.Data
+            });
+        }
+        pendingAttachments.Clear();
+
+        var trackedChat = await DbContext.Chats.FindAsync(ChatId);
+        if (trackedChat != null) trackedChat.LastActivityAt = now;
         await DbContext.SaveChangesAsync();
         await LoadMessagesAsync();
+        _scrollToBottom = true;
 
-        var outgoing = new OutgoingMessage
+        await TransportService.SendMessageAsync(new OutgoingMessage
         {
             MessageId = msgId,
             Content = text,
             Recipients = recipients,
-            GroupId = chat.Type == ChatType.Group ? ChatId : null,
+            GroupId = selectedChat.Type == ChatType.Group ? ChatId : null,
             Timestamp = now,
-            Tier = BatchTier.Immediate
-        };
+            InReplyTo = replyTo?.MessageId,
+            Tier = BatchTier.Immediate,
+            Subject = "[eChat]",
+            Attachments = attachmentsToSend.Count > 0 ? attachmentsToSend : null
+        });
 
-        await TransportService.SendMessageAsync(outgoing);
+        await DbContext.Messages
+            .Where(m => m.MessageId == msgId)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.Status, MessageStatus.Sent));
+        await LoadMessagesAsync();
     }
-    
-    private bool IsOwnMessage(ChatMessage message)
+
+    private async Task HandleReaction((string Emoji, ChatMessage Message) data)
     {
-        return message.Sender == UserContext.UserEmail;
+        if (string.IsNullOrEmpty(data.Emoji)) return;
+
+        var existing = _messageReactions
+            .Where(kvp => kvp.Key == data.Message.MessageId)
+            .SelectMany(kvp => kvp.Value)
+            .FirstOrDefault(r => r.Emoji == data.Emoji && r.Sender == UserContext.UserEmail);
+
+        if (existing != null)
+        {
+            DbContext.MessageReactions.Remove(existing);
+        }
+        else
+        {
+            var reaction = new MessageReaction
+            {
+                MessageId = data.Message.MessageId,
+                Emoji = data.Emoji,
+                Sender = UserContext.UserEmail,
+                Timestamp = DateTimeOffset.UtcNow
+            };
+            DbContext.MessageReactions.Add(reaction);
+
+            if (recipients != null && recipients.Any())
+            {
+                await TransportService.SendMessageAsync(new OutgoingMessage
+                {
+                    MessageId = Guid.NewGuid().ToString(),
+                    Content = data.Emoji,
+                    Recipients = recipients,
+                    GroupId = selectedChat?.Type == ChatType.Group ? ChatId : null,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Type = MessageType.Reaction,
+                    Reaction = data.Emoji,
+                    ReactionTo = data.Message.MessageId,
+                    Tier = BatchTier.Immediate
+                });
+            }
+        }
+
+        await DbContext.SaveChangesAsync();
+        await LoadReactionsAsync();
+        StateHasChanged();
     }
-    
-    private async Task OnKeyDown(KeyboardEventArgs e)
+
+    private void StartReply(ChatMessage msg) { editingMessage = null; replyingToMessage = msg; }
+    private void StartEdit(ChatMessage msg) { replyingToMessage = null; editingMessage = msg; messageText = msg.Content; }
+    private void CancelReply() => replyingToMessage = null;
+    private void CancelEdit() { editingMessage = null; messageText = string.Empty; }
+
+    private void SelectMessage(ChatMessage msg) => _selectedMessage = msg;
+    private void ClearSelection() => _selectedMessage = null;
+
+    private void ReplySelected() { if (_selectedMessage != null) { StartReply(_selectedMessage); ClearSelection(); } }
+    private void EditSelected() { if (_selectedMessage != null) { StartEdit(_selectedMessage); ClearSelection(); } }
+    private async Task CopySelected() { if (_selectedMessage != null) { await JS.InvokeVoidAsync("copyToClipboard", _selectedMessage.Content); ClearSelection(); } }
+    private void ForwardSelected() { if (_selectedMessage != null) { StartForward(_selectedMessage); ClearSelection(); } }
+    private async Task DeleteSelected()
+    {
+        if (_selectedMessage == null) return;
+        var msg = _selectedMessage;
+        ClearSelection();
+        if (IsOwnMessage(msg))
+            await DeleteMessageForAll(msg);
+        else
+            await DeleteMessageForMe(msg);
+    }
+
+    private async Task DeleteMessageForMe(ChatMessage msg)
+    {
+        await DbContext.Messages.Where(m => m.MessageId == msg.MessageId).ExecuteDeleteAsync();
+        await LoadMessagesAsync();
+    }
+
+    private async Task DeleteMessageForAll(ChatMessage msg)
+    {
+        await DbContext.Messages.Where(m => m.MessageId == msg.MessageId).ExecuteDeleteAsync();
+        await LoadMessagesAsync();
+        if (recipients != null && recipients.Any())
+        {
+            await TransportService.SendMessageAsync(new OutgoingMessage
+            {
+                MessageId = Guid.NewGuid().ToString(),
+                Content = "",
+                Recipients = recipients,
+                GroupId = selectedChat?.Type == ChatType.Group ? ChatId : null,
+                Timestamp = DateTimeOffset.UtcNow,
+                Type = MessageType.Delete,
+                DeleteOf = msg.MessageId,
+                Tier = BatchTier.Immediate
+            });
+        }
+    }
+
+    private void StartForward(ChatMessage msg) { forwardingMessage = msg; showForwardDialog = true; }
+
+    private async Task ForwardToChat(Chat targetChat)
+    {
+        if (forwardingMessage == null) return;
+        showForwardDialog = false;
+
+        var targetRecipients = await GetRecipientsForChatAsync(targetChat);
+        if (targetRecipients == null || !targetRecipients.Any()) return;
+
+        await TransportService.SendMessageAsync(new OutgoingMessage
+        {
+            MessageId = Guid.NewGuid().ToString(),
+            Content = forwardingMessage.Content,
+            Recipients = targetRecipients,
+            GroupId = targetChat.Type == ChatType.Group ? targetChat.ChatId : null,
+            Timestamp = DateTimeOffset.UtcNow,
+            Tier = BatchTier.Immediate,
+            Subject = "[eChat]"
+        });
+        forwardingMessage = null;
+    }
+
+    private async Task ScrollToMessage(string messageId)
+    {
+        await JS.InvokeVoidAsync("eval",
+            $"var el=document.getElementById('msg-{messageId}');if(el)el.scrollIntoView({{behavior:'smooth',block:'center'}});");
+    }
+
+    private bool IsOwnMessage(ChatMessage m) => m.Sender.Equals(UserContext.UserEmail, StringComparison.OrdinalIgnoreCase);
+
+    private void OnAccountSwitched(string oldAccountId, string newAccountId)
+    {
+        InvokeAsync(async () =>
+        {
+            try
+            {
+                await LoadMessagesAsync();
+                await LoadReactionsAsync();
+                StateHasChanged();
+            }
+            catch { }
+        });
+    }
+
+    private async Task OnMessageTextInput(ChangeEventArgs e)
+    {
+        messageText = e.Value?.ToString() ?? string.Empty;
+        await JS.InvokeVoidAsync("autoResizeTextarea");
+        StateHasChanged();
+    }
+
+    private async Task OnMessageKeyDown(KeyboardEventArgs e)
     {
         if (e.Key == "Enter" && !e.ShiftKey)
         {
-            await SendMessage();
+            bool shouldSend = (sendOnEnter && !e.CtrlKey) || (!sendOnEnter && e.CtrlKey);
+            if (shouldSend)
+            {
+                await JS.InvokeVoidAsync("eval", @"
+                    var t = document.getElementById('messageInput');
+                    if (t) { t.value = ''; t.style.height = 'auto'; }
+                ");
+                await SendMessage();
+            }
         }
     }
-    
-    private void GoBack()
+
+    private void ToggleEmojiPicker() { showEmojiPicker = !showEmojiPicker; showAttachMenu = false; }
+    private void InsertEmoji(string emoji) { messageText += emoji; showEmojiPicker = false; StateHasChanged(); }
+    private void ShowAttachMenu() { showAttachMenu = !showAttachMenu; showEmojiPicker = false; }
+    private void ClosePopups() { showAttachMenu = false; showEmojiPicker = false; StateHasChanged(); }
+
+    private async Task SelectPhoto() { showAttachMenu = false; await JS.InvokeVoidAsync("eval", "document.getElementById('photoInput').click();"); }
+    private async Task SelectFile() { showAttachMenu = false; await JS.InvokeVoidAsync("eval", "document.getElementById('fileInput').click();"); }
+
+    private async Task OnPhotoSelected(InputFileChangeEventArgs e)
     {
-        Navigation.NavigateTo("/chats");
+        foreach (var file in e.GetMultipleFiles())
+        {
+            using var stream = file.OpenReadStream(25 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            pendingAttachments.Add(new PendingAttachment
+            {
+                FileName = file.Name,
+                ContentType = file.ContentType,
+                Size = file.Size,
+                Data = ms.ToArray(),
+                DataUrl = $"data:{file.ContentType};base64,{Convert.ToBase64String(ms.ToArray())}",
+                IsImage = true
+            });
+        }
+        StateHasChanged();
     }
-    
-    private void ShowChatInfo()
+
+    private async Task OnFileSelected(InputFileChangeEventArgs e)
     {
-        showChatInfo = true;
+        foreach (var file in e.GetMultipleFiles())
+        {
+            using var stream = file.OpenReadStream(25 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            pendingAttachments.Add(new PendingAttachment
+            {
+                FileName = file.Name,
+                ContentType = file.ContentType,
+                Size = file.Size,
+                Data = ms.ToArray(),
+                DataUrl = "",
+                IsImage = false
+            });
+        }
+        StateHasChanged();
+    }
+
+    private void ShowChatInfo() => showChatInfo = true;
+    private async Task OnChatArchived() { await LoadChatsAsync(); StateHasChanged(); }
+    private async Task OnChatUnarchived() { await LoadChatsAsync(); StateHasChanged(); }
+
+    private async Task DeleteChatRemote(string chatId)
+    {
+        var chat = await DbContext.Chats.FindAsync(chatId);
+        if (chat == null) return;
+        chat.Deleted = true;
+        await DbContext.SaveChangesAsync();
+        GoBack();
+    }
+
+    private async Task LeaveGroupRemote(string chatId)
+    {
+        var chat = await DbContext.Chats.FindAsync(chatId);
+        if (chat == null) return;
+        chat.Deleted = true;
+        await DbContext.SaveChangesAsync();
+        GoBack();
+    }
+
+    private async Task LoadChatsAsync()
+    {
+        chats = await DbContext.Chats.AsNoTracking().Where(c => !c.Deleted).ToListAsync();
+    }
+
+    private async Task<List<string>> GetRecipientsForChatAsync(Chat chat)
+    {
+        if (chat.Type == ChatType.Group)
+        {
+            return await DbContext.GroupMembers
+                .AsNoTracking()
+                .Where(m => m.GroupId == chat.ChatId && m.MemberEmail != UserContext.UserEmail)
+                .Select(m => m.MemberEmail)
+                .ToListAsync();
+        }
+        var otherName = chat.Name;
+        var contact = allContacts.FirstOrDefault(c => c.DisplayName == otherName || c.Email == otherName);
+        return contact != null ? new List<string> { contact.Email } : new List<string>();
+    }
+
+    private void GoBack() => Navigation.NavigateTo("/chats");
+
+    private string GetAvatarColorClass(string name)
+    {
+        var hash = 0;
+        foreach (var c in name) hash = (hash * 31 + c) % 16;
+        return $"avatar-color-{hash}";
+    }
+
+    private class PendingAttachment
+    {
+        public string FileName { get; set; } = "";
+        public string ContentType { get; set; } = "";
+        public long Size { get; set; }
+        public byte[] Data { get; set; } = Array.Empty<byte>();
+        public string DataUrl { get; set; } = "";
+        public string Caption { get; set; } = "";
+        public bool IsImage { get; set; }
     }
 }

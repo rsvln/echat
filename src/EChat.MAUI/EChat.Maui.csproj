@@ -1,12 +1,15 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
 
 	<PropertyGroup>
-		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">net10.0-windows10.0.19041.0</TargetFrameworks>
+		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">net10.0-android;net10.0-windows10.0.19041.0</TargetFrameworks>
 		<TargetFrameworks Condition="!$([MSBuild]::IsOSPlatform('windows'))">net10.0-android;net10.0-windows10.0.19041.0</TargetFrameworks>
 		<!-- Release: no PDB, only ru+en managed satellite DLLs -->
 		<!-- NOTE: PublishSingleFile does NOT work for MAUI Blazor Hybrid — WinUI3 native DLLs cannot be bundled -->
 		<DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>
 		<DebugSymbols Condition="'$(Configuration)'=='Release'">false</DebugSymbols>
+		<AndroidIncludeDebugSymbols Condition="'$(Configuration)'=='Debug'">true</AndroidIncludeDebugSymbols>
+		<AndroidFastDeployment>false</AndroidFastDeployment>
+		<EmbedAssembliesIntoApk Condition="'$(Configuration)'=='Release'">true</EmbedAssembliesIntoApk>
 		<!-- Limits managed .NET satellite language DLLs (NuGet packages) to en+ru only -->
 		<SatelliteResourceLanguages>en;ru</SatelliteResourceLanguages>
 		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('osx'))">$(TargetFrameworks);net10.0-ios</TargetFrameworks>
@@ -18,7 +21,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<EnableDefaultCssItems>false</EnableDefaultCssItems>
 		<Nullable>enable</Nullable>
-		<MauiXamlInflator>SourceGen</MauiXamlInflator>
+		<NoWarn>CS8600;CS8601;CS8602;CS8603;CS8604;CS0168;CS0219;CA1416;CA1422</NoWarn>
+
 
 		<!-- Display name -->
 		<ApplicationTitle>EChat</ApplicationTitle>
@@ -27,10 +31,10 @@
 		<ApplicationId>com.echat.app</ApplicationId>
 
 		<!-- Versions -->
-		<ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+		<ApplicationDisplayVersion>0.1.1</ApplicationDisplayVersion>
 		<ApplicationVersion>1</ApplicationVersion>
 
-		<WindowsPackageType>None</WindowsPackageType>
+		<WindowsPackageType>MSIX</WindowsPackageType>
 
 		<!-- Android -->
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">24.0</SupportedOSPlatformVersion>
@@ -41,14 +45,22 @@
 
 		<!-- iOS -->
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
+		<GenerateAppInstallerFile>False</GenerateAppInstallerFile>
+		<AppxPackageSigningEnabled>False</AppxPackageSigningEnabled>
+		<AppxPackageSigningTimestampDigestAlgorithm>SHA256</AppxPackageSigningTimestampDigestAlgorithm>
+		<AppxAutoIncrementPackageRevision>True</AppxAutoIncrementPackageRevision>
+		<AppxSymbolPackageEnabled>False</AppxSymbolPackageEnabled>
+		<GenerateTestArtifacts>True</GenerateTestArtifacts>
+		<HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<!-- App Icon -->
-		<MauiIcon Include="Resources\AppIcon\appicon.svg" />
+		<!-- Android adaptive icon: ForegroundFile = foreground layer, Color = background layer -->
+		<MauiIcon Include="Resources\AppIcon\appicon.png" />
 
 		<!-- Splash Screen -->
-		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#2196F3" BaseSize="128,128" />
+		<MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#5b8fd9" BaseSize="128,128" />
 
 		<!-- Images -->
 		<MauiImage Include="Resources\Images\*" />
@@ -72,15 +84,12 @@
 	</ItemGroup>
 
 	<!-- Post-publish cleanup for Release Windows builds -->
-	<Target Name="CleanupPublishOutput"
-	        AfterTargets="Publish"
-	        Condition="'$(Configuration)'=='Release' and $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)'))=='windows'">
+	<Target Name="CleanupPublishOutput" AfterTargets="Publish" Condition="'$(Configuration)'=='Release' and $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)'))=='windows'">
 
 		<!-- Remove all language folders except en-US and ru-RU (Windows App SDK .mui files) -->
 		<ItemGroup>
 			<_LangDirsAll Include="$([System.IO.Directory]::GetDirectories('$(PublishDir)', '*-*', System.IO.SearchOption.TopDirectoryOnly))" />
-			<_LangDirsToDelete Include="@(_LangDirsAll)"
-			                   Condition="!$([System.String]::Copy('%(Filename)').Equals('en-US')) and !$([System.String]::Copy('%(Filename)').Equals('ru-RU')) and !$([System.String]::Copy('%(Filename)').Equals('ru'))" />
+			<_LangDirsToDelete Include="@(_LangDirsAll)" Condition="!$([System.String]::Copy('%(Filename)').Equals('en-US')) and !$([System.String]::Copy('%(Filename)').Equals('ru-RU')) and !$([System.String]::Copy('%(Filename)').Equals('ru'))" />
 		</ItemGroup>
 		<RemoveDir Directories="@(_LangDirsToDelete)" ContinueOnError="true" />
 

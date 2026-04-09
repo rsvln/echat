@@ -6,10 +6,12 @@ public class Chat
     public required ChatType Type { get; set; }
     public required string Name { get; set; }
     public string? AccountId { get; set; }
+    public string? PartnerEmail { get; set; }
     public string? LastMessageId { get; set; }
     public int UnreadCount { get; set; }
     public bool Muted { get; set; }
     public bool Archived { get; set; }
+    public bool Deleted { get; set; }
     public ChatPriority Priority { get; set; } = ChatPriority.Normal;
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? LastActivityAt { get; set; }

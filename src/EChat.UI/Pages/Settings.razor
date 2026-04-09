@@ -1,5 +1,23 @@
 @page "/settings"
+@using EChat.Core.Models
+@using EChat.Core.Services
+@using EChat.Core.Sync
+@using EChat.Core.Data
+@using EChat.UI.Services
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.Extensions.DependencyInjection
 @inject NavigationManager Navigation
+@inject SyncEngine SyncEngine
+@inject SyncWarningService SyncWarnings
+@inject IServiceScopeFactory ScopeFactory
+@inject UserContextService UserContext
+@inject IJSRuntime JS
+@inject IAppPreferences Prefs
+@inject EChat.Core.ServiceCollectionExtensions.DatabasePathInfo DbPathInfo
+@inject EChat.Core.Services.BackupService BackupSvc
+@inject EChat.Core.Services.FileLogger FileLogger
+@inject IPlatformService Platform
 
 <div class="settings-page">
     <div class="settings-page-header">
@@ -8,30 +26,561 @@
     </div>
 
     <div class="settings-body">
+        @if (showSyncWarning)
+        {
+            <div class="setup-error">
+                @syncWarningText
+                <button class="setup-error-close" @onclick="() => showSyncWarning = false">✕</button>
+            </div>
+        }
+
         <div class="settings-section">
-            <h2>About</h2>
-            <div class="settings-info-row">
-                <span>εChat (Epsilon Chat)</span>
+            <h2>Sync</h2>
+            <div class="setup-field">
+                <select @bind="syncProfile" @bind:event="onchange">
+                    <option value="@SyncProfile.Realtime">Real-time</option>
+                    <option value="@SyncProfile.Balanced">Balanced (Recommended)</option>
+                    <option value="@SyncProfile.PowerSaver">Power Saver</option>
+                    <option value="@SyncProfile.Manual">Manual</option>
+                    <option value="@SyncProfile.Custom">Custom...</option>
+                </select>
             </div>
-            <div class="settings-info-row">
-                <span class="settings-info-label">Version</span>
-                <span>0.1.0</span>
+        </div>
+
+        @if (syncProfile == SyncProfile.Custom)
+        {
+            <div class="settings-section">
+                <h2>Advanced Sync Settings</h2>
+                <div class="setup-field">
+                    <div class="setup-checkbox">
+                        <input type="checkbox" id="useIdle" @bind="useImapIdle" />
+                        <label for="useIdle">Use IMAP IDLE when available</label>
+                    </div>
+                </div>
+
+                <div style="height: 12px;"></div>
+
+                <div class="setup-field">
+                    <label>Polling interval (minutes)</label>
+                    <input type="number" min="1" max="1440" class="setup-input" @bind="pollingInterval" />
+                </div>
+
+                <div style="height: 12px;"></div>
+
+                <div class="setup-field">
+                    <div class="setup-checkbox">
+                        <input type="checkbox" id="allowCellular" @bind="allowCellularSync" />
+                        <label for="allowCellular">Sync on cellular</label>
+                    </div>
+                </div>
+
+                <div style="height: 12px;"></div>
+
+                <div class="setup-field">
+                    <div class="setup-checkbox">
+                        <input type="checkbox" id="syncMetered" @bind="syncMetered" />
+                        <label for="syncMetered">Sync on metered connections</label>
+                    </div>
+                </div>
             </div>
-            <div class="settings-info-row">
-                <span class="settings-info-label">Protocol</span>
-                <span>Email / IMAP + SMTP</span>
+        }
+
+        <div class="settings-section">
+            <h2>Quiet Hours</h2>
+            <div class="setup-field">
+                <label>Start time</label>
+                <input type="time" class="setup-input" @bind="quietStart" @bind:format="HH:mm" />
+            </div>
+
+            <div style="height: 12px;"></div>
+
+            <div class="setup-field">
+                <label>End time</label>
+                <input type="time" class="setup-input" @bind="quietEnd" @bind:format="HH:mm" />
+            </div>
+
+            <div style="height: 12px;"></div>
+
+            <div class="setup-field">
+                <label>During quiet hours</label>
+                <select class="setup-input" @bind="quietHoursProfile" @bind:event="onchange">
+                    <option value="@SyncProfile.PowerSaver">Power Saver</option>
+                    <option value="@SyncProfile.Manual">Manual</option>
+                    <option value="@SyncProfile.Balanced">Balanced</option>
+                </select>
             </div>
         </div>
 
         <div class="settings-section">
-            <h2>Accounts</h2>
-            <button class="btn btn-primary" @onclick="@(() => Navigation.NavigateTo("/setup"))">
-                Add Account
-            </button>
+            <button class="btn btn-primary" @onclick="SaveSyncSettings">Save Settings</button>
+        </div>
+
+        @if (syncStats != null)
+        {
+            <div class="settings-section">
+                <h2>Sync Statistics (last 24h)</h2>
+                <div class="settings-info-row">
+                    <span class="settings-info-label">Messages synced</span>
+                    <span>@syncStats.MessagesSynced</span>
+                </div>
+
+                <div style="height: 12px;"></div>
+
+                <div class="settings-info-row">
+                    <span class="settings-info-label">Background wakeups</span>
+                    <span>@syncStats.BackgroundWakeups</span>
+                </div>
+
+                <div style="height: 12px;"></div>
+
+                <div class="settings-info-row">
+                    <span class="settings-info-label">Avg delivery delay</span>
+                    <span>@syncStats.AvgDelaySec seconds</span>
+                </div>
+            </div>
+        }
+
+        <div class="settings-section">
+            <h2>Appearance</h2>
+            <div class="settings-row">
+                <button class="new-chat-btn-toggle @(useDarkTheme ? "active" : "")"
+                        @onclick="ToggleDarkTheme">
+                    @if (useDarkTheme)
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    }
+                    else
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                    }
+                    Dark theme
+                </button>
+                <button class="new-chat-btn-toggle @(sendOnEnter ? "active" : "")"
+                        @onclick="ToggleSendMode">
+                    @if (sendOnEnter)
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    }
+                    else
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10h6a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2z"/><path d="M12 2v4"/><path d="M12 18v4"/><circle cx="12" cy="12" r="2"/></svg>
+                    }
+                    @(sendOnEnter ? "Enter" : "Ctrl+Enter")
+                </button>
+            </div>
+        </div>
+
+        <div class="settings-section">
+            <h2>Debug</h2>
+            <div class="settings-row">
+                <button class="new-chat-btn-toggle @(debugLogging ? "active" : "")"
+                        @onclick="ToggleDebugLogging">
+                    @if (debugLogging)
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    }
+                    else
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                    }
+                    Debug Save
+                </button>
+                <button class="new-chat-btn-toggle" @onclick="ExportLogAsync" disabled="@logBusy">
+                    @if (logBusy) { <span>Exporting…</span> }
+                    else
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        <span>Export Log</span>
+                    }
+                </button>
+            </div>
+            @if (debugLogging)
+            {
+                <div class="settings-info-row" style="margin-top:8px;">
+                    <span class="settings-info-label" style="font-size:11px;color:var(--text-secondary)">
+                        Log: @FileLogger.LogPath
+                    </span>
+                </div>
+            }
+            @if (logStatus != null)
+            {
+                <div class="setup-success" style="margin-top:8px;">@logStatus</div>
+            }
+            @if (logError != null)
+            {
+                <div class="setup-error" style="margin-top:8px;">
+                    @logError
+                    <button class="setup-error-close" @onclick="@(() => logError = null)">✕</button>
+                </div>
+            }
+        </div>
+
+        <div class="settings-section">
+            <h2>Profile Backup</h2>
+
+            @if (backupError != null)
+            {
+                <div class="setup-error">
+                    @backupError
+                    <button class="setup-error-close" @onclick="@(() => backupError = null)">✕</button>
+                </div>
+            }
+
+            @if (backupStatus != null)
+            {
+                <div class="setup-success">@backupStatus</div>
+            }
+
+            <div class="settings-row" style="gap:8px;flex-wrap:wrap;">
+                <button class="new-chat-btn-toggle" @onclick="ExportBackupAsync" disabled="@backupBusy">
+                    @if (backupBusy && backupOp == "export") { <span>Exporting…</span> }
+                    else
+                    {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <span>Export Backup</span>
+                    }
+                </button>
+
+                @if (Platform.SupportsMauiFilePicker)
+                {
+                    <button class="new-chat-btn-toggle" @onclick="ImportBackupMauiAsync" disabled="@backupBusy">
+                        @if (backupBusy && backupOp == "import") { <span>Importing…</span> }
+                        else
+                        {
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            <span>Import Backup</span>
+                        }
+                    </button>
+                }
+                else
+                {
+                    <label class="new-chat-btn-toggle" style="cursor:pointer;">
+                        @if (backupBusy && backupOp == "import") { <span>Importing…</span> }
+                        else
+                        {
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            <span>Import Backup</span>
+                        }
+                        <InputFile OnChange="ImportBackupWebAsync"
+                                   accept=".zip"
+                                   style="display:none;"
+                                   disabled="@backupBusy" />
+                    </label>
+                }
+            </div>
+
+            <div class="settings-info-row" style="margin-top:8px;">
+                <span class="settings-info-label" style="font-size:12px;color:var(--text-secondary)">
+                    Backup contains the full database (accounts, chats, messages).
+                    After import the app will restart automatically.
+                </span>
+            </div>
         </div>
     </div>
 </div>
 
 @code {
+    private SyncProfile syncProfile = SyncProfile.Balanced;
+    private bool useImapIdle = true;
+    private int pollingInterval = 5;
+    private bool allowCellularSync = true;
+    private bool syncMetered = false;
+    private TimeOnly quietStart = new(22, 0);
+    private TimeOnly quietEnd = new(8, 0);
+    private SyncProfile quietHoursProfile = SyncProfile.PowerSaver;
+    private bool useDarkTheme = false;
+    private bool sendOnEnter = true;
+    private bool debugLogging = false;
+    private bool showSyncWarning;
+    private string syncWarningText = string.Empty;
+    private SyncStats? syncStats;
+
+    private string? currentAccountId;
+
+    // ── Backup ──────────────────────────────────────────────────────────────
+    private bool   backupBusy   = false;
+    private string backupOp     = "";          // "export" | "import"
+    private string? backupError  = null;
+    private string? backupStatus = null;
+
+    // ── Log ─────────────────────────────────────────────────────────────────
+    private bool   logBusy   = false;
+    private string? logError  = null;
+    private string? logStatus = null;
+
+    private async Task ToggleDebugLogging()
+    {
+        debugLogging = !debugLogging;
+        Prefs.Set("debug_logging", debugLogging.ToString());
+        StateHasChanged();
+    }
+
+    private async Task ExportLogAsync()
+    {
+        logBusy = true;
+        logError = null; logStatus = null;
+        StateHasChanged();
+        try
+        {
+            var bytes = FileLogger.ReadAllBytes();
+            var filename = FileLogger.SuggestedFileName;
+
+            if (Platform.SupportsMauiFilePicker)
+                await Platform.SaveFileAsync(filename, bytes, title: "Export EChat Log", mimeType: "text/plain");
+            else
+                await JS.InvokeVoidAsync("downloadBytes", filename, bytes);
+
+            logStatus = "Log exported successfully.";
+        }
+        catch (Exception ex) { logError = $"Export failed: {ex.Message}"; }
+        finally { logBusy = false; StateHasChanged(); }
+    }
+
+    private async Task ExportBackupAsync()
+    {
+        backupBusy = true; backupOp = "export";
+        backupError = null; backupStatus = null;
+        StateHasChanged();
+        try
+        {
+            var bytes    = await BackupSvc.CreateBackupAsync();
+            var filename = BackupSvc.SuggestedFileName;
+
+            if (Platform.SupportsMauiFilePicker)
+                await Platform.SaveFileAsync(filename, bytes, title: "Save EChat Backup", mimeType: "application/zip");
+            else
+                await JS.InvokeVoidAsync("downloadBytes", filename, bytes);
+
+            backupStatus = "Backup exported successfully.";
+        }
+        catch (Exception ex) { backupError = $"Export failed: {ex.Message}"; }
+        finally { backupBusy = false; backupOp = ""; StateHasChanged(); }
+    }
+
+    private async Task ImportBackupMauiAsync()
+    {
+        backupBusy = true; backupOp = "import";
+        backupError = null; backupStatus = null;
+        StateHasChanged();
+        try
+        {
+            using var stream = await Platform.PickFileAsync();
+            if (stream == null) { backupBusy = false; backupOp = ""; StateHasChanged(); return; }
+            await RestoreAndRestartAsync(stream);
+        }
+        catch (Exception ex)
+        {
+            backupError = $"Import failed: {ex.Message}";
+            backupBusy = false; backupOp = ""; StateHasChanged();
+        }
+    }
+
+    private async Task ImportBackupWebAsync(InputFileChangeEventArgs e)
+    {
+        backupBusy = true; backupOp = "import";
+        backupError = null; backupStatus = null;
+        StateHasChanged();
+        try
+        {
+            // max 200 MB
+            await using var stream = e.File.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024);
+            await RestoreAndRestartAsync(stream);
+        }
+        catch (Exception ex)
+        {
+            backupError = $"Import failed: {ex.Message}";
+            backupBusy = false; backupOp = ""; StateHasChanged();
+        }
+    }
+
+    private async Task RestoreAndRestartAsync(Stream stream)
+    {
+        if (!EChat.Core.Services.BackupService.IsValidBackup(stream))
+            throw new InvalidDataException("File is not a valid EChat backup.");
+
+        await BackupSvc.RestoreBackupAsync(stream);
+
+        backupStatus = "Import successful. Restarting…";
+        StateHasChanged();
+        await Task.Delay(800); // дать время показать сообщение
+
+        if (Platform.SupportsMauiFilePicker)
+            Platform.RestartApp();
+        else
+            Navigation.NavigateTo("/", forceLoad: true);
+    }
+
+    // ── Sync stats ───────────────────────────────────────────────────────────
+    private record SyncStats
+    {
+        public int MessagesSynced { get; set; }
+        public int BackgroundWakeups { get; set; }
+        public int AvgDelaySec { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        currentAccountId = UserContext.AccountId;
+        await LoadSyncSettingsAsync();
+        await LoadThemeStateAsync();
+        sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
+        debugLogging = bool.Parse(Prefs.Get("debug_logging", "False"));
+    }
+
+    private async Task LoadSyncSettingsAsync()
+    {
+        var settings = SyncEngine.GetCurrentSettings();
+        syncProfile = settings.Profile;
+        useImapIdle = settings.UseImapIdle;
+        pollingInterval = (int)settings.PollingInterval.TotalMinutes;
+        allowCellularSync = settings.AllowCellularSync;
+        syncMetered = settings.SyncOnMeteredConnection;
+        quietHoursProfile = settings.QuietHoursProfile;
+        if (settings.QuietHours != null)
+        {
+            quietStart = new TimeOnly(settings.QuietHours.StartHour, 0);
+            quietEnd = new TimeOnly(settings.QuietHours.EndHour, 0);
+        }
+
+        try
+        {
+            var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
+            var ownEmail = UserContext.UserEmail;
+
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+            var recentMessages = await db.Messages
+                .AsNoTracking()
+                .Where(m => m.ReceivedAt >= cutoff)
+                .Where(m => string.IsNullOrEmpty(ownEmail) || m.Sender != ownEmail)
+                .Select(m => new { m.ReceivedAt, m.Timestamp })
+                .ToListAsync();
+
+            int msgCount = recentMessages.Count;
+            double avgDelay = 0;
+            if (msgCount > 0)
+            {
+                var delays = recentMessages
+                    .Where(m => m.ReceivedAt > m.Timestamp)
+                    .Select(m => (m.ReceivedAt - m.Timestamp).TotalSeconds)
+                    .ToList();
+                avgDelay = delays.Count > 0 ? delays.Average() : 0;
+            }
+
+            syncStats = new SyncStats
+            {
+                MessagesSynced = msgCount,
+                BackgroundWakeups = SyncEngine.GetWakeupCount(TimeSpan.FromHours(24)),
+                AvgDelaySec = (int)avgDelay
+            };
+        }
+        catch
+        {
+            syncStats = new SyncStats
+            {
+                MessagesSynced = 0,
+                BackgroundWakeups = SyncEngine.GetWakeupCount(TimeSpan.FromHours(24)),
+                AvgDelaySec = 0
+            };
+        }
+    }
+
+    private async Task LoadThemeStateAsync()
+    {
+        try
+        {
+            var isDark = await JS.InvokeAsync<bool>("eval", "localStorage.getItem('darkMode') === 'true'");
+            useDarkTheme = isDark;
+        }
+        catch { }
+    }
+
+    private async void OnProfileChanged(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<SyncProfile>(e.Value?.ToString(), out var profile))
+        {
+            syncProfile = profile;
+            if (profile == SyncProfile.Realtime)
+            {
+                useImapIdle = true;
+                pollingInterval = 1;
+            }
+            else if (profile == SyncProfile.Balanced)
+            {
+                useImapIdle = true;
+                pollingInterval = 5;
+            }
+            else if (profile == SyncProfile.PowerSaver)
+            {
+                useImapIdle = false;
+                pollingInterval = 15;
+            }
+            else if (profile == SyncProfile.Manual)
+            {
+                useImapIdle = false;
+                pollingInterval = 1440;
+            }
+        }
+    }
+
+    private async Task SaveSyncSettings()
+    {
+        if (string.IsNullOrEmpty(currentAccountId)) return;
+
+        var settings = new SyncSettings
+        {
+            Profile = syncProfile,
+            UseImapIdle = useImapIdle,
+            PollingInterval = TimeSpan.FromMinutes(pollingInterval),
+            AllowCellularSync = allowCellularSync,
+            SyncOnMeteredConnection = syncMetered,
+            QuietHours = new TimeRange(quietStart.Hour, quietEnd.Hour),
+            QuietHoursProfile = quietHoursProfile
+        };
+
+        await SyncEngine.SaveSettingsAsync(currentAccountId, settings);
+        SyncWarnings.ValidateSettings(settings);
+
+        if (!useImapIdle && pollingInterval > 30)
+        {
+            syncWarningText = $"Messages may be delayed by up to {pollingInterval} minutes. Consider enabling IMAP IDLE.";
+            showSyncWarning = true;
+        }
+        else
+        {
+            showSyncWarning = false;
+        }
+
+        await ApplyThemeAsync();
+        StateHasChanged();
+    }
+
+    private async Task ApplyThemeAsync()
+    {
+        if (useDarkTheme)
+        {
+            await JS.InvokeVoidAsync("applyDarkThemeFromBlazor", true);
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("applyDarkThemeFromBlazor", false);
+        }
+    }
+
+    private async Task ToggleDarkTheme()
+    {
+        useDarkTheme = !useDarkTheme;
+        await ApplyThemeAsync();
+        StateHasChanged();
+    }
+
+    private async Task ToggleSendMode()
+    {
+        sendOnEnter = !sendOnEnter;
+        Prefs.Set("send_on_enter", sendOnEnter.ToString());
+        StateHasChanged();
+    }
+
     private void GoBack() => Navigation.NavigateTo("/chats");
 }

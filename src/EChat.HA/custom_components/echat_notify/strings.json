@@ -1,0 +1,41 @@
+{
+  "config": {
+    "title": "eChat Notify",
+    "description": "Setup eChat notification bot",
+    "data": {
+      "bot_email": "Bot email address",
+      "bot_password": "Bot email password (app password for Gmail)",
+      "smtp_server": "SMTP Server (leave empty for auto-detect)",
+      "smtp_port": "SMTP Port",
+      "use_ssl": "Use SSL/TLS"
+    },
+    "data_description": {
+      "bot_email": "Email address that will be used as the bot",
+      "bot_password": "App password if using Gmail, regular password otherwise",
+      "smtp_server": "e.g. smtp.gmail.com, smtp.yandex.ru (auto-detected for major providers)",
+      "use_ssl": "Use SSL/TLS (recommended, port 465). Disable for STARTTLS (port 587)"
+    },
+    "error": {
+      "invalid_email": "Invalid email address",
+      "auth_failed": "Authentication failed. Check email and password",
+      "connection_failed": "Could not connect to SMTP server",
+      "key_generation_failed": "Failed to generate PGP keypair"
+    }
+  },
+  "step": {
+    "user": {
+      "title": "eChat Bot Configuration",
+      "data": {
+        "bot_email": "Bot Email",
+        "bot_password": "Bot Password",
+        "smtp_server": "SMTP Server (optional)",
+        "smtp_port": "SMTP Port (optional)",
+        "use_ssl": "Use SSL"
+      },
+      "data_description": {
+        "bot_email": "Email address for the bot",
+        "bot_password": "Email password or app password"
+      }
+    }
+  }
+}

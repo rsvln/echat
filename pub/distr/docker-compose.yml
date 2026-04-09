@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+
+  echat-web:
+    restart: unless-stopped
+    image: rsvln/echatweb:latest
+    container_name: echat
+    privileged: true
+    volumes:
+      - /srv/md0/echat/db:/app/data/
+    ports:
+      - 9999:8080

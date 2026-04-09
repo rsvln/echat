@@ -1,12 +1,13 @@
 @using EChat.Core.Models
 @using EChat.Core.Data
 @using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.DependencyInjection
 
 <div class="modal-overlay @(IsVisible ? "visible" : "")" @onclick="Close">
     <div class="modal-content" @onclick:stopPropagation="true">
         <div class="modal-header">
             <h2>Chat Info</h2>
-            <button class="close-btn" @onclick="Close">✕</button>
+            <button class="new-chat-close" @onclick="Close">✕</button>
         </div>
 
         @if (chat != null)
@@ -51,23 +52,64 @@
                     </div>
                 }
 
-                <div class="info-actions">
-                    <label>
-                        <input type="checkbox" checked="@chat.Muted" @onchange="@(e => UpdateMuted((bool)e.Value!))" />
-                        Muted
-                    </label>
+                <div class="new-chat-actions">
+                    <button class="new-chat-btn-toggle @(chat.Muted ? "active" : "")"
+                            @onclick="ToggleMuted">
+                        @if (chat.Muted)
+                        {
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+                        }
+                        else
+                        {
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>
+                        }
+                        Mute
+                    </button>
                     @if (chat.Archived)
                     {
-                        <button class="info-archive-btn info-unarchive-btn" @onclick="UnarchiveChat">
-                            Unarchive chat
+                        <button class="new-chat-btn-primary" @onclick="UnarchiveChat">
+                            Unarchive
                         </button>
                     }
                     else
                     {
-                        <button class="info-archive-btn" @onclick="ArchiveChat">
-                            Archive chat
+                        <button class="new-chat-btn-primary" @onclick="ArchiveChat">
+                            Archive
                         </button>
                     }
+                    <button class="new-chat-btn-danger" @onclick="ConfirmDelete">
+                        Delete
+                    </button>
+                </div>
+            </div>
+        }
+
+        @if (showDeleteConfirm)
+        {
+            <div class="modal-overlay visible" @onclick="CancelDelete">
+                <div class="modal-content modal-sm" @onclick:stopPropagation="true">
+                    <div class="modal-header">
+                        <h2>Delete Chat</h2>
+                        <button class="close-btn" @onclick="CancelDelete">✕</button>
+                    </div>
+                    <div class="modal-body">
+                        @if (chat?.Type == ChatType.Group)
+                        {
+                            <p>Are you an admin of this group?</p>
+                            <div class="delete-actions">
+                                <button class="new-chat-btn-danger" @onclick="DeleteGroupAsAdmin">Delete group (all members)</button>
+                                <button class="new-chat-btn-secondary" @onclick="LeaveGroup">Leave group</button>
+                            </div>
+                        }
+                        else
+                        {
+                            <p>Delete this chat and notify the other participant?</p>
+                            <div class="delete-actions">
+                                <button class="new-chat-btn-danger" @onclick="DeleteOneToOne">Delete chat</button>
+                            </div>
+                        }
+                        <button class="new-chat-btn-cancel" @onclick="CancelDelete">Cancel</button>
+                    </div>
                 </div>
             </div>
         }
@@ -90,12 +132,28 @@
     [Parameter]
     public EventCallback OnChatUnarchived { get; set; }
 
+    [Parameter]
+    public EventCallback<string> OnChatDeleted { get; set; }
+
+    [Parameter]
+    public EventCallback<string> OnGroupLeft { get; set; }
+
     [Inject]
     public ChatDbContext DbContext { get; set; } = null!;
+
+    [Inject]
+    public IServiceScopeFactory ScopeFactory { get; set; } = null!;
+
+    [Inject]
+    public EChat.Core.Sync.SyncEngine SyncEngine { get; set; } = null!;
+
+    [Inject]
+    public EChat.Core.Sync.SyncWarningService SyncWarnings { get; set; } = null!;
 
     private Chat? chat;
     private int messageCount;
     private List<GroupMember>? members;
+    private bool showDeleteConfirm;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -107,15 +165,18 @@
 
     private async Task LoadChatInfoAsync()
     {
-        chat = await DbContext.Chats.FindAsync(ChatId);
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+        chat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.ChatId == ChatId);
 
         if (chat != null)
         {
-            messageCount = await DbContext.Messages.CountAsync(m => m.ChatId == ChatId);
+            messageCount = await db.Messages.AsNoTracking().CountAsync(m => m.ChatId == ChatId);
 
             if (chat.Type == ChatType.Group)
             {
-                members = await DbContext.GroupMembers
+                members = await db.GroupMembers.AsNoTracking()
                     .Where(m => m.GroupId == ChatId)
                     .ToListAsync();
             }
@@ -124,27 +185,31 @@
 
     private async Task UpdatePriority(ChatPriority value)
     {
-        if (chat != null)
-        {
-            chat.Priority = value;
-            await DbContext.SaveChangesAsync();
-        }
+        if (chat == null) return;
+        await DbContext.Chats
+            .Where(c => c.ChatId == chat.ChatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Priority, value));
+        chat.Priority = value;
+        SyncEngine.SetChatPriority(chat.ChatId, value);
+        SyncWarnings.ValidateChatPriority(value);
     }
 
-    private async Task UpdateMuted(bool value)
+    private async Task ToggleMuted()
     {
-        if (chat != null)
-        {
-            chat.Muted = value;
-            await DbContext.SaveChangesAsync();
-        }
+        if (chat == null) return;
+        var newValue = !chat.Muted;
+        await DbContext.Chats
+            .Where(c => c.ChatId == chat.ChatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Muted, newValue));
+        chat.Muted = newValue;
     }
 
     private async Task ArchiveChat()
     {
         if (chat == null) return;
-        chat.Archived = true;
-        await DbContext.SaveChangesAsync();
+        await DbContext.Chats
+            .Where(c => c.ChatId == chat.ChatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, true));
         await OnClose.InvokeAsync();
         await OnChatArchived.InvokeAsync(chat.ChatId);
     }
@@ -152,10 +217,54 @@
     private async Task UnarchiveChat()
     {
         if (chat == null) return;
-        chat.Archived = false;
-        await DbContext.SaveChangesAsync();
+        await DbContext.Chats
+            .Where(c => c.ChatId == chat.ChatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, false));
         await OnClose.InvokeAsync();
         await OnChatUnarchived.InvokeAsync();
+    }
+
+    private void ConfirmDelete()
+    {
+        showDeleteConfirm = true;
+    }
+
+    private void CancelDelete()
+    {
+        showDeleteConfirm = false;
+    }
+
+    private async Task DeleteGroupAsAdmin()
+    {
+        if (chat == null) return;
+        await DbContext.Chats
+            .Where(c => c.ChatId == chat.ChatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Deleted, true));
+        showDeleteConfirm = false;
+        await OnClose.InvokeAsync();
+        await OnChatDeleted.InvokeAsync(chat.ChatId);
+    }
+
+    private async Task LeaveGroup()
+    {
+        if (chat == null) return;
+        await DbContext.Chats
+            .Where(c => c.ChatId == chat.ChatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Deleted, true));
+        showDeleteConfirm = false;
+        await OnClose.InvokeAsync();
+        await OnGroupLeft.InvokeAsync(chat.ChatId);
+    }
+
+    private async Task DeleteOneToOne()
+    {
+        if (chat == null) return;
+        await DbContext.Chats
+            .Where(c => c.ChatId == chat.ChatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Deleted, true));
+        showDeleteConfirm = false;
+        await OnClose.InvokeAsync();
+        await OnChatDeleted.InvokeAsync(chat.ChatId);
     }
 
     private async Task Close()

@@ -5,16 +5,28 @@ namespace EChat.Core.Protocol;
 
 public class ChatMessageParser
 {
+    private string _myEmail;
+
+    public ChatMessageParser(string myEmail = "")
+    {
+        _myEmail = myEmail;
+    }
+
     public List<ParsedMessage> Parse(MimeMessage email)
     {
         var headers = ParseHeaders(email);
-        
+
         if (headers.IsBatch)
         {
             return ParseBatch(email);
         }
-        
+
         return new List<ParsedMessage> { ParseSingle(email, headers) };
+    }
+
+    public void SetMyEmail(string email)
+    {
+        _myEmail = email;
     }
     
     private ChatHeaders ParseHeaders(MimeMessage email)
@@ -57,6 +69,8 @@ public class ChatMessageParser
 
         headers.SyncType = email.Headers["Chat-Sync-Type"];
         headers.SyncDeviceId = email.Headers["Chat-Sync-Device-ID"];
+
+        headers.SystemType = email.Headers["Chat-System-Type"];
         
         return headers;
     }
@@ -80,9 +94,9 @@ public class ChatMessageParser
     private List<ParsedMessage> ParseBatch(MimeMessage email)
     {
         var messages = new List<ParsedMessage>();
-        
+
         if (email.Body is not Multipart multipart) return messages;
-        
+
         foreach (var part in multipart)
         {
             if (part is MessagePart msgPart)
@@ -91,7 +105,7 @@ public class ChatMessageParser
                 messages.Add(ParseSingle(msgPart.Message, nestedHeaders));
             }
         }
-        
+
         return messages;
     }
     
@@ -154,5 +168,90 @@ public class ChatMessageParser
         return value.Split(',', StringSplitOptions.RemoveEmptyEntries)
                     .Select(s => s.Trim())
                     .ToList();
+    }
+
+    /// <summary>
+    /// After PGP decryption, parses the inner header block from the decrypted text
+    /// and applies the values to the already-created ParsedMessage.
+    /// Format: "Chat-X: value\n…\n\nbody text"
+    /// Inner headers always take precedence over outer email headers.
+    /// </summary>
+    public void ApplyDecryptedContent(ParsedMessage msg, string decryptedText)
+    {
+        // Normalise line endings
+        var lines = decryptedText.Replace("\r\n", "\n").Split('\n');
+
+        var innerHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        int contentStart = lines.Length; // default: no body
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            if (string.IsNullOrEmpty(line))
+            {
+                contentStart = i + 1;
+                break;
+            }
+
+            var colonIdx = line.IndexOf(':');
+            if (colonIdx > 0 && line.StartsWith("Chat-", StringComparison.OrdinalIgnoreCase))
+                innerHeaders[line[..colonIdx].Trim()] = line[(colonIdx + 1)..].Trim();
+        }
+
+        // If there were no inner headers at all, treat the whole text as body
+        if (innerHeaders.Count == 0)
+        {
+            msg.Content = decryptedText;
+            return;
+        }
+
+        // Override headers from inner block
+        if (innerHeaders.TryGetValue("Chat-Message-ID", out var mid) && !string.IsNullOrEmpty(mid))
+            msg.Headers.MessageId = mid;
+
+        if (innerHeaders.TryGetValue("Chat-Timestamp", out var ts)
+            && DateTimeOffset.TryParse(ts, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dto))
+            msg.Headers.Timestamp = dto;
+
+        if (innerHeaders.TryGetValue("Chat-In-Reply-To", out var irt))
+            msg.Headers.InReplyTo = irt;
+
+        if (innerHeaders.TryGetValue("Chat-System-Type", out var st))
+            msg.Headers.SystemType = st;
+
+        if (innerHeaders.TryGetValue("Chat-Reaction", out var rxn))
+            msg.Headers.Reaction = rxn;
+
+        if (innerHeaders.TryGetValue("Chat-Reaction-To", out var rxnt))
+            msg.Headers.ReactionTo = rxnt;
+
+        if (innerHeaders.TryGetValue("Chat-Edit-Of", out var eof))
+            msg.Headers.EditOf = eof;
+
+        if (innerHeaders.TryGetValue("Chat-Edit-Version", out var evs)
+            && int.TryParse(evs, out var evi))
+            msg.Headers.EditVersion = evi;
+
+        if (innerHeaders.TryGetValue("Chat-Delete-Of", out var dof))
+            msg.Headers.DeleteOf = dof;
+
+        if (innerHeaders.TryGetValue("Chat-Disposition", out var disp))
+            msg.Headers.Disposition = disp;
+
+        if (innerHeaders.TryGetValue("Chat-Read-Of", out var rof))
+            msg.Headers.ReadOf = rof
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .ToList();
+
+        if (innerHeaders.TryGetValue("Chat-Sync-Type", out var syncType))
+            msg.Headers.SyncType = syncType;
+        if (innerHeaders.TryGetValue("Chat-Sync-Device-ID", out var syncDevId))
+            msg.Headers.SyncDeviceId = syncDevId;
+
+        // Body is everything after the blank separator line
+        msg.Content = contentStart < lines.Length
+            ? string.Join('\n', lines[contentStart..])
+            : string.Empty;
     }
 }

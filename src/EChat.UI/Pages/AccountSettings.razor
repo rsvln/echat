@@ -2,6 +2,7 @@
 @using EChat.Core.Data
 @using EChat.Core.Models
 @using EChat.Core.Transport
+@using EChat.Core.Sync
 @using EChat.UI.Services
 @using Microsoft.EntityFrameworkCore
 @inject ChatDbContext DbContext
@@ -9,6 +10,7 @@
 @inject EmailTransportService TransportService
 @inject UserContextService UserContext
 @inject IAppPreferences Prefs
+@inject SyncEngine SyncEngine
 
 <div class="settings-page">
     <div class="settings-page-header">
@@ -31,7 +33,7 @@
                 </div>
                 <div class="settings-field">
                     <label>Email</label>
-                    <input type="email" @bind="account.Email" />
+                    <input type="text" @bind="account.Email" />
                 </div>
                 <div class="settings-field">
                     <label>Password</label>
@@ -132,10 +134,6 @@
                     <label>Chat folder name</label>
                     <input type="text" @bind="chatFolderName" />
                 </div>
-                <div class="settings-field">
-                    <label>Subject template</label>
-                    <input type="text" @bind="subjectTemplate" placeholder="[εChat] {chatName}" />
-                </div>
             </div>
 
             <div class="settings-section">
@@ -162,7 +160,6 @@
     private TimeOnly quietHoursEnd = new(8, 0);
     private SyncProfile quietHoursProfile = SyncProfile.PowerSaver;
     private string chatFolderName = "EpsilonChat";
-    private string subjectTemplate = "[εChat] {chatName}";
 
     protected override async Task OnParametersSetAsync()
     {
@@ -181,40 +178,60 @@
         if (dict.TryGetValue("sync_profile", out var sp)) syncProfile = Enum.Parse<SyncProfile>(sp);
         if (dict.TryGetValue("allow_cellular", out var ac)) allowCellularSync = bool.Parse(ac);
         if (dict.TryGetValue("sync_metered", out var sm)) syncOnMetered = bool.Parse(sm);
-        if (dict.TryGetValue("quiet_start", out var qs)) quietHoursStart = TimeOnly.Parse(qs);
-        if (dict.TryGetValue("quiet_end", out var qe)) quietHoursEnd = TimeOnly.Parse(qe);
+        if (dict.TryGetValue("quiet_start", out var qs))
+        {
+            if (TimeOnly.TryParse(qs, out var time))
+                quietHoursStart = time;
+            else if (int.TryParse(qs, out var hour))
+                quietHoursStart = new TimeOnly(hour, 0);
+        }
+        if (dict.TryGetValue("quiet_end", out var qe))
+        {
+            if (TimeOnly.TryParse(qe, out var time))
+                quietHoursEnd = time;
+            else if (int.TryParse(qe, out var hour))
+                quietHoursEnd = new TimeOnly(hour, 0);
+        }
         if (dict.TryGetValue("quiet_profile", out var qp)) quietHoursProfile = Enum.Parse<SyncProfile>(qp);
         if (dict.TryGetValue("folder_name", out var fn)) chatFolderName = fn;
-        if (dict.TryGetValue("subject_template", out var st)) subjectTemplate = st;
     }
 
     private async Task SaveSettings()
     {
         if (account == null) return;
-        await DbContext.SaveChangesAsync(); // saves account (email, password, servers)
+        await DbContext.SaveChangesAsync();
 
-        // Update UserContextService
         var deviceId = Prefs.Get("device_id", string.Empty);
         UserContext.Initialize(account.AccountId, account.Email, deviceId);
         Prefs.Set("user_email", account.Email);
+
+        // Save sync settings via SyncEngine (persists to DB + updates engine)
+        var settings = new SyncSettings
+        {
+            Profile = syncProfile,
+            AllowCellularSync = allowCellularSync,
+            SyncOnMeteredConnection = syncOnMetered,
+            QuietHours = new TimeRange(quietHoursStart.Hour, quietHoursEnd.Hour),
+            QuietHoursProfile = quietHoursProfile,
+            UseImapIdle = syncProfile == SyncProfile.Realtime || syncProfile == SyncProfile.Balanced,
+            PollingInterval = syncProfile switch
+            {
+                SyncProfile.Realtime => TimeSpan.FromMinutes(1),
+                SyncProfile.Balanced => TimeSpan.FromMinutes(5),
+                SyncProfile.PowerSaver => TimeSpan.FromMinutes(15),
+                SyncProfile.Manual => TimeSpan.FromDays(1),
+                _ => TimeSpan.FromMinutes(5)
+            }
+        };
+
+        await SyncEngine.SaveSettingsAsync(account.AccountId, settings);
 
         // Hot-reconnect transport with updated credentials
         _ = Task.Run(async () =>
         {
             try { await TransportService.ReconnectAsync(account, deviceId); }
-            catch { /* non-fatal; user will see connection errors when sending */ }
+            catch { /* non-fatal */ }
         });
-
-        var prefix = $"acct_{AccountId}_";
-        await UpsertSettingAsync(prefix + "sync_profile", syncProfile.ToString());
-        await UpsertSettingAsync(prefix + "allow_cellular", allowCellularSync.ToString());
-        await UpsertSettingAsync(prefix + "sync_metered", syncOnMetered.ToString());
-        await UpsertSettingAsync(prefix + "quiet_start", quietHoursStart.ToString("HH:mm"));
-        await UpsertSettingAsync(prefix + "quiet_end", quietHoursEnd.ToString("HH:mm"));
-        await UpsertSettingAsync(prefix + "quiet_profile", quietHoursProfile.ToString());
-        await UpsertSettingAsync(prefix + "folder_name", chatFolderName);
-        await UpsertSettingAsync(prefix + "subject_template", subjectTemplate);
-        await DbContext.SaveChangesAsync();
 
         GoBack();
     }

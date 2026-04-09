@@ -5,6 +5,7 @@
 		<LangVersion>latest</LangVersion>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
+		<NoWarn>CS8600;CS8601;CS8602;CS8603;CS8604;CS0168;CS0219;CS0162</NoWarn>
 		<RootNamespace>EChat.UI</RootNamespace>
 		<AddRazorSupportForMvc>true</AddRazorSupportForMvc>
 		<DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>

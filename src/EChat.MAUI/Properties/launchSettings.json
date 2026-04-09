@@ -1,10 +1,10 @@
 {
   "profiles": {
     "Windows Machine": {
-      "commandName": "Project"
+      "commandName": "MsixPackage"
     },
     "Android Emulator": {
-      "commandName": "Project"
+      "commandName": "MsixPackage"
     }
   }
 }

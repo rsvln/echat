@@ -3,6 +3,7 @@ using EChat.Core.Data;
 using EChat.Core.Groups;
 using EChat.Core.Models;
 using EChat.Core.Protocol;
+using EChat.Core.Services;
 using EChat.Core.Sync;
 using EChat.Core.Transport;
 using Microsoft.Data.Sqlite;
@@ -21,7 +22,8 @@ public static class ServiceCollectionExtensions
     {
         // Database
         services.AddDbContext<ChatDbContext>(options =>
-            options.UseSqlite($"Data Source={dbPath}"));
+            options.UseSqlite($"Data Source={dbPath}",
+                o => o.CommandTimeout(30)));
 
         // AccountConfig — mutable singleton; Email filled later via ReconnectAsync
         services.AddSingleton(new AccountConfig { DeviceId = deviceId });
@@ -39,9 +41,8 @@ public static class ServiceCollectionExtensions
 
         // Sync
         services.AddSingleton<NtpTimeService>();
-        services.AddSingleton(sp => new SyncEngine(
-            sp.GetRequiredService<ILogger<SyncEngine>>(),
-            new SyncSettings()));
+        services.AddSingleton<SyncEngine>(); // loaded from DB at runtime
+        services.AddSingleton<SyncWarningService>();
         services.AddSingleton<DeviceSyncService>(); // takes AccountConfig via DI
 
         // Groups
@@ -52,7 +53,33 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<PgpService>();
         services.AddSingleton<KeyVerificationService>();
 
+        // Event bus & app-level services
+        services.AddSingleton<ChatEventService>();
+        services.AddSingleton<IncomingMessageService>();
+        services.AddSingleton<MultiAccountImapManager>();
+
+        // File logger — created after dbPath is known
+        // (registered below in InitializeEChatDatabaseAsync)
+
+        // Expose dbPath so UI can display it and BackupService can access it
+        var dbPathInfo = new DatabasePathInfo { Path = dbPath };
+        services.AddSingleton(dbPathInfo);
+        services.AddSingleton<BackupService>();
+
+        // File logger
+        var fileLogger = new FileLogger(dbPath);
+        services.AddSingleton(fileLogger);
+
+        // Preferences backed by the SQLite Settings table
+        services.AddSingleton<DbAppPreferences>();
+        services.AddSingleton<IAppPreferences>(sp => sp.GetRequiredService<DbAppPreferences>());
+
         return services;
+    }
+
+    public class DatabasePathInfo
+    {
+        public string Path { get; set; } = string.Empty;
     }
 
     public static async Task InitializeEChatDatabaseAsync(this IServiceProvider serviceProvider)
@@ -97,6 +124,36 @@ public static class ServiceCollectionExtensions
         {
             var ctx = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
             await ctx.Database.MigrateAsync();
+            // Enable WAL mode for better concurrency (readers don't block writers)
+            await ctx.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+            await ctx.Database.ExecuteSqlRawAsync("PRAGMA synchronous=NORMAL;");
+
+            // Clean up data for deleted chats, but keep the Chat row itself as a tombstone.
+            // The tombstone (Deleted = true) prevents HandleGroupCreateAsync from re-creating
+            // the group when the original group-create email is re-synced from IMAP.
+            var deletedChatIds = await ctx.Chats
+                .Where(c => c.Deleted)
+                .Select(c => c.ChatId)
+                .ToListAsync();
+            if (deletedChatIds.Count > 0)
+            {
+                await ctx.Messages.Where(m => deletedChatIds.Contains(m.ChatId)).ExecuteDeleteAsync();
+                await ctx.GroupMembers.Where(m => deletedChatIds.Contains(m.GroupId)).ExecuteDeleteAsync();
+                await ctx.Groups.Where(g => deletedChatIds.Contains(g.GroupId)).ExecuteDeleteAsync();
+                await ctx.GroupKeyPairs.Where(g => deletedChatIds.Contains(g.GroupId)).ExecuteDeleteAsync();
+                // Chat rows are intentionally kept as tombstones — do NOT delete them.
+            }
+        }
+
+        // ── Step 4: load app preferences into cache ──
+        if (serviceProvider.GetService<DbAppPreferences>() is { } prefs)
+        {
+            await prefs.LoadAsync();
+
+            // Seed device_id from AccountConfig if not already in preferences
+            var accountConfig = serviceProvider.GetRequiredService<AccountConfig>();
+            if (string.IsNullOrEmpty(prefs.Get("device_id", "")))
+                prefs.Set("device_id", accountConfig.DeviceId);
         }
     }
 }

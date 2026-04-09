@@ -2,7 +2,7 @@
 @using static EChat.Core.Models.MessageStatus
 @inject IJSRuntime JS
 
-<div class="message-bubble-wrap @(IsOwn ? "own" : "other")"
+<div class="message-bubble-wrap @(IsOwn ? "own" : "other") @(IsSelected ? "mob-msg-selected" : "")"
      id="msg-@Message.MessageId"
      style="position:relative;display:flex;flex-direction:column;align-items:@(IsOwn ? "flex-end" : "flex-start");margin-bottom:2px;"
      @oncontextmenu="ShowContextMenu"
@@ -38,63 +38,128 @@
         }
 
         <div class="message-content" style="white-space:pre-wrap;word-break:break-word;">@Message.Content</div>
-        <div class="message-footer">
-            @if (Message.IsEdited)
+
+        @* ── Attachments ───────────────────────────────────────────────── *@
+        @if (Attachments != null && Attachments.Count > 0)
+        {
+            @foreach (var att in Attachments)
             {
-                <span style="font-size:10px;color:#999;">edited</span>
-            }
-            <span class="message-time">@FormatTime(Message.DisplayTimestamp)</span>
-            @if (Message.ClockSkewDetected)
-            {
-                <span title="Clock skew detected">⏰</span>
-            }
-            @if (Message.Encrypted)
-            {
-                <span>🔒</span>
-            }
-            @if (IsOwn)
-            {
-                @switch (Message.Status)
+                @if (att.IsImage)
                 {
-                    case MessageStatus.Sending:
-                        <span title="Sending…" style="font-size:13px;opacity:0.5;line-height:1;">
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-                                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                                <circle cx="12" cy="12" r="9"/>
-                                <polyline points="12 7 12 12 15 14"/>
-                            </svg>
-                        </span>
-                        break;
-                    case MessageStatus.Sent:
-                        <span title="Sent" style="font-size:13px;opacity:0.55;line-height:1;">
-                            <svg width="15" height="11" viewBox="0 0 15 11" fill="none"
-                                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <polyline points="1.5 5.5 5.5 9.5 13.5 1.5"/>
-                            </svg>
-                        </span>
-                        break;
-                    case MessageStatus.Read:
-                        <span title="Read" style="font-size:13px;color:#4FC3F7;line-height:1;">
-                            <svg width="19" height="11" viewBox="0 0 19 11" fill="none"
-                                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <polyline points="1.5 5.5 5.5 9.5 13.5 1.5"/>
-                                <polyline points="6 5.5 10 9.5 18 1.5"/>
-                            </svg>
-                        </span>
-                        break;
+                    <div class="message-attachment">
+                        <img class="message-attachment-img"
+                             src="@GetAttachmentUrl(att)"
+                             alt="@att.FileName"
+                             @onclick="@(() => OpenImage(att))" />
+                        @if (!string.IsNullOrEmpty(att.Caption))
+                        {
+                            <div class="message-attachment-caption">@att.Caption</div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="message-attachment">
+                        <div class="message-attachment-file" @onclick="@(() => DownloadFile(att))">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                            <span>@att.FileName</span>
+                            <span style="color:var(--text-muted);font-size:11px;">(@FormatSize(att.Size))</span>
+                        </div>
+                        @if (!string.IsNullOrEmpty(att.Caption))
+                        {
+                            <div class="message-attachment-caption">@att.Caption</div>
+                        }
+                    </div>
                 }
             }
+        }
+
+        <div class="message-footer">
+            @* Reactions on the left, same row as timestamp *@
+            <div class="message-reactions-inline">
+                @if (Reactions != null && Reactions.Count > 0)
+                {
+                    @foreach (var grp in Reactions.GroupBy(r => r.Emoji))
+                    {
+                        <button class="reaction-badge @(grp.Any(r => r.Sender == UserEmail) ? "active" : "")"
+                                @onclick="@(() => OnReact.InvokeAsync((grp.Key, Message)))"
+                                @onclick:stopPropagation="true">
+                            @grp.Key <span class="reaction-count">@grp.Count()</span>
+                        </button>
+                    }
+                }
+            </div>
+            @* Time + status on the right *@
+            <div style="display:flex;align-items:center;gap:5px;flex-shrink:0;">
+                @if (Message.IsEdited)
+                {
+                    <span style="font-size:10px;color:#999;">edited</span>
+                }
+                <span class="message-time">@FormatTime(Message.DisplayTimestamp)</span>
+                @if (Message.ClockSkewDetected)
+                {
+                    <span title="Clock skew detected">⏰</span>
+                }
+                @if (Message.Encrypted)
+                {
+                    <span>🔒</span>
+                }
+                @if (IsOwn)
+                {
+                    @switch (Message.Status)
+                    {
+                        case MessageStatus.Sending:
+                            <span title="Sending…" style="font-size:13px;opacity:0.5;line-height:1;">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                                     stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                                    <circle cx="12" cy="12" r="9"/>
+                                    <polyline points="12 7 12 12 15 14"/>
+                                </svg>
+                            </span>
+                            break;
+                        case MessageStatus.Sent:
+                            <span title="Sent" style="font-size:13px;opacity:0.55;line-height:1;">
+                                <svg width="15" height="11" viewBox="0 0 15 11" fill="none"
+                                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="1.5 5.5 5.5 9.5 13.5 1.5"/>
+                                </svg>
+                            </span>
+                            break;
+                        case MessageStatus.Read:
+                            <span title="Read" style="font-size:13px;color:#4FC3F7;line-height:1;">
+                                <svg width="19" height="11" viewBox="0 0 19 11" fill="none"
+                                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="1.5 5.5 5.5 9.5 13.5 1.5"/>
+                                    <polyline points="6 5.5 10 9.5 18 1.5"/>
+                                </svg>
+                            </span>
+                            break;
+                    }
+                }
+            </div>
         </div>
     </div>
 </div>
 
-@* ── Context menu ─────────────────────────────────────────────────── *@
-@if (_showMenu)
+@* ── Context menu (desktop only; mobile uses header action bar) ──── *@
+@if (_showMenu && !MobileMode)
 {
     <div style="position:fixed;inset:0;z-index:999;" @onclick="CloseMenu" @onclick:stopPropagation="true"></div>
-    <div style="position:fixed;left:@(_menuX)px;top:@(_menuY)px;
-                background:#fff;border:1px solid #e8e8e8;border-radius:2px;padding:4px 0;
-                z-index:1000;box-shadow:0 8px 24px rgba(0,0,0,.15);min-width:210px;">
+    <div class="ctx-menu" style="left:@(_menuX)px;top:@(_menuY)px;">
+
+        @* ── Reaction strip (Telegram-style) ────────────────────────── *@
+        <div class="ctx-reaction-strip">
+            @foreach (var emoji in _quickReactions)
+            {
+                var isActive = Reactions != null && Reactions.Any(r => r.Emoji == emoji && r.Sender == UserEmail);
+                <button class="ctx-reaction-btn @(isActive ? "active" : "")"
+                        @onclick="@(() => PickReaction(emoji))"
+                        @onclick:stopPropagation="true">@emoji</button>
+            }
+        </div>
+        <div class="ctx-divider"></div>
+
+        @* ── Menu items ─────────────────────────────────────────────── *@
         @if (!string.IsNullOrEmpty(_selectedText))
         {
             <div class="ctx-item" @onclick="ReplyWithQuoteClicked" @onclick:stopPropagation="true">
@@ -116,7 +181,7 @@
                 <span class="ctx-icon">✏</span> Edit
             </div>
         }
-        <div style="border-top:1px solid #f0f0f0;margin:4px 0;"></div>
+        <div class="ctx-divider"></div>
         <div class="ctx-item ctx-danger" @onclick="DeleteForMeClicked" @onclick:stopPropagation="true">
             <span class="ctx-icon">🗑</span> Delete for me
         </div>
@@ -130,6 +195,47 @@
 }
 
 <style>
+    .ctx-menu {
+        position: fixed;
+        background: var(--surface, #fff);
+        border: 1px solid var(--border, #e8e8e8);
+        border-radius: 8px;
+        padding: 4px 0;
+        z-index: 1000;
+        box-shadow: 0 8px 24px rgba(0,0,0,.15);
+        min-width: 210px;
+    }
+    .ctx-reaction-strip {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 6px 8px;
+    }
+    .ctx-reaction-btn {
+        width: 36px;
+        height: 36px;
+        border: none;
+        background: none;
+        cursor: pointer;
+        font-size: 22px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.1s, transform 0.1s;
+        line-height: 1;
+    }
+    .ctx-reaction-btn:hover {
+        background: var(--hover, #f0f0f0);
+        transform: scale(1.2);
+    }
+    .ctx-reaction-btn.active {
+        background: rgba(91, 166, 66, 0.18);
+    }
+    .ctx-divider {
+        border-top: 1px solid var(--border, #f0f0f0);
+        margin: 4px 0;
+    }
     .ctx-item {
         padding: 9px 16px;
         cursor: pointer;
@@ -137,14 +243,52 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        color: #222;
+        color: var(--text, #222);
         user-select: none;
         white-space: nowrap;
     }
-    .ctx-item:hover { background: #f5f5f5; }
+    .ctx-item:hover { background: var(--hover, #f5f5f5); }
     .ctx-icon { font-size: 16px; width: 20px; text-align: center; }
     .ctx-danger { color: #e53935; }
     .ctx-danger .ctx-icon { color: #e53935; }
+
+    .message-reactions-inline {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        flex: 1;
+    }
+    .reaction-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 2px 8px;
+        border: 1px solid rgba(0,0,0,0.12);
+        border-radius: 12px;
+        background: rgba(0,0,0,0.06);
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1.3;
+        transition: all 0.15s;
+    }
+    .reaction-badge:hover {
+        background: rgba(0,0,0,0.12);
+    }
+    .reaction-badge.active {
+        border-color: #5BA642;
+        background: rgba(91, 166, 66, 0.2);
+    }
+    .reaction-count {
+        font-size: 11px;
+        opacity: 0.75;
+        min-width: 8px;
+        text-align: center;
+    }
+    .mob-msg-selected {
+        background: rgba(91, 143, 217, 0.18);
+        border-radius: 6px;
+    }
 </style>
 
 @code {
@@ -159,13 +303,27 @@
     [Parameter] public EventCallback<ChatMessage> OnDeleteForAll { get; set; }
     [Parameter] public EventCallback<ChatMessage> OnForward { get; set; }
     [Parameter] public EventCallback<string> OnScrollToQuoted { get; set; }
+    [Parameter] public List<Attachment>? Attachments { get; set; }
+    [Parameter] public List<MessageReaction>? Reactions { get; set; }
+    [Parameter] public EventCallback<(string Emoji, ChatMessage Message)> OnReact { get; set; }
+    [Parameter] public string? UserEmail { get; set; }
+    [Parameter] public bool MobileMode { get; set; }
+    [Parameter] public bool IsSelected { get; set; }
+    [Parameter] public EventCallback<ChatMessage> OnSelected { get; set; }
 
     private bool _showMenu;
     private double _menuX, _menuY;
     private string _selectedText = "";
 
+    private readonly string[] _quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
+
     private async Task ShowContextMenu(MouseEventArgs e)
     {
+        if (MobileMode)
+        {
+            await OnSelected.InvokeAsync(Message);
+            return;
+        }
         _selectedText = await JS.InvokeAsync<string>("getSelectedText");
         _menuX = e.ClientX;
         _menuY = e.ClientY;
@@ -173,6 +331,12 @@
     }
 
     private void CloseMenu() => _showMenu = false;
+
+    private async Task PickReaction(string emoji)
+    {
+        _showMenu = false;
+        await OnReact.InvokeAsync((emoji, Message));
+    }
 
     private async Task ReplyClicked()
     {
@@ -215,6 +379,48 @@
     {
         _showMenu = false;
         await OnForward.InvokeAsync(Message);
+    }
+
+    private string GetAttachmentUrl(Attachment att)
+    {
+        if (!string.IsNullOrEmpty(att.FilePath) && System.IO.File.Exists(att.FilePath))
+        {
+            var bytes = System.IO.File.ReadAllBytes(att.FilePath);
+            return $"data:{att.ContentType};base64,{Convert.ToBase64String(bytes)}";
+        }
+        return "";
+    }
+
+    private async Task OpenImage(Attachment att)
+    {
+        var url = GetAttachmentUrl(att);
+        if (!string.IsNullOrEmpty(url))
+        {
+            await JS.InvokeVoidAsync("eval", $"window.open('{url}', '_blank');");
+        }
+    }
+
+    private async Task DownloadFile(Attachment att)
+    {
+        var url = GetAttachmentUrl(att);
+        if (!string.IsNullOrEmpty(url))
+        {
+            await JS.InvokeVoidAsync("eval", $@"(function() {{
+                var a = document.createElement('a');
+                a.href = '{url}';
+                a.download = '{att.FileName}';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }})();");
+        }
+    }
+
+    private string FormatSize(long bytes)
+    {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024.0).ToString("F1") + " KB";
+        return (bytes / (1024.0 * 1024.0)).ToString("F1") + " MB";
     }
 
     private string FormatTime(DateTimeOffset timestamp)

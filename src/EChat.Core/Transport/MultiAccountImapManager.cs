@@ -2,13 +2,12 @@ using EChat.Core.Crypto;
 using EChat.Core.Data;
 using EChat.Core.Models;
 using EChat.Core.Protocol;
-using EChat.Core.Transport;
-using EChat.UI.Services;
+using EChat.Core.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace EChat.Maui.Services;
+namespace EChat.Core.Transport;
 
 /// <summary>
 /// Manages one IMAP worker per non-active account.
@@ -78,23 +77,17 @@ public class MultiAccountImapManager
     private async Task EnsureWorkerStartedAsync(Account account)
     {
         if (_workers.ContainsKey(account.AccountId))
-        {
             return;
-        }
 
+        var since = DateTimeOffset.UtcNow.AddDays(-4);
         HashSet<string> knownIds;
         try
         {
             using var scope = _sp.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            var chatIds = await db.Chats
-                .Where(c => c.AccountId == account.AccountId)
-                .Select(c => c.ChatId)
-                .ToListAsync();
             var ids = await db.Messages
-                .Where(m => chatIds.Contains(m.ChatId) && m.MessageId != null)
-                .Select(m => m.MessageId)
-                .Take(5000)
+                .Where(m => m.MessageId != null && m.ReceivedAt >= since)
+                .Select(m => m.MessageId!)
                 .ToListAsync();
             knownIds = new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
         }
@@ -119,6 +112,6 @@ public class MultiAccountImapManager
         };
 
         _workers[account.AccountId] = worker;
-        worker.Start(knownIds);
+        worker.Start(knownIds, since);
     }
 }

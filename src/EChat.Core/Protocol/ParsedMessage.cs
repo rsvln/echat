@@ -8,6 +8,11 @@ public class ParsedMessage
     public bool IsEncrypted { get; set; }
     public required string Sender { get; set; }
     public List<string> Recipients { get; set; } = new();
+
+    /// <summary>IMAP UID of the source email, for deletion when the chat is deleted.</summary>
+    public long? ImapUid { get; set; }
+    /// <summary>IMAP folder the email lives in (e.g. "eChat").</summary>
+    public string? ImapFolder { get; set; }
 }
 
 public class AttachmentInfo

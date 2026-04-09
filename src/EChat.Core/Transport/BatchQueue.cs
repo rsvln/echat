@@ -6,22 +6,24 @@ namespace EChat.Core.Transport;
 
 public class BatchQueue
 {
-    private readonly ConcurrentDictionary<BatchKey, List<OutgoingMessage>> _batches = new();
+    private readonly ConcurrentDictionary<BatchKey, ConcurrentBag<OutgoingMessage>> _batches = new();
     private readonly Timer _flushTimer;
     private readonly Func<List<OutgoingMessage>, Task> _sendBatchFunc;
     private readonly Func<OutgoingMessage, Task> _sendSingleFunc;
-    private TimeSpan _currentBatchWindow = TimeSpan.FromSeconds(10);
-    
+    private readonly Func<BatchTier, TimeSpan> _getWindowFunc;
+
     public BatchQueue(
         Func<List<OutgoingMessage>, Task> sendBatchFunc,
         Func<OutgoingMessage, Task> sendSingleFunc,
-        TimeSpan flushInterval)
+        TimeSpan defaultFlushInterval,
+        Func<BatchTier, TimeSpan>? getWindowFunc = null)
     {
         _sendBatchFunc = sendBatchFunc;
         _sendSingleFunc = sendSingleFunc;
-        _flushTimer = new Timer(OnFlushTimer, null, flushInterval, flushInterval);
+        _getWindowFunc = getWindowFunc ?? (_ => defaultFlushInterval);
+        _flushTimer = new Timer(OnFlushTimer, null, defaultFlushInterval, defaultFlushInterval);
     }
-    
+
     public async Task Enqueue(OutgoingMessage message)
     {
         if (message.Tier == BatchTier.Immediate)
@@ -29,43 +31,45 @@ public class BatchQueue
             await _sendSingleFunc(message);
             return;
         }
-        
+
         var key = new BatchKey
         {
             Recipients = message.Recipients.ToHashSet(),
             GroupId = message.GroupId,
             Tier = message.Tier
         };
-        
+
         _batches.AddOrUpdate(key,
-            new List<OutgoingMessage> { message },
-            (k, list) =>
+            new ConcurrentBag<OutgoingMessage> { message },
+            (k, bag) =>
             {
-                list.Add(message);
-                return list;
+                bag.Add(message);
+                return bag;
             });
-        
-        if (_batches[key].Count >= 10)
+
+        if (_batches.TryGetValue(key, out var currentBag) && currentBag.Count >= 10)
         {
             await FlushBatch(key);
         }
     }
-    
+
     private async void OnFlushTimer(object? state)
     {
         var keys = _batches.Keys.ToList();
-        
         foreach (var key in keys)
         {
-            await FlushBatch(key);
+            try { await FlushBatch(key); }
+            catch { /* swallow — individual send errors are handled inside FlushBatch */ }
         }
     }
-    
+
     private async Task FlushBatch(BatchKey key)
     {
-        if (!_batches.TryRemove(key, out var messages) || messages.Count == 0)
+        if (!_batches.TryRemove(key, out var bag) || bag.IsEmpty)
             return;
-        
+
+        var messages = bag.ToArray().ToList();
+
         if (messages.Count == 1)
         {
             await _sendSingleFunc(messages[0]);
@@ -75,12 +79,7 @@ public class BatchQueue
             await _sendBatchFunc(messages);
         }
     }
-    
-    public void UpdateBatchWindow(TimeSpan window)
-    {
-        _currentBatchWindow = window;
-    }
-    
+
     public void Dispose()
     {
         _flushTimer?.Dispose();

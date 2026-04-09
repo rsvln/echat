@@ -24,7 +24,12 @@ public class ChatMessage
     public int EditVersion { get; set; }
     public bool ClockSkewDetected { get; set; }
     public MessageStatus Status { get; set; } = MessageStatus.Sent;
-    
+
+    /// <summary>IMAP UID of the source email — used to delete the email from the server when the chat is deleted.</summary>
+    public long? ImapUid { get; set; }
+    /// <summary>IMAP folder the source email lives in (e.g. "eChat").</summary>
+    public string? ImapFolder { get; set; }
+
     // Navigation
     public Chat? Chat { get; set; }
 }

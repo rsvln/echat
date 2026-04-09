@@ -1,0 +1,15 @@
+{
+  "domain": "echat_notify",
+  "name": "eChat Notifications",
+  "version": "1.0.0",
+  "documentation": "https://github.com/yourrepo/echat",
+  "issue_tracker": "https://github.com/yourrepo/echat/issues",
+  "requirements": [
+    "python-gnupg>=0.5.0"
+  ],
+  "dependencies": [],
+  "codeowners": ["@yourname"],
+  "config_flow": true,
+  "iot_class": "cloud_push",
+  "integration_type": "notify"
+}

@@ -41,4 +41,10 @@ public class ChatHeaders
     // Sync
     public string? SyncType { get; set; }
     public string? SyncDeviceId { get; set; }
+
+    // System messages
+    public string? SystemType { get; set; }
+
+    // Message type override (e.g. "reaction")
+    public string? MessageType { get; set; }
 }

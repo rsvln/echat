@@ -2,7 +2,6 @@ using EChat.Core;
 using EChat.Core.Data;
 using EChat.Core.Models;
 using EChat.Core.Transport;
-using EChat.Maui.Services;
 using EChat.UI.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,11 +13,17 @@ public partial class App : Application
     protected override Window CreateWindow(IActivationState? activationState)
     {
         var window = base.CreateWindow(activationState);
-        window.TitleBar = new TitleBar
+#if WINDOWS
+        try
         {
-            Icon = ImageSource.FromFile("echat_icon.png"),
-            Title = "EChat"
-        };
+            window.TitleBar = new TitleBar
+            {
+                Icon = ImageSource.FromFile("echat_icon.png"),
+                Title = "εChat"
+            };
+        }
+        catch { /* TitleBar not supported on this OS version — fall back to default title bar */ }
+#endif
         return window;
     }
 
@@ -26,13 +31,14 @@ public partial class App : Application
     {
         InitializeComponent();
 
-        Task.Run(async () => await serviceProvider.InitializeEChatDatabaseAsync())
-            .GetAwaiter().GetResult();
-
+#pragma warning disable CS0618
         MainPage = new MainPage();
+#pragma warning restore CS0618
 
-        Task.Run(async () =>
+        _ = Task.Run(async () =>
         {
+            await serviceProvider.InitializeEChatDatabaseAsync();
+
             using var scope = serviceProvider.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
@@ -44,6 +50,10 @@ public partial class App : Application
 
             var userCtx = serviceProvider.GetRequiredService<UserContextService>();
             userCtx.Initialize(account.AccountId, account.Email, deviceId);
+
+            // Load sync settings for this account
+            var syncEngine = serviceProvider.GetRequiredService<EChat.Core.Sync.SyncEngine>();
+            await syncEngine.LoadSettingsAsync(account.AccountId);
 
             var transport = serviceProvider.GetRequiredService<EmailTransportService>();
             var incomingMessages = serviceProvider.GetRequiredService<IncomingMessageService>();
@@ -64,6 +74,7 @@ public partial class App : Application
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"[eChat] Transport connect failed: {ex.Message}");
             }
 
             // Start IMAP workers for all non-active accounts

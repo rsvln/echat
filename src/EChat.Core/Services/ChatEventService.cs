@@ -1,4 +1,4 @@
-namespace EChat.UI.Services;
+namespace EChat.Core.Services;
 
 /// <summary>Simple in-process event bus that notifies UI components when a chat is updated.</summary>
 public class ChatEventService

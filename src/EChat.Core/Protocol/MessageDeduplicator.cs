@@ -10,28 +10,25 @@ public class MessageDeduplicator
     private readonly TimeSpan _cleanupInterval = TimeSpan.FromHours(1);
     private readonly int _maxCacheSize = 10000;
     
-    public bool IsDuplicate(ParsedMessage message)
+    public bool IsDuplicate(string accountId, ParsedMessage message)
     {
-        var hash = ComputeHash(message);
-        
-        if (_seenHashes.TryGetValue(hash, out var timestamp))
-        {
+        var hash = ComputeHash(accountId, message);
+
+        // TryAdd is atomic: returns false if the key already existed (= duplicate).
+        // This avoids the TryGetValue + TryAdd race where two concurrent callers
+        // both see "not in cache" and both proceed as non-duplicates.
+        if (!_seenHashes.TryAdd(hash, DateTimeOffset.UtcNow))
             return true;
-        }
-        
-        _seenHashes.TryAdd(hash, DateTimeOffset.UtcNow);
-        
+
         if (_seenHashes.Count > _maxCacheSize)
-        {
             Cleanup();
-        }
-        
+
         return false;
     }
     
-    private string ComputeHash(ParsedMessage message)
+    private string ComputeHash(string accountId, ParsedMessage message)
     {
-        var input = $"{message.Headers.MessageId}|{message.Sender}|{message.Headers.Timestamp:O}";
+        var input = $"{accountId}|{message.Headers.MessageId}|{message.Sender}|{message.Headers.Timestamp:O}";
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToBase64String(bytes);
     }

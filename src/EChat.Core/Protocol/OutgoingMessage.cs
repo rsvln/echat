@@ -26,6 +26,11 @@ public class OutgoingMessage
     public int? EditVersion { get; set; }
     public string? DeleteOf { get; set; }
     public List<string>? ReadOf { get; set; }  // MessageIds confirmed read (ReadReceipt type)
+    public string? SystemType { get; set; }
+
+    // Device sync headers
+    public string? SyncType { get; set; }
+    public string? SyncDeviceId { get; set; }
 }
 
 public enum MessageType
@@ -36,5 +41,6 @@ public enum MessageType
     Delete,
     ReadReceipt,
     DeliveryReceipt,
-    GroupOperation
+    GroupOperation,
+    System
 }

@@ -1,4 +1,7 @@
+using EChat.Core.Data;
 using EChat.Core.Models;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace EChat.Core.Sync;
@@ -6,26 +9,164 @@ namespace EChat.Core.Sync;
 public class SyncEngine
 {
     private readonly ILogger<SyncEngine> _logger;
+    private readonly IServiceScopeFactory _scopeFactory;
     private SyncSettings _settings;
-    private DateTime _lastActivityTime = DateTime.MinValue;
-    
-    public SyncEngine(ILogger<SyncEngine> logger, SyncSettings settings)
+    private DateTime _lastActivityTime = DateTime.UtcNow;
+
+    private readonly List<DateTime> _wakeupTimes = new();
+    private readonly object _wakeupLock = new();
+
+    public event Func<SyncSettings, Task>? SettingsChanged;
+
+    public SyncEngine(
+        ILogger<SyncEngine> logger,
+        IServiceScopeFactory scopeFactory)
     {
         _logger = logger;
-        _settings = settings;
+        _scopeFactory = scopeFactory;
+        _settings = new SyncSettings();
     }
-    
+
+    public async Task LoadSettingsAsync(string accountId)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+        var prefix = $"acct_{accountId}_";
+        var settings = await db.Settings
+            .Where(s => s.Key.StartsWith(prefix))
+            .ToDictionaryAsync(s => s.Key, s => s.Value);
+
+        var newSettings = new SyncSettings();
+
+        if (settings.TryGetValue($"{prefix}sync_profile", out var profileVal) &&
+            Enum.TryParse<SyncProfile>(profileVal, out var profile))
+            newSettings.Profile = profile;
+
+        if (settings.TryGetValue($"{prefix}allow_cellular", out var cellVal) &&
+            bool.TryParse(cellVal, out var allowCellular))
+            newSettings.AllowCellularSync = allowCellular;
+
+        if (settings.TryGetValue($"{prefix}sync_metered", out var meteredVal) &&
+            bool.TryParse(meteredVal, out var syncMetered))
+            newSettings.SyncOnMeteredConnection = syncMetered;
+
+        if (settings.TryGetValue($"{prefix}quiet_start", out var qStart) &&
+            int.TryParse(qStart, out var startHour) &&
+            settings.TryGetValue($"{prefix}quiet_end", out var qEnd) &&
+            int.TryParse(qEnd, out var endHour))
+            newSettings.QuietHours = new TimeRange(startHour, endHour);
+
+        if (settings.TryGetValue($"{prefix}quiet_profile", out var qProfileVal) &&
+            Enum.TryParse<SyncProfile>(qProfileVal, out var qProfile))
+            newSettings.QuietHoursProfile = qProfile;
+
+        if (settings.TryGetValue($"{prefix}use_idle", out var idleVal) &&
+            bool.TryParse(idleVal, out var useIdle))
+            newSettings.UseImapIdle = useIdle;
+
+        if (settings.TryGetValue($"{prefix}polling_interval", out var pollVal) &&
+            int.TryParse(pollVal, out var pollMin) && pollMin > 0)
+            newSettings.PollingInterval = TimeSpan.FromMinutes(pollMin);
+
+        UpdateSettings(newSettings);
+        _logger.LogInformation("Loaded sync settings for account {AccountId}: profile={Profile}, idle={Idle}, poll={Poll}min",
+            accountId, newSettings.Profile, newSettings.UseImapIdle, newSettings.PollingInterval.TotalMinutes);
+    }
+
+    public async Task SaveSettingsAsync(string accountId, SyncSettings settings)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+        var prefix = $"acct_{accountId}_";
+        var keys = new Dictionary<string, string>
+        {
+            [$"{prefix}sync_profile"] = settings.Profile.ToString(),
+            [$"{prefix}allow_cellular"] = settings.AllowCellularSync.ToString(),
+            [$"{prefix}sync_metered"] = settings.SyncOnMeteredConnection.ToString(),
+            [$"{prefix}use_idle"] = settings.UseImapIdle.ToString(),
+            [$"{prefix}polling_interval"] = ((int)settings.PollingInterval.TotalMinutes).ToString(),
+        };
+
+        if (settings.QuietHours != null)
+        {
+            keys[$"{prefix}quiet_start"] = settings.QuietHours.StartHour.ToString();
+            keys[$"{prefix}quiet_end"] = settings.QuietHours.EndHour.ToString();
+        }
+
+        keys[$"{prefix}quiet_profile"] = settings.QuietHoursProfile.ToString();
+
+        foreach (var (key, value) in keys)
+        {
+            var existing = await db.Settings.FindAsync(key);
+            if (existing == null)
+            {
+                db.Settings.Add(new Setting { Key = key, Value = value, UpdatedAt = DateTimeOffset.UtcNow });
+            }
+            else
+            {
+                existing.Value = value;
+                existing.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+        }
+
+        await db.SaveChangesAsync();
+        UpdateSettings(settings);
+
+        _logger.LogInformation("Saved sync settings for account {AccountId}", accountId);
+    }
+
     public void UpdateSettings(SyncSettings settings)
     {
         _settings = settings;
+        SettingsChanged?.Invoke(settings);
     }
-    
+
+    public SyncSettings GetCurrentSettings() => _settings;
+
+    private Dictionary<string, ChatPriority> _chatPriorities = new();
+
+    public void SetChatPriority(string chatId, ChatPriority priority)
+    {
+        _chatPriorities[chatId] = priority;
+    }
+
+    public ChatPriority GetChatPriority(string chatId)
+    {
+        return _chatPriorities.GetValueOrDefault(chatId, ChatPriority.Normal);
+    }
+
     public void RecordActivity()
     {
         _lastActivityTime = DateTime.UtcNow;
     }
-    
+
+    public void RecordWakeup()
+    {
+        var now = DateTime.UtcNow;
+        lock (_wakeupLock)
+        {
+            _wakeupTimes.Add(now);
+            // Trim entries older than 48h to bound memory usage
+            var cutoff = now.AddHours(-48);
+            _wakeupTimes.RemoveAll(t => t < cutoff);
+        }
+    }
+
+    public int GetWakeupCount(TimeSpan window)
+    {
+        var cutoff = DateTime.UtcNow - window;
+        lock (_wakeupLock)
+            return _wakeupTimes.Count(t => t >= cutoff);
+    }
+
     public SyncStrategy GetCurrentStrategy(int batteryLevel, bool isMetered, bool isCellular)
+    {
+        return GetCurrentStrategy(batteryLevel, isMetered, isCellular, ChatPriority.Normal);
+    }
+
+    public SyncStrategy GetCurrentStrategy(int batteryLevel, bool isMetered, bool isCellular, ChatPriority chatPriority)
     {
         if (batteryLevel < 15)
         {
@@ -37,29 +178,33 @@ public class SyncEngine
                 Reason = "Low battery"
             };
         }
-        
-        if (IsQuietHours())
+
+        // High priority chats override quiet hours and metered restrictions
+        if (chatPriority != ChatPriority.High)
         {
-            _logger.LogInformation("Quiet hours active");
-            return ApplyProfile(_settings.QuietHoursProfile);
-        }
-        
-        if (isMetered && !_settings.SyncOnMeteredConnection)
-        {
-            _logger.LogInformation("Metered connection, reducing sync");
-            return new SyncStrategy
+            if (IsQuietHours())
             {
-                UseIdle = false,
-                PollingInterval = TimeSpan.FromMinutes(30),
-                Reason = "Metered connection"
-            };
+                _logger.LogInformation("Quiet hours active");
+                return ApplyProfile(_settings.QuietHoursProfile, chatPriority);
+            }
+
+            if (isMetered && !_settings.SyncOnMeteredConnection)
+            {
+                _logger.LogInformation("Metered connection, reducing sync");
+                return new SyncStrategy
+                {
+                    UseIdle = false,
+                    PollingInterval = TimeSpan.FromMinutes(30),
+                    Reason = "Metered connection"
+                };
+            }
         }
-        
+
         if (!isCellular || _settings.AllowCellularSync)
         {
-            return ApplyProfile(_settings.Profile);
+            return ApplyProfile(_settings.Profile, chatPriority);
         }
-        
+
         return new SyncStrategy
         {
             UseIdle = false,
@@ -67,11 +212,11 @@ public class SyncEngine
             Reason = "Cellular sync disabled"
         };
     }
-    
+
     public TimeSpan GetAdaptiveBatchWindow(BatchTier tier)
     {
         var activityAge = DateTime.UtcNow - _lastActivityTime;
-        
+
         var baseWindow = tier switch
         {
             BatchTier.Immediate => _settings.ImmediateBatchWindow,
@@ -79,28 +224,28 @@ public class SyncEngine
             BatchTier.LowPriority => _settings.LowPriorityBatchWindow,
             _ => TimeSpan.FromSeconds(10)
         };
-        
+
         if (activityAge < TimeSpan.FromSeconds(30))
         {
             return TimeSpan.FromTicks(baseWindow.Ticks / 2);
         }
-        
+
         if (activityAge > TimeSpan.FromMinutes(5))
         {
             return TimeSpan.FromTicks(baseWindow.Ticks * 2);
         }
-        
+
         return baseWindow;
     }
-    
+
     private bool IsQuietHours()
     {
         if (_settings.QuietHours == null) return false;
-        
+
         var now = DateTime.Now.Hour;
         var start = _settings.QuietHours.StartHour;
         var end = _settings.QuietHours.EndHour;
-        
+
         if (start < end)
         {
             return now >= start && now < end;
@@ -110,8 +255,8 @@ public class SyncEngine
             return now >= start || now < end;
         }
     }
-    
-    private SyncStrategy ApplyProfile(SyncProfile profile)
+
+    private SyncStrategy ApplyProfile(SyncProfile profile, ChatPriority chatPriority = ChatPriority.Normal)
     {
         return profile switch
         {
@@ -123,27 +268,40 @@ public class SyncEngine
             },
             SyncProfile.Balanced => new SyncStrategy
             {
-                UseIdle = !IsQuietHours(),
-                PollingInterval = TimeSpan.FromMinutes(5),
+                UseIdle = !IsQuietHours() || chatPriority == ChatPriority.High,
+                PollingInterval = chatPriority == ChatPriority.High
+                    ? TimeSpan.FromMinutes(1)
+                    : TimeSpan.FromMinutes(5),
                 Reason = "Balanced mode"
             },
             SyncProfile.PowerSaver => new SyncStrategy
             {
-                UseIdle = false,
-                PollingInterval = TimeSpan.FromMinutes(15),
+                UseIdle = chatPriority == ChatPriority.High,
+                PollingInterval = chatPriority switch
+                {
+                    ChatPriority.High => TimeSpan.FromMinutes(5),
+                    ChatPriority.Normal => TimeSpan.FromMinutes(15),
+                    ChatPriority.Low => TimeSpan.FromMinutes(30),
+                    ChatPriority.Muted => TimeSpan.FromHours(6),
+                    _ => TimeSpan.FromMinutes(15)
+                },
                 Reason = "Power saver mode"
             },
             SyncProfile.Manual => new SyncStrategy
             {
-                UseIdle = false,
-                PollingInterval = TimeSpan.FromDays(1),
-                Reason = "Manual sync only"
+                UseIdle = chatPriority == ChatPriority.High,
+                PollingInterval = chatPriority == ChatPriority.High
+                    ? TimeSpan.FromMinutes(5)
+                    : TimeSpan.FromDays(1),
+                Reason = chatPriority == ChatPriority.High ? "High priority override" : "Manual sync only"
             },
             SyncProfile.Custom => new SyncStrategy
             {
-                UseIdle = _settings.UseImapIdle,
-                PollingInterval = _settings.PollingInterval,
-                Reason = "Custom settings"
+                UseIdle = _settings.UseImapIdle || chatPriority == ChatPriority.High,
+                PollingInterval = chatPriority == ChatPriority.High
+                    ? TimeSpan.FromMinutes(1)
+                    : _settings.PollingInterval,
+                Reason = chatPriority == ChatPriority.High ? "High priority override" : "Custom settings"
             },
             _ => new SyncStrategy
             {

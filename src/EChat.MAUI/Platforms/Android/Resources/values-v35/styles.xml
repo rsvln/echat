@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Android 15 (API 35) enforces edge-to-edge by default, ignoring SetDecorFitsSystemWindows.
+        This opts out so the navigation bar does not overlap our WebView content.
+    -->
+    <style name="Maui.MainTheme" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

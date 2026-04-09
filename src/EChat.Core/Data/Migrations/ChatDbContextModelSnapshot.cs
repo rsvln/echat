@@ -15,7 +15,7 @@ namespace EChat.Core.Data.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "8.0.11");
+            modelBuilder.HasAnnotation("ProductVersion", "9.0.4");
 
             modelBuilder.Entity("EChat.Core.Models.Account", b =>
                 {
@@ -85,6 +85,48 @@ namespace EChat.Core.Data.Migrations
                     b.ToTable("Accounts");
                 });
 
+            modelBuilder.Entity("EChat.Core.Models.Attachment", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Caption")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FilePath")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("Height")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsImage")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("MessageId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Size")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("Width")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MessageId");
+
+                    b.ToTable("Attachments");
+                });
+
             modelBuilder.Entity("EChat.Core.Models.Chat", b =>
                 {
                     b.Property<string>("ChatId")
@@ -99,6 +141,9 @@ namespace EChat.Core.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("Deleted")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTimeOffset?>("LastActivityAt")
                         .HasColumnType("TEXT");
 
@@ -110,6 +155,9 @@ namespace EChat.Core.Data.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PartnerEmail")
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Priority")
@@ -126,6 +174,8 @@ namespace EChat.Core.Data.Migrations
                     b.HasIndex("AccountId");
 
                     b.HasIndex("LastActivityAt");
+
+                    b.HasIndex("AccountId", "PartnerEmail");
 
                     b.HasIndex("Archived", "LastActivityAt");
 
@@ -185,6 +235,12 @@ namespace EChat.Core.Data.Migrations
                     b.Property<bool>("Encrypted")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ImapFolder")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("ImapUid")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("InReplyTo")
                         .HasColumnType("TEXT");
 
@@ -198,12 +254,12 @@ namespace EChat.Core.Data.Migrations
                     b.Property<DateTimeOffset>("ReceivedAt")
                         .HasColumnType("TEXT");
 
-                    b.Property<int>("Status")
-                        .HasColumnType("INTEGER");
-
                     b.Property<string>("Sender")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("INTEGER");
 
                     b.Property<DateTimeOffset>("Timestamp")
                         .HasColumnType("TEXT");
@@ -253,6 +309,33 @@ namespace EChat.Core.Data.Migrations
                     b.HasIndex("Verified");
 
                     b.ToTable("Contacts");
+                });
+
+            modelBuilder.Entity("EChat.Core.Models.GroupKeyPair", b =>
+                {
+                    b.Property<string>("GroupId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PrivateKey")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("PublicKey")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("GroupId");
+
+                    b.HasIndex("Fingerprint");
+
+                    b.ToTable("GroupKeyPairs");
                 });
 
             modelBuilder.Entity("EChat.Core.Models.GroupMember", b =>
@@ -315,6 +398,35 @@ namespace EChat.Core.Data.Migrations
                     b.HasIndex("GroupId", "Version");
 
                     b.ToTable("GroupOperations");
+                });
+
+            modelBuilder.Entity("EChat.Core.Models.MessageReaction", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Emoji")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("MessageId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Sender")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("Timestamp")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MessageId");
+
+                    b.HasIndex("MessageId", "Emoji", "Sender");
+
+                    b.ToTable("MessageReactions");
                 });
 
             modelBuilder.Entity("EChat.Core.Models.Setting", b =>

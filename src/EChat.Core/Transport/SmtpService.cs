@@ -1,16 +1,23 @@
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
+using EChat.Core.Services;
 using MailKit.Net.Smtp;
 using MimeKit;
-using Microsoft.Extensions.Logging;
 
 namespace EChat.Core.Transport;
 
+public enum SmtpSendResult
+{
+    Sent,        // delivered
+    RateLimited, // 4xx rate-limit (429/452/421) — retry later
+    Permanent,   // 5xx permanent failure — don't retry
+    TransientError // network / protocol error — safe to retry later
+}
+
 public class SmtpService : IDisposable
 {
-    private readonly ILogger<SmtpService> _logger;
+    private readonly FileLogger _fileLogger;
     private readonly SmtpClient _client;
-    private TimeSpan _currentBackoff = TimeSpan.FromSeconds(1);
     private const int MaxRetries = 3;
 
     // MailKit SmtpClient is not thread-safe — serialize all sends
@@ -38,9 +45,9 @@ public class SmtpService : IDisposable
         return (sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateChainErrors) == SslPolicyErrors.None;
     }
 
-    public SmtpService(ILogger<SmtpService> logger)
+    public SmtpService(FileLogger fileLogger)
     {
-        _logger = logger;
+        _fileLogger = fileLogger;
         _client = new SmtpClient
         {
             ServerCertificateValidationCallback = AllowRevocationUnknown
@@ -59,11 +66,11 @@ public class SmtpService : IDisposable
         {
             await _client.ConnectAsync(server, port, useSsl);
             await _client.AuthenticateAsync(email, password);
-            _logger.LogInformation("Connected to SMTP server {Server}", server);
+            _fileLogger.Write("INFO", "SmtpService", $"Connected to SMTP server {server}");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to connect to SMTP server");
+            _fileLogger.Write("ERROR", "SmtpService", $"Failed to connect to SMTP server: {ex.Message}");
             throw;
         }
     }
@@ -79,10 +86,10 @@ public class SmtpService : IDisposable
 
         await _client.ConnectAsync(_server, _port, _useSsl);
         await _client.AuthenticateAsync(_email, _password);
-        _logger.LogInformation("Reconnected to SMTP server {Server}", _server);
+        _fileLogger.Write("INFO", "SmtpService", $"Reconnected to SMTP server {_server}");
     }
 
-    public async Task<bool> SendAsync(MimeMessage message)
+    public async Task<SmtpSendResult> SendAsync(MimeMessage message)
     {
         await _sendLock.WaitAsync();
         try
@@ -95,8 +102,10 @@ public class SmtpService : IDisposable
         }
     }
 
-    private async Task<bool> SendInternalAsync(MimeMessage message)
+    private async Task<SmtpSendResult> SendInternalAsync(MimeMessage message)
     {
+        var backoff = TimeSpan.FromSeconds(2);
+
         for (int attempt = 0; attempt < MaxRetries; attempt++)
         {
             try
@@ -105,43 +114,54 @@ public class SmtpService : IDisposable
                     await ReconnectAsync();
 
                 await _client.SendAsync(message);
-                _currentBackoff = TimeSpan.FromSeconds(1);
-                _logger.LogInformation("Message sent: {MessageId}", message.MessageId);
-                return true;
+                _fileLogger.Write("INFO", "SmtpService", $"Message sent: {message.MessageId}");
+                return SmtpSendResult.Sent;
             }
             catch (SmtpProtocolException ex)
             {
-                // SmtpProtocolException typically means the connection dropped AFTER the DATA
-                // command was sent — the message may already have been accepted by the server.
-                // Retrying would send a duplicate. Reconnect for future sends but don't retry.
-                _logger.LogWarning(ex, "SMTP protocol error on attempt {Attempt} — not retrying to avoid duplicate send", attempt + 1);
+                // Connection dropped after DATA — message may already be accepted.
+                // Retrying would duplicate it. Reconnect for future sends, report as transient.
+                _fileLogger.Write("WARN", "SmtpService", $"SMTP protocol error — possible duplicate risk, not retrying: {ex.Message}");
                 try { await ReconnectAsync(); } catch { }
-                return false;
+                return SmtpSendResult.TransientError;
             }
             catch (SmtpCommandException ex)
             {
-                _logger.LogWarning(ex, "SMTP command error {StatusCode} on attempt {Attempt}: {Message}",
-                    (int)ex.StatusCode, attempt + 1, ex.Message);
-                if ((int)ex.StatusCode >= 500)
-                    return false;
+                var code = (int)ex.StatusCode;
+                _fileLogger.Write("WARN", "SmtpService", $"SMTP command error {code} on attempt {attempt + 1}: {ex.Message}");
+
+                // 5xx = permanent failure (bad address, policy rejection, etc.) — don't retry
+                if (code >= 500)
+                    return SmtpSendResult.Permanent;
+
+                // 421 = service temporarily unavailable (server overloaded / shutting down)
+                // 429 = too many requests (rate limit)
+                // 452 = insufficient system storage / sending limit reached
+                if (code == 421 || code == 429 || code == 452)
+                {
+                    _fileLogger.Write("WARN", "SmtpService", $"SMTP rate-limit {code} — message stays Sending for retry on next app start");
+                    return SmtpSendResult.RateLimited;
+                }
+
+                // Other 4xx — transient, retry with backoff
                 if (attempt < MaxRetries - 1)
                 {
-                    await Task.Delay(_currentBackoff);
-                    _currentBackoff = TimeSpan.FromSeconds(Math.Min(_currentBackoff.TotalSeconds * 2, 60));
+                    await Task.Delay(backoff);
+                    backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 60));
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error sending message on attempt {Attempt}", attempt + 1);
+                _fileLogger.Write("ERROR", "SmtpService", $"Unexpected error on attempt {attempt + 1}: {ex.Message}");
                 if (attempt < MaxRetries - 1)
                 {
-                    await Task.Delay(_currentBackoff);
-                    _currentBackoff = TimeSpan.FromSeconds(Math.Min(_currentBackoff.TotalSeconds * 2, 60));
+                    await Task.Delay(backoff);
+                    backoff = TimeSpan.FromSeconds(Math.Min(backoff.TotalSeconds * 2, 60));
                 }
             }
         }
 
-        return false;
+        return SmtpSendResult.TransientError;
     }
 
     public async Task DisconnectAsync()

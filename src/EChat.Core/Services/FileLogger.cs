@@ -2,10 +2,20 @@ using System.Text;
 
 namespace EChat.Core.Services;
 
+public enum AppLogLevel
+{
+    None  = 0,   // nothing written
+    Error = 1,   // errors only
+    Warn  = 2,   // errors + warnings
+    Info  = 3,   // errors + warnings + info
+    Debug = 4    // everything
+}
+
 /// <summary>
 /// Simple file-based logger for debug diagnostics.
 /// Writes to a timestamped .log file in the "log" subdirectory next to the database.
 /// Each application launch creates a new file.
+/// Only messages at or below <see cref="MinLevel"/> verbosity are written.
 /// </summary>
 public class FileLogger
 {
@@ -14,6 +24,9 @@ public class FileLogger
     private readonly object _lock = new();
     private const int MaxFileSize = 5 * 1024 * 1024; // 5 MB
     private const int MaxLogFiles = 20;
+
+    /// <summary>Minimum severity to write. Messages more verbose than this are silently dropped.</summary>
+    public AppLogLevel MinLevel { get; set; } = AppLogLevel.Info;
 
     public FileLogger(string dbPath)
     {
@@ -25,8 +38,20 @@ public class FileLogger
         CleanupOldFiles();
     }
 
+    private static AppLogLevel ParseLevel(string level) => level.ToUpperInvariant() switch
+    {
+        "ERROR" => AppLogLevel.Error,
+        "WARN"  => AppLogLevel.Warn,
+        "INFO"  => AppLogLevel.Info,
+        "DEBUG" => AppLogLevel.Debug,
+        _       => AppLogLevel.Debug
+    };
+
     public void Write(string level, string category, string message)
     {
+        if (MinLevel == AppLogLevel.None) return;
+        if (ParseLevel(level) > MinLevel) return;
+
         lock (_lock)
         {
             try
@@ -47,6 +72,9 @@ public class FileLogger
     }
 
     public string LogPath => _logPath;
+
+    /// <summary>Platform-correct base app data directory (parent of the "log" folder).</summary>
+    public string AppDir => Path.GetDirectoryName(_logDir) ?? ".";
 
     public byte[] ReadAllBytes()
     {

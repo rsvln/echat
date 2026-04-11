@@ -49,7 +49,7 @@ if errorlevel 1 (
     if exist "%PUB%\win\EChat.Maui.exe" (
         if exist "%PUB%\win\echat.exe" del /q "%PUB%\win\echat.exe"
         rename "%PUB%\win\EChat.Maui.exe" echat.exe
-        echo   OK: renamed EChat.Maui.exe -> echat.exe
+        echo   OK: renamed EChat.Maui.exe -^> echat.exe
     )
     :: Pack pub\win into distr\EChat-win.zip with inner folder named "echat"
     if exist "%PUB%\distr\EChat-win.zip" del /q "%PUB%\distr\EChat-win.zip"

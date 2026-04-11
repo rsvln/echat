@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+using EChat.Core.Services;
 using PgpCore;
 using System.Text;
 
@@ -6,11 +6,11 @@ namespace EChat.Core.Crypto;
 
 public class PgpService
 {
-    private readonly ILogger<PgpService> _logger;
+    private readonly FileLogger _fileLogger;
 
-    public PgpService(ILogger<PgpService> logger)
+    public PgpService(FileLogger fileLogger)
     {
-        _logger = logger;
+        _fileLogger = fileLogger;
     }
 
     /// <summary>
@@ -36,7 +36,7 @@ public class PgpService
         var publicKey = Convert.ToBase64String(publicKeyStream.ToArray());
         var privateKey = Convert.ToBase64String(privateKeyStream.ToArray());
 
-        _logger.LogInformation("Generated PGP key pair for {Identity}", identity);
+        _fileLogger.Write("INFO", "PgpService", $"Generated PGP key pair for {identity}");
         return (publicKey, privateKey);
     }
 
@@ -47,6 +47,7 @@ public class PgpService
 
     public async Task<string> EncryptAsync(string plainText, IEnumerable<string> publicKeyBase64s)
     {
+        _fileLogger.Write("DEBUG", "PgpService", $"EncryptAsync START, thread={Thread.CurrentThread.ManagedThreadId}");
         var keys = publicKeyBase64s.Where(k => !string.IsNullOrWhiteSpace(k)).ToList();
         if (keys.Count == 0)
             throw new ArgumentException("No public keys provided", nameof(publicKeyBase64s));
@@ -60,7 +61,7 @@ public class PgpService
             }
             catch (FormatException ex)
             {
-                _logger.LogWarning(ex, "Invalid base64 in public key, skipping (length={Len})", k.Length);
+                _fileLogger.Write("WARN", "PgpService", $"Invalid base64 in public key, skipping (length={k.Length}): {ex.Message}");
             }
         }
 
@@ -74,7 +75,9 @@ public class PgpService
         using var outputStream = new MemoryStream();
 
         await pgp.EncryptAsync(inputStream, outputStream);
-        return Convert.ToBase64String(outputStream.ToArray());
+        var result = Convert.ToBase64String(outputStream.ToArray());
+        _fileLogger.Write("DEBUG", "PgpService", $"EncryptAsync END, thread={Thread.CurrentThread.ManagedThreadId}, outputLen={result.Length}");
+        return result;
     }
 
     public async Task<string> DecryptAsync(string encryptedBase64, string privateKeyBase64, string password)
@@ -91,7 +94,7 @@ public class PgpService
         }
         catch (FormatException ex)
         {
-            _logger.LogWarning(ex, "Invalid base64 in encrypted content (length={Len})", encryptedBase64.Length);
+            _fileLogger.Write("WARN", "PgpService", $"Invalid base64 in encrypted content (length={encryptedBase64.Length}): {ex.Message}");
             throw;
         }
 
@@ -102,7 +105,7 @@ public class PgpService
         }
         catch (FormatException ex)
         {
-            _logger.LogWarning(ex, "Invalid base64 in private key (length={Len})", privateKeyBase64.Length);
+            _fileLogger.Write("WARN", "PgpService", $"Invalid base64 in private key (length={privateKeyBase64.Length}): {ex.Message}");
             throw;
         }
 
@@ -129,7 +132,7 @@ public class PgpService
         }
         catch (FormatException ex)
         {
-            _logger.LogWarning(ex, "Invalid base64 in public key for fingerprint (length={Len})", publicKeyBase64.Length);
+            _fileLogger.Write("WARN", "PgpService", $"Invalid base64 in public key for fingerprint (length={publicKeyBase64.Length}): {ex.Message}");
             throw;
         }
 

@@ -9,8 +9,8 @@
     ".NETCoreApp,Version=v10.0/win-x64": {
       "EChat.Maui/0.1.1": {
         "dependencies": {
-          "EChat.Core": "0.1.76",
-          "EChat.UI": "0.1.76",
+          "EChat.Core": "0.1.171",
+          "EChat.UI": "0.1.167",
           "Microsoft.AspNetCore.Components.WebView.Maui": "10.0.20",
           "Microsoft.Extensions.Logging.Debug": "10.0.0",
           "Microsoft.Maui.Controls": "10.0.20",
@@ -839,7 +839,7 @@
           }
         }
       },
-      "EChat.Core/0.1.76": {
+      "EChat.Core/0.1.171": {
         "dependencies": {
           "MailKit": "4.15.1",
           "Microsoft.EntityFrameworkCore": "9.0.4",
@@ -851,21 +851,21 @@
         },
         "runtime": {
           "EChat.Core.dll": {
-            "assemblyVersion": "0.1.76.0",
-            "fileVersion": "0.1.76.0"
+            "assemblyVersion": "0.1.171.0",
+            "fileVersion": "0.1.171.0"
           }
         }
       },
-      "EChat.UI/0.1.76": {
+      "EChat.UI/0.1.167": {
         "dependencies": {
-          "EChat.Core": "0.1.76",
+          "EChat.Core": "0.1.171",
           "Microsoft.AspNetCore.Components.Web": "10.0.0",
           "Net.Codecrete.QrCodeGenerator": "2.0.3"
         },
         "runtime": {
           "EChat.UI.dll": {
-            "assemblyVersion": "0.1.76.0",
-            "fileVersion": "0.1.76.0"
+            "assemblyVersion": "0.1.167.0",
+            "fileVersion": "0.1.167.0"
           }
         }
       },
@@ -1310,12 +1310,12 @@
       "path": "system.security.cryptography.pkcs/10.0.0",
       "hashPath": "system.security.cryptography.pkcs.10.0.0.nupkg.sha512"
     },
-    "EChat.Core/0.1.76": {
+    "EChat.Core/0.1.171": {
       "type": "project",
       "serviceable": false,
       "sha512": ""
     },
-    "EChat.UI/0.1.76": {
+    "EChat.UI/0.1.167": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

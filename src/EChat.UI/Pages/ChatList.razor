@@ -103,13 +103,30 @@
                     @foreach (var chat in FilteredChats)
                     {
                         <div class="chat-item @(chat.ChatId == selectedChatId ? "active" : "") @(chat.Archived ? "chat-item-archived" : "")"
-                             @onclick="@(() => SelectChat(chat.ChatId))">
+                             @onclick="@(() => SelectChat(chat.ChatId))"
+                             @oncontextmenu="@(e => OpenChatCtxMenu(e, chat))"
+                             @oncontextmenu:preventDefault="true">
                             <div class="chat-avatar @(chat.Type == ChatType.Group ? "chat-avatar-group" : "") @(GetAvatarColorClass(chat.Name))">
                                 @chat.Name.Substring(0, 1).ToUpper()
                             </div>
                             <div class="chat-content">
                                 <div class="chat-item-top">
-                                    <span class="chat-name">@chat.Name</span>
+                                    <span class="chat-name">
+                                        <span class="chat-name-row">
+                                            @if (chat.Type == ChatType.Group)
+                                            {
+                                                <svg class="chat-name-group-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                    <circle cx="12" cy="7" r="3.5"/>
+                                                    <path d="M5.5 21v-2a5.5 5.5 0 0 1 5.5-5.5h2a5.5 5.5 0 0 1 5.5 5.5v2"/>
+                                                    <circle cx="4" cy="9" r="2.5"/>
+                                                    <path d="M1 21v-1.5a3.5 3.5 0 0 1 3-3.46"/>
+                                                    <circle cx="20" cy="9" r="2.5"/>
+                                                    <path d="M23 21v-1.5a3.5 3.5 0 0 0-3-3.46"/>
+                                                </svg>
+                                            }
+                                            @chat.Name
+                                        </span>
+                                    </span>
                                     <span class="chat-time">@FormatTime(chat.LastActivityAt)</span>
                                 </div>
                                 <div class="chat-preview">
@@ -120,14 +137,14 @@
                                            @onclick:stopPropagation="true"
                                            @onclick="@(() => ToggleArchiveFromMenu(chat.ChatId, false))">Unarchive</a>
                                     }
-                                    else if (chat.UnreadCount > 0)
-                                    {
-                                        <span>New messages</span>
-                                        <span class="chat-badge">@chat.UnreadCount</span>
-                                    }
                                     else
                                     {
-                                        <span class="preview-placeholder">···</span>
+                                        var preview = GetLastMessagePreview(chat);
+                                        <span class="preview-text">@(string.IsNullOrEmpty(preview) ? "···" : preview)</span>
+                                        @if (chat.UnreadCount > 0)
+                                        {
+                                            <span class="chat-badge">@chat.UnreadCount</span>
+                                        }
                                     }
                                 </div>
                             </div>
@@ -339,6 +356,77 @@
                    OnChatDeleted="@DeleteChatRemote"
                    OnGroupLeft="@LeaveGroupRemote" />
 
+    @* ── Chat list context menu ───────────────────────────────────── *@
+    @if (_showChatCtx && _chatCtxChat != null)
+    {
+        <div style="position:fixed;inset:0;z-index:998;" @onclick="CloseChatCtx"></div>
+        <div class="ctx-menu" style="left:@(_chatCtxX)px;top:@(_chatCtxY)px;z-index:999;">
+            <div class="ctx-item" @onclick="ToggleMutedCtx" @onclick:stopPropagation="true">
+                @if (_chatCtxChat.Muted)
+                {
+                    <svg class="ctx-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+                    <span>Unmute</span>
+                }
+                else
+                {
+                    <svg class="ctx-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/></svg>
+                    <span>Mute</span>
+                }
+            </div>
+            @if (_chatCtxChat.Archived)
+            {
+                <div class="ctx-item" @onclick="ToggleArchiveCtx" @onclick:stopPropagation="true">
+                    <svg class="ctx-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+                    <span>Unarchive</span>
+                </div>
+            }
+            else
+            {
+                <div class="ctx-item" @onclick="ToggleArchiveCtx" @onclick:stopPropagation="true">
+                    <svg class="ctx-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+                    <span>Archive</span>
+                </div>
+            }
+            <div class="ctx-divider"></div>
+            <div class="ctx-item ctx-danger" @onclick="@(() => _chatCtxConfirmDelete = true)" @onclick:stopPropagation="true">
+                <svg class="ctx-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                <span>Delete</span>
+            </div>
+        </div>
+    }
+
+    @* ── Delete confirmation ──────────────────────────────────────── *@
+    @if (_chatCtxConfirmDelete && _chatCtxChat != null)
+    {
+        <div class="nc-overlay" @onclick="CloseChatCtx">
+            <div class="new-chat-modal" style="max-width:340px;" @onclick:stopPropagation="true">
+                <div class="new-chat-modal-header">
+                    <span style="font-weight:600;font-size:15px;flex:1;">Delete chat</span>
+                    <button class="new-chat-close" @onclick="CloseChatCtx">✕</button>
+                </div>
+                <div style="padding:16px;">
+                    @if (_chatCtxChat.Type == ChatType.Group)
+                    {
+                        <p style="margin:0 0 16px;font-size:14px;">Are you an admin of this group?</p>
+                        <div style="display:flex;flex-direction:column;gap:8px;">
+                            <button class="new-chat-btn-danger" @onclick="CtxDeleteGroupAsAdmin">Delete group for everyone</button>
+                            <button class="new-chat-btn-secondary" @onclick="CtxLeaveGroup">Leave group</button>
+                            <button class="new-chat-btn-cancel" @onclick="CloseChatCtx">Cancel</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <p style="margin:0 0 16px;font-size:14px;">Delete this chat and notify the other participant?</p>
+                        <div style="display:flex;flex-direction:column;gap:8px;">
+                            <button class="new-chat-btn-danger" @onclick="CtxDeleteOneToOne">Delete chat</button>
+                            <button class="new-chat-btn-cancel" @onclick="CloseChatCtx">Cancel</button>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+
 }
 else
 {
@@ -467,18 +555,30 @@ else
                             </div>
                         <div class="chat-content">
                             <div class="chat-item-top">
-                                <span class="chat-name">@chat.Name</span>
+                                <span class="chat-name">
+                                    <span class="chat-name-row">
+                                        @if (chat.Type == ChatType.Group)
+                                        {
+                                            <svg class="chat-name-group-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                                                <circle cx="9" cy="7" r="4"/>
+                                                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                                                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                                            </svg>
+                                        }
+                                        @chat.Name
+                                    </span>
+                                </span>
                                 <span class="chat-time">@FormatTime(chat.LastActivityAt)</span>
                             </div>
                             <div class="chat-preview">
+                                @{
+                                    var preview = GetLastMessagePreview(chat);
+                                }
+                                <span class="preview-text">@(string.IsNullOrEmpty(preview) ? "···" : preview)</span>
                                 @if (chat.UnreadCount > 0)
                                 {
-                                    <span>New messages</span>
                                     <span class="chat-badge">@chat.UnreadCount</span>
-                                }
-                                else
-                                {
-                                    <span class="preview-placeholder">···</span>
                                 }
                             </div>
                         </div>
@@ -711,6 +811,8 @@ else
 
     // Shared
     private List<Chat>? chats;
+    private Dictionary<string, (string Sender, string? Content)> chatLastMessages = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, string> contactDisplayNames = new(StringComparer.OrdinalIgnoreCase);
     private string searchQuery = string.Empty;
 
     private IEnumerable<Chat> FilteredChats =>
@@ -720,6 +822,12 @@ else
 
     // Desktop only
     private string? selectedChatId;
+
+    // Chat list context menu
+    private bool _showChatCtx;
+    private bool _chatCtxConfirmDelete;
+    private double _chatCtxX, _chatCtxY;
+    private Chat? _chatCtxChat;
     private Chat? selectedChat;
     private List<ChatMessage>? messages;
     private List<string>? recipients;
@@ -818,6 +926,11 @@ else
         contactNames = allContacts.ToDictionary(c => c.Email, c => c.DisplayName ?? c.Email.Split('@')[0], StringComparer.OrdinalIgnoreCase);
         ChatEvents.ChatUpdated += OnChatUpdated;
         sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
+
+        // Apply saved log level to FileLogger on every startup
+        var savedLogLevel = Prefs.Get("log_level", EChat.Core.Services.AppLogLevel.Info.ToString());
+        if (Enum.TryParse<EChat.Core.Services.AppLogLevel>(savedLogLevel, out var lvl))
+            FileLogger.MinLevel = lvl;
     }
 
     private bool _firstRender = true;
@@ -944,12 +1057,77 @@ else
         if (!showArchived)
             query = query.Where(c => !c.Archived);
         if (!string.IsNullOrEmpty(activeAccountId))
-            query = query.Where(c => c.AccountId == activeAccountId);
+        {
+            var memberEmail = activeAccount?.Email;
+            if (!string.IsNullOrEmpty(memberEmail))
+            {
+                var email = memberEmail;
+                query = query.Where(c => c.AccountId == activeAccountId ||
+                    (c.Type == ChatType.Group &&
+                     db.GroupMembers.Any(gm => gm.GroupId == c.ChatId && gm.MemberEmail == email)));
+            }
+            else
+            {
+                query = query.Where(c => c.AccountId == activeAccountId);
+            }
+        }
 
         var list = await query.ToListAsync();
         chats = list.OrderByDescending(c => c.LastActivityAt).ToList();
 
+        // Load contact display names for sender labels in preview
+        var contacts = await db.Contacts.AsNoTracking().ToListAsync();
+        contactDisplayNames = contacts
+            .Where(c => !string.IsNullOrEmpty(c.DisplayName))
+            .ToDictionary(c => c.Email, c => c.DisplayName!, StringComparer.OrdinalIgnoreCase);
+
+        // Load last message per chat — N+1 per chat, each a LIMIT 1 query.
+        // Load Timestamp into memory to avoid any DateTimeOffset SQL translation issues,
+        // then sort in C#. Wrapped in try-catch so preview failure never blanks the screen.
+        try
+        {
+            var newLastMessages = new Dictionary<string, (string Sender, string? Content)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in chats)
+            {
+                var rows = await db.Messages
+                    .AsNoTracking()
+                    .Where(m => m.ChatId == c.ChatId)
+                    .Select(m => new { Sender = m.Sender ?? "", m.Content, m.Timestamp })
+                    .ToListAsync();
+                var last = rows.OrderByDescending(m => m.Timestamp).FirstOrDefault();
+                if (last != null)
+                    newLastMessages[c.ChatId] = (last.Sender, last.Content);
+            }
+            chatLastMessages = newLastMessages;
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("WARN", "ChatList", $"Failed to load last messages: {ex.Message}");
+            chatLastMessages = new Dictionary<string, (string Sender, string? Content)>(StringComparer.OrdinalIgnoreCase);
+        }
+
         await UpdateAccountUnreadCountsAsync();
+    }
+
+    private string GetLastMessagePreview(Chat chat)
+    {
+        if (!chatLastMessages.TryGetValue(chat.ChatId, out var info))
+            return string.Empty;
+        var text = (info.Content ?? string.Empty)
+            .Replace("\r", "").Replace("\n", " ").Trim();
+        if (text.Length > 55) text = text[..52] + "…";
+        var isMe = string.Equals(info.Sender, activeAccount?.Email, StringComparison.OrdinalIgnoreCase);
+        string senderLabel;
+        if (isMe)
+        {
+            senderLabel = "Вы";
+        }
+        else
+        {
+            var email = info.Sender ?? "";
+            senderLabel = contactDisplayNames.TryGetValue(email, out var name) ? name : email.Split('@')[0];
+        }
+        return $"{senderLabel}: {text}";
     }
 
     private async Task UpdateAccountUnreadCountsAsync()
@@ -959,11 +1137,21 @@ else
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
         var unreadChats = await db.Chats
             .AsNoTracking()
-            .Where(c => !c.Muted && !c.Archived && !c.Deleted && c.UnreadCount > 0 && c.AccountId != null)
+            .Where(c => !c.Muted && !c.Archived && !c.Deleted && c.UnreadCount > 0)
+            .ToListAsync();
+        // Load group memberships to attribute cross-account group unreads to all members
+        var groupMemberships = await db.GroupMembers
+            .AsNoTracking()
+            .Select(gm => new { gm.GroupId, gm.MemberEmail })
             .ToListAsync();
         accountUnreadCounts = accounts.ToDictionary(
             a => a.AccountId,
-            a => unreadChats.Where(c => c.AccountId == a.AccountId).Sum(c => c.UnreadCount),
+            a => unreadChats.Where(c =>
+                c.AccountId == a.AccountId ||
+                (c.Type == ChatType.Group && groupMemberships.Any(gm =>
+                    gm.GroupId == c.ChatId &&
+                    string.Equals(gm.MemberEmail, a.Email, StringComparison.OrdinalIgnoreCase))))
+            .Sum(c => c.UnreadCount),
             StringComparer.OrdinalIgnoreCase);
     }
 
@@ -1127,6 +1315,68 @@ else
             recipients = null;
         }
         StateHasChanged();
+    }
+
+    private void OpenChatCtxMenu(MouseEventArgs e, Chat chat)
+    {
+        _chatCtxChat = chat;
+        _chatCtxX = e.ClientX;
+        _chatCtxY = e.ClientY;
+        _chatCtxConfirmDelete = false;
+        _showChatCtx = true;
+    }
+
+    private void CloseChatCtx()
+    {
+        _showChatCtx = false;
+        _chatCtxConfirmDelete = false;
+        _chatCtxChat = null;
+    }
+
+    private async Task ToggleMutedCtx()
+    {
+        if (_chatCtxChat == null) return;
+        var newMuted = !_chatCtxChat.Muted;
+        await DbContext.Chats
+            .Where(c => c.ChatId == _chatCtxChat.ChatId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Muted, newMuted));
+        var local = chats?.FirstOrDefault(c => c.ChatId == _chatCtxChat.ChatId);
+        if (local != null) local.Muted = newMuted;
+        _chatCtxChat.Muted = newMuted;
+        CloseChatCtx();
+    }
+
+    private async Task ToggleArchiveCtx()
+    {
+        if (_chatCtxChat == null) return;
+        var chatId = _chatCtxChat.ChatId;
+        var archive = !_chatCtxChat.Archived;
+        CloseChatCtx();
+        await ToggleArchiveFromMenu(chatId, archive);
+    }
+
+    private async Task CtxDeleteGroupAsAdmin()
+    {
+        if (_chatCtxChat == null) return;
+        var chatId = _chatCtxChat.ChatId;
+        CloseChatCtx();
+        await DeleteChatRemote(chatId);
+    }
+
+    private async Task CtxLeaveGroup()
+    {
+        if (_chatCtxChat == null) return;
+        var chatId = _chatCtxChat.ChatId;
+        CloseChatCtx();
+        await LeaveGroupRemote(chatId);
+    }
+
+    private async Task CtxDeleteOneToOne()
+    {
+        if (_chatCtxChat == null) return;
+        var chatId = _chatCtxChat.ChatId;
+        CloseChatCtx();
+        await DeleteChatRemote(chatId);
     }
 
     private async Task ToggleArchiveFromMenu(string chatId, bool archive)
@@ -1853,10 +2103,15 @@ else
 
     private async Task SendMessage()
     {
+        try
+        {
+        FileLogger.Write("DEBUG", "SendMessage", "Starting send");
         if ((string.IsNullOrWhiteSpace(messageText) && pendingAttachments.Count == 0) || selectedChat == null) return;
 
         var text = messageText.Trim();
         messageText = string.Empty;
+        FileLogger.Write("DEBUG", "SendMessage", $"Attachments count: {pendingAttachments.Count}");
+        await JS.InvokeVoidAsync("resetTextareaHeight");
 
         // ── Edit mode ──────────────────────────────────────────────────
         if (editingMessage != null)
@@ -1923,12 +2178,14 @@ else
         var attachmentsToSend = new List<AttachmentInfo>();
         foreach (var att in pendingAttachments)
         {
+            FileLogger.Write("DEBUG", "SendMessage", $"Processing att: {att.FileName}, size={att.Size}");
             var attId = Guid.NewGuid().ToString();
             var attPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "EChat", "attachments", $"{msgId}_{att.FileName}");
             Directory.CreateDirectory(Path.GetDirectoryName(attPath)!);
             await File.WriteAllBytesAsync(attPath, att.Data);
+            FileLogger.Write("DEBUG", "SendMessage", $"Att saved: {attPath}");
 
             DbContext.Attachments.Add(new Attachment
             {
@@ -1951,14 +2208,20 @@ else
             });
         }
         pendingAttachments.Clear();
-
+        FileLogger.Write("DEBUG", "SendMessage", "Attachments processed, calling SaveChangesAsync");
+        FileLogger.Write("DEBUG", "SendMessage", $"[TIMESTAMP] FindAsync START: {DateTimeOffset.Now:HH:mm:ss.fff}");
         var trackedChat = await DbContext.Chats.FindAsync(selectedChatId);
+        FileLogger.Write("DEBUG", "SendMessage", $"[TIMESTAMP] FindAsync END: {DateTimeOffset.Now:HH:mm:ss.fff}");
         if (trackedChat != null) trackedChat.LastActivityAt = now;
+        FileLogger.Write("DEBUG", "SendMessage", $"[TIMESTAMP] SaveChangesAsync START: {DateTimeOffset.Now:HH:mm:ss.fff}");
         await DbContext.SaveChangesAsync();
+        FileLogger.Write("DEBUG", "SendMessage", $"[TIMESTAMP] SaveChangesAsync END: {DateTimeOffset.Now:HH:mm:ss.fff}");
+        FileLogger.Write("DEBUG", "SendMessage", "SaveChangesAsync done, calling LoadMessagesAsync");
         if (selectedChat != null) selectedChat.LastActivityAt = now;
         await LoadMessagesAsync();
         FileLogger.Write("DEBUG", "Send", $"Set _scrollToBottom=true, msgId={msgId}");
         _scrollToBottom = true;
+        FileLogger.Write("DEBUG", "SendMessage", "Calling TransportService.SendMessageAsync");
 
         await TransportService.SendMessageAsync(new OutgoingMessage
         {
@@ -1974,10 +2237,20 @@ else
         });
 
         // Mark as Sent once SMTP confirmed
+        FileLogger.Write("DEBUG", "SendMessage", "Calling ExecuteUpdateAsync for status");
         await DbContext.Messages
             .Where(m => m.MessageId == msgId)
             .ExecuteUpdateAsync(s => s.SetProperty(m => m.Status, MessageStatus.Sent));
+        FileLogger.Write("DEBUG", "SendMessage", "ExecuteUpdateAsync done, calling LoadMessagesAsync again");
         await LoadMessagesAsync();
+        FileLogger.Write("DEBUG", "SendMessage", "SendMessage completed successfully");
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "SendMessage", $"Send failed: {ex.Message}");
+            sendError = "Send failed: " + ex.Message;
+            StateHasChanged();
+        }
     }
 
     private async Task HandleReaction((string Emoji, ChatMessage Message) data)
@@ -2212,7 +2485,7 @@ else
             {
                 await JS.InvokeVoidAsync("eval", @"
                     var t = document.getElementById('messageInput');
-                    if (t) { t.value = ''; t.style.height = 'auto'; }
+                    if (t) { t.value = ''; t.style.height = '44px'; t.style.overflowY = 'hidden'; }
                 ");
                 await SendMessage();
             }

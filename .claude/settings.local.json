@@ -21,7 +21,11 @@
       "Bash(find E:/YandexDisk/work_back/programming/echat/src/EChat.MAUI -path */obj/* -name appicon*)",
       "Bash(find E:/YandexDisk/work_back/programming/echat/src/EChat.MAUI/obj/Debug/net10.0-windows10.0.19041.0/win-x64/resizetizer/r -name appicon*)",
       "Bash(find E:/YandexDisk/work_back/programming/echat/src/EChat.MAUI/bin -name *.apk)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "Bash(xargs wc:*)",
+      "Bash(grep \"\\\\.cs$\")",
+      "Bash(wc -l /e/YandexDisk/work_back/programming/echat/src/EChat.Core/Protocol/*.cs)",
+      "Bash(xargs head:*)"
     ]
   }
 }

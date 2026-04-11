@@ -62,11 +62,11 @@ public class ImapService : IDisposable
         {
             await _client.ConnectAsync(server, port, useSsl);
             await _client.AuthenticateAsync(email, password);
-            _logger.LogInformation("Connected to IMAP server {Server}", server);
+            _fileLogger.Write("INFO", "ImapService", $"Connected to IMAP server {server}");
        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to connect to IMAP server");
+            _fileLogger.Write("ERROR", "ImapService", $"Failed to connect to IMAP server: {ex.Message}");
             throw;
        }
    }
@@ -75,7 +75,7 @@ public class ImapService : IDisposable
     {
         if (_client.IsConnected && _client.IsAuthenticated) return;
         if (_server == null) throw new InvalidOperationException("IMAP never connected");
-        _logger.LogInformation("IMAP reconnecting to {Server}", _server);
+        _fileLogger.Write("INFO", "ImapService", $"IMAP reconnecting to {_server}");
         try { await _client.DisconnectAsync(false); } catch { }
         await _client.ConnectAsync(_server, _port, _useSsl, ct);
         await _client.AuthenticateAsync(_email, _password, ct);
@@ -93,7 +93,7 @@ public class ImapService : IDisposable
         {
             var parentFolder = await _client.GetFolderAsync(personalNamespace.Path);
             var folder = await parentFolder.CreateAsync(folderName, true);
-            _logger.LogInformation("Created IMAP folder {Folder}", folderName);
+            _fileLogger.Write("INFO", "ImapService", $"Created IMAP folder {folderName}");
             return folder;
        }
    }
@@ -141,7 +141,7 @@ public class ImapService : IDisposable
                 inbox = await OpenInboxAsync();
             }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { _logger.LogWarning(ex, "Periodic eChat folder sync failed"); }
+            catch (Exception ex) { _fileLogger.Write("WARN", "ImapService", $"Periodic eChat folder sync failed: {ex.Message}"); }
         }
 
         try
@@ -152,11 +152,11 @@ public class ImapService : IDisposable
         catch (OperationCanceledException) { return; }
         catch (System.IO.IOException ex)
         {
-            _logger.LogWarning(ex, "IMAP IO error on initial open, will retry in loop");
+            _fileLogger.Write("WARN", "ImapService", $"IMAP IO error on initial open, will retry in loop: {ex.Message}");
        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "IMAP failed on initial open, will retry in loop");
+            _fileLogger.Write("ERROR", "ImapService", $"IMAP failed on initial open, will retry in loop: {ex.Message}");
        }
 
         while (!cancellationToken.IsCancellationRequested)
@@ -171,13 +171,13 @@ public class ImapService : IDisposable
                 catch (OperationCanceledException) { break; }
                 catch (System.IO.IOException ex)
                 {
-                    _logger.LogWarning(ex, "IMAP reconnect IO error, retrying in 15s");
+                    _fileLogger.Write("WARN", "ImapService", $"IMAP reconnect IO error, retrying in 15s: {ex.Message}");
                     try { await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken); } catch { break; }
                     continue;
                }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "IMAP reconnect failed, retrying in 15s");
+                    _fileLogger.Write("ERROR", "ImapService", $"IMAP reconnect failed, retrying in 15s: {ex.Message}");
                     try { await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken); } catch { break; }
                     continue;
                }
@@ -212,13 +212,13 @@ public class ImapService : IDisposable
             catch (OperationCanceledException) { break; }
             catch (System.IO.IOException ex)
             {
-                _logger.LogWarning(ex, "IMAP IDLE IO error — will reconnect");
+                _fileLogger.Write("WARN", "ImapService", $"IMAP IDLE IO error — will reconnect: {ex.Message}");
                 inbox = null;
                 try { await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken); } catch { break; }
            }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "IMAP IDLE error — will reconnect");
+                _fileLogger.Write("ERROR", "ImapService", $"IMAP IDLE error — will reconnect: {ex.Message}");
                 inbox = null; // force reconnect on next iteration
                 try { await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken); } catch { break; }
            }
@@ -254,16 +254,17 @@ public class ImapService : IDisposable
         catch (OperationCanceledException) { throw; }
         catch (System.IO.IOException ex)
         {
-            _logger.LogWarning(ex, "IO error searching inbox for eChat messages");
+            _fileLogger.Write("WARN", "ImapService", $"IO error searching inbox for eChat messages: {ex.Message}");
             return;
        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to search inbox for eChat messages");
+            _fileLogger.Write("ERROR", "ImapService", $"Failed to search inbox for eChat messages: {ex.Message}");
             return;
        }
 
         IMailFolder? echatFolder = null;
+        var movedEchatUids = new List<UniqueId>();
 
         foreach (var uid in uids)
         {
@@ -277,7 +278,7 @@ public class ImapService : IDisposable
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to fetch message {Uid}", uid);
+                _fileLogger.Write("ERROR", "ImapService", $"Failed to fetch message {uid}: {ex.Message}");
                 continue;
             }
 
@@ -291,16 +292,17 @@ public class ImapService : IDisposable
             // the inbox UID so the message is still processed.
             long echatUid = uid.Id;
             string echatFolder2 = echatFolderName;
+            UniqueId? newUid = null;
             try
             {
                 echatFolder ??= await GetOrCreateFolderAsync(echatFolderName);
-                var newUid = await inbox.MoveToAsync(uid, echatFolder, ct);
+                newUid = await inbox.MoveToAsync(uid, echatFolder, ct);
                 if (newUid.HasValue) echatUid = newUid.Value.Id;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to move message {Uid} to {Folder}", uid, echatFolderName);
+                _fileLogger.Write("ERROR", "ImapService", $"Failed to move message {uid} to {echatFolderName}: {ex.Message}");
                 echatFolder2 = inbox.Name; // stayed in inbox
                 try { await inbox.AddFlagsAsync(uid, MessageFlags.Seen, true, ct); } catch { }
             }
@@ -308,7 +310,7 @@ public class ImapService : IDisposable
             if (MessageReceived != null)
             {
                 try { await MessageReceived(message, echatUid, echatFolder2); }
-                catch (Exception ex) { _logger.LogError(ex, "Error in MessageReceived handler"); }
+                catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"Error in MessageReceived handler: {ex.Message}"); }
             }
 
             // Track processed message IDs so periodic eChat sync doesn't re-process them
@@ -317,6 +319,27 @@ public class ImapService : IDisposable
                 lock (knownMessageIdsLock)
                     knownMessageIds.Add(chatMsgId);
             }
+
+            // Track UID for bulk Seen marking after the loop
+            if (newUid.HasValue)
+                movedEchatUids.Add(newUid.Value);
+        }
+
+        // Mark all moved messages as Seen in the eChat folder so mail clients don't show
+        // them as unread. Opening echatFolder implicitly closes inbox — that's fine because
+        // the IDLE loop re-opens inbox at the top of each iteration.
+        if (movedEchatUids.Count > 0)
+        {
+            try
+            {
+                var ef = echatFolder ?? await GetOrCreateFolderAsync(echatFolderName);
+                if (!ef.IsOpen)
+                    await ef.OpenAsync(FolderAccess.ReadWrite, ct);
+                await ef.AddFlagsAsync(movedEchatUids, MessageFlags.Seen, true, ct);
+                try { await ef.CloseAsync(false, ct); } catch { }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { _fileLogger.Write("WARN", "ImapService", $"Failed to mark echat messages as Seen: {ex.Message}"); }
         }
     }
 
@@ -343,7 +366,9 @@ public class ImapService : IDisposable
                 return;
            }
 
-            _logger.LogInformation("eChat sync: {Count} candidates in last 30d", uids.Count);
+            _fileLogger.Write("INFO", "ImapService", $"eChat sync: {uids.Count} candidates in last 30d");
+
+            var syncSeenUids = new List<UniqueId>();
 
             foreach (var uid in uids)
             {
@@ -351,30 +376,38 @@ public class ImapService : IDisposable
 
                 MimeMessage message;
                 try { message = await echatFolder.GetMessageAsync(uid, ct); }
-                catch (Exception ex) { _logger.LogError(ex, "Failed to fetch eChat message {Uid}", uid); continue; }
+                catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"Failed to fetch eChat message {uid}: {ex.Message}"); continue; }
 
                 // Chat-Message-ID is a custom header — only available in the full message,
                 // not in IMAP summary/envelope. Check it here against DB-derived knownIds.
                 var chatMsgId = message.Headers["Chat-Message-ID"];
                 if (chatMsgId != null && knownMessageIds.Contains(chatMsgId))
+                {
+                    syncSeenUids.Add(uid); // already processed — still mark Seen
                     continue;
+                }
 
                 if (MessageReceived != null)
                 {
                     try { await MessageReceived(message, (long)uid.Id, echatFolderName); }
-                    catch (Exception ex) { _logger.LogError(ex, "Error processing eChat message {Uid}", uid); continue; }
+                    catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"Error processing eChat message {uid}: {ex.Message}"); continue; }
                 }
 
                 // Track in-session so polling doesn't re-process the same message twice
                 if (chatMsgId != null) knownMessageIds.Add(chatMsgId);
+                syncSeenUids.Add(uid);
            }
+
+            // Bulk mark as Seen so mail clients don't show unread counters for echat messages
+            if (syncSeenUids.Count > 0)
+                try { await echatFolder.AddFlagsAsync(syncSeenUids, MessageFlags.Seen, true, ct); } catch { }
 
             try { await echatFolder.CloseAsync(false, ct); } catch { }
        }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to sync eChat folder");
+            _fileLogger.Write("ERROR", "ImapService", $"Failed to sync eChat folder: {ex.Message}");
        }
    }
 
@@ -408,12 +441,12 @@ public class ImapService : IDisposable
 
                 MimeMessage message;
                 try { message = await inbox.GetMessageAsync(uid, ct); }
-                catch (Exception ex) { _logger.LogError(ex, "Failed to fetch inbox message {Uid}", uid); continue; }
+                catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"Failed to fetch inbox message {uid}: {ex.Message}"); continue; }
 
                 if (MessageReceived != null)
                 {
                     try { await MessageReceived(message, (long)uid.Id, inboxFolderName); }
-                    catch (Exception ex) { _logger.LogError(ex, "Error processing inbox message {Uid}", uid); }
+                    catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"Error processing inbox message {uid}: {ex.Message}"); }
                 }
 
                 try { await inbox.AddFlagsAsync(uid, MessageFlags.Seen, true, ct); } catch { }
@@ -422,7 +455,7 @@ public class ImapService : IDisposable
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to sync inbox");
+            _fileLogger.Write("ERROR", "ImapService", $"Failed to sync inbox: {ex.Message}");
         }
     }
 
@@ -471,12 +504,12 @@ public class ImapService : IDisposable
 
             await folder.AddFlagsAsync(uidList, MessageFlags.Deleted, true, ct);
             await folder.ExpungeAsync(uidList, ct);
-            _logger.LogInformation("Deleted {Count} message(s) from IMAP folder {Folder}", uidList.Count, folderName);
+            _fileLogger.Write("INFO", "ImapService", $"Deleted {uidList.Count} message(s) from IMAP folder {folderName}");
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to delete messages from IMAP folder {Folder}", folderName);
+            _fileLogger.Write("WARN", "ImapService", $"Failed to delete messages from IMAP folder {folderName}: {ex.Message}");
         }
     }
 

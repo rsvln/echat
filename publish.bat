@@ -11,12 +11,13 @@ set PUB=%~dp0pub
 set ERRORS=0
 
 :: -------------------------------------------
-:: Clean: bin + obj for all projects
+:: Clean: bin + obj for all projects + version lock
 :: -------------------------------------------
 echo Cleaning bin and obj...
 for %%P in (EChat.Core EChat.UI EChat.Web EChat.MAUI) do (
     if exist "src\%%P\bin" rd /s /q "src\%%P\bin"
     if exist "src\%%P\obj" rd /s /q "src\%%P\obj"
+    if exist "src\%%P\version.lock" del /q "src\%%P\version.lock"
 )
 echo   OK: clean done
 echo.
@@ -53,7 +54,7 @@ if errorlevel 1 (
     if exist "%PUB%\win\EChat.Maui.exe" (
         if exist "%PUB%\win\echat.exe" del /q "%PUB%\win\echat.exe"
         rename "%PUB%\win\EChat.Maui.exe" echat.exe
-        echo   OK: renamed EChat.Maui.exe -> echat.exe
+        echo   OK: renamed EChat.Maui.exe -^> echat.exe
     )
     :: Pack pub\win into distr\EChat-win.zip with inner folder named "echat"
     if exist "%PUB%\distr\EChat-win.zip" del /q "%PUB%\distr\EChat-win.zip"
@@ -187,6 +188,20 @@ echo Writing docker-compose.yml to distr...
 ) > "%PUB%\distr\docker-compose.yml"
 copy /y "%PUB%\distr\docker-compose.yml" "%~dp0docker-compose.yml" >nul
 echo   OK: pub\distr\docker-compose.yml
+
+:: -------------------------------------------
+:: Copy distr to YandexDisk share folder
+:: -------------------------------------------
+echo.
+echo Copying distr to e:\YandexDisk\share\echat\...
+if not exist "e:\YandexDisk\share\echat\" mkdir "e:\YandexDisk\share\echat\"
+xcopy /y /q "%PUB%\distr\*" "e:\YandexDisk\share\echat\" >nul
+if errorlevel 1 (
+    echo   FAILED: copy to share
+    set /a ERRORS+=1
+) else (
+    echo   OK: e:\YandexDisk\share\echat\
+)
 
 :: -------------------------------------------
 :summary

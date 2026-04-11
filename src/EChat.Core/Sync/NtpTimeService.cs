@@ -1,19 +1,19 @@
 using System.Net;
 using System.Net.Sockets;
-using Microsoft.Extensions.Logging;
+using EChat.Core.Services;
 
 namespace EChat.Core.Sync;
 
 public class NtpTimeService
 {
-    private readonly ILogger<NtpTimeService> _logger;
+    private readonly FileLogger _fileLogger;
     private TimeSpan _ntpOffset = TimeSpan.Zero;
     private DateTime _lastNtpSync = DateTime.MinValue;
     private readonly TimeSpan _resyncInterval = TimeSpan.FromHours(1);
     
-    public NtpTimeService(ILogger<NtpTimeService> logger)
+    public NtpTimeService(FileLogger fileLogger)
     {
-        _logger = logger;
+        _fileLogger = fileLogger;
     }
     
     public async Task<DateTimeOffset> GetAccurateTimeAsync()
@@ -36,16 +36,16 @@ public class NtpTimeService
             
             if (Math.Abs(_ntpOffset.TotalSeconds) > 60)
             {
-                _logger.LogWarning("Significant clock skew detected: {Offset} seconds", _ntpOffset.TotalSeconds);
+                _fileLogger.Write("WARN", "NtpTimeService", $"Significant clock skew detected: {_ntpOffset.TotalSeconds} seconds");
             }
             else
             {
-                _logger.LogInformation("NTP sync successful, offset: {Offset} seconds", _ntpOffset.TotalSeconds);
+                _fileLogger.Write("INFO", "NtpTimeService", $"NTP sync successful, offset: {_ntpOffset.TotalSeconds} seconds");
             }
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "NTP sync failed, using system time");
+            _fileLogger.Write("DEBUG", "NtpTimeService", $"NTP sync failed, using system time: {ex.Message}");
         }
     }
     

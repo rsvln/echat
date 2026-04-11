@@ -17,7 +17,7 @@ namespace EChat.Core.Transport;
 public class MultiAccountImapManager
 {
     private readonly IServiceProvider _sp;
-    private readonly ILogger<MultiAccountImapManager> _logger;
+    private readonly FileLogger _fileLogger;
     private readonly Dictionary<string, AccountImapWorker> _workers = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Fired when any background account receives new messages. accountId + messages.</summary>
@@ -25,11 +25,11 @@ public class MultiAccountImapManager
 
     public MultiAccountImapManager(
         IServiceProvider sp,
-        ILogger<MultiAccountImapManager> logger,
+        FileLogger fileLogger,
         ChatEventService chatEvents)
     {
         _sp = sp;
-        _logger = logger;
+        _fileLogger = fileLogger;
         chatEvents.AccountSwitched += (oldAccountId, newAccountId) =>
             _ = Task.Run(() => OnAccountSwitchedAsync(oldAccountId, newAccountId));
     }
@@ -85,25 +85,31 @@ public class MultiAccountImapManager
         {
             using var scope = _sp.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            var ids = await db.Messages
-                .Where(m => m.MessageId != null && m.ReceivedAt >= since)
-                .Select(m => m.MessageId!)
+            // DateTimeOffset comparison doesn't translate to SQLite — filter date client-side
+            var rows = await db.Messages
+                .Where(m => m.MessageId != null)
+                .Select(m => new { m.MessageId, m.ReceivedAt })
                 .ToListAsync();
+            var ids = rows
+                .Where(m => m.ReceivedAt >= since)
+                .Select(m => m.MessageId!)
+                .ToList();
             knownIds = new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not load known IDs for {Email}", account.Email);
+            _fileLogger.Write("WARN", "MultiAccountImapManager", $"Could not load known IDs for {account.Email}: {ex.Message}");
             knownIds = new HashSet<string>();
         }
 
         var worker = new AccountImapWorker(
             account,
-            _sp.GetRequiredService<ILogger<AccountImapWorker>>(),
             _sp.GetRequiredService<ILogger<EChat.Core.Transport.ImapService>>(),
             _sp.GetRequiredService<ChatMessageParser>(),
             _sp.GetRequiredService<PgpService>(),
-            _sp.GetRequiredService<MessageDeduplicator>());
+            _sp.GetRequiredService<MessageDeduplicator>(),
+            _sp.GetRequiredService<IServiceScopeFactory>(),
+            _sp.GetRequiredService<FileLogger>());
 
         worker.MessagesReceived += async (accountId, msgs) =>
         {

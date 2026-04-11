@@ -171,20 +171,16 @@
         </div>
 
         <div class="settings-section">
-            <h2>Debug</h2>
-            <div class="settings-row">
-                <button class="new-chat-btn-toggle @(debugLogging ? "active" : "")"
-                        @onclick="ToggleDebugLogging">
-                    @if (debugLogging)
-                    {
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    }
-                    else
-                    {
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-                    }
-                    Debug Save
-                </button>
+            <h2>Logging</h2>
+            <div class="settings-row" style="align-items:center;gap:12px;">
+                <label style="font-size:14px;white-space:nowrap;">Log level</label>
+                <select @bind="logLevel" @bind:event="onchange" @bind:after="OnLogLevelChanged">
+                    <option value="@EChat.Core.Services.AppLogLevel.None">None</option>
+                    <option value="@EChat.Core.Services.AppLogLevel.Error">Error</option>
+                    <option value="@EChat.Core.Services.AppLogLevel.Warn">Warn</option>
+                    <option value="@EChat.Core.Services.AppLogLevel.Info">Info</option>
+                    <option value="@EChat.Core.Services.AppLogLevel.Debug">Debug</option>
+                </select>
                 <button class="new-chat-btn-toggle" @onclick="ExportLogAsync" disabled="@logBusy">
                     @if (logBusy) { <span>Exporting…</span> }
                     else
@@ -194,7 +190,7 @@
                     }
                 </button>
             </div>
-            @if (debugLogging)
+            @if (logLevel != EChat.Core.Services.AppLogLevel.None)
             {
                 <div class="settings-info-row" style="margin-top:8px;">
                     <span class="settings-info-label" style="font-size:11px;color:var(--text-secondary)">
@@ -290,7 +286,7 @@
     private SyncProfile quietHoursProfile = SyncProfile.PowerSaver;
     private bool useDarkTheme = false;
     private bool sendOnEnter = true;
-    private bool debugLogging = false;
+    private EChat.Core.Services.AppLogLevel logLevel = EChat.Core.Services.AppLogLevel.Info;
     private bool showSyncWarning;
     private string syncWarningText = string.Empty;
     private SyncStats? syncStats;
@@ -308,11 +304,10 @@
     private string? logError  = null;
     private string? logStatus = null;
 
-    private async Task ToggleDebugLogging()
+    private void OnLogLevelChanged()
     {
-        debugLogging = !debugLogging;
-        Prefs.Set("debug_logging", debugLogging.ToString());
-        StateHasChanged();
+        FileLogger.MinLevel = logLevel;
+        Prefs.Set("log_level", logLevel.ToString());
     }
 
     private async Task ExportLogAsync()
@@ -424,7 +419,10 @@
         await LoadSyncSettingsAsync();
         await LoadThemeStateAsync();
         sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
-        debugLogging = bool.Parse(Prefs.Get("debug_logging", "False"));
+        var savedLevel = Prefs.Get("log_level", EChat.Core.Services.AppLogLevel.Info.ToString());
+        logLevel = Enum.TryParse<EChat.Core.Services.AppLogLevel>(savedLevel, out var parsed)
+            ? parsed : EChat.Core.Services.AppLogLevel.Info;
+        FileLogger.MinLevel = logLevel;
     }
 
     private async Task LoadSyncSettingsAsync()

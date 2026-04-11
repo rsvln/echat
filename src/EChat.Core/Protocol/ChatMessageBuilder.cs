@@ -1,7 +1,7 @@
 using MimeKit;
 using EChat.Core.Models;
 using EChat.Core.Crypto;
-using Microsoft.Extensions.Logging;
+using EChat.Core.Services;
 using System.Text;
 
 namespace EChat.Core.Protocol;
@@ -10,13 +10,13 @@ public class ChatMessageBuilder
 {
     private readonly AccountConfig _accountConfig;
     private readonly PgpService _pgpService;
-    private readonly ILogger<ChatMessageBuilder> _logger;
+    private readonly FileLogger _fileLogger;
 
-    public ChatMessageBuilder(AccountConfig accountConfig, PgpService pgpService, ILogger<ChatMessageBuilder> logger)
+    public ChatMessageBuilder(AccountConfig accountConfig, PgpService pgpService, FileLogger fileLogger)
     {
         _accountConfig = accountConfig;
         _pgpService = pgpService;
-        _logger = logger;
+        _fileLogger = fileLogger;
     }
 
     // ── Unencrypted single message (used for batch items and fallback) ────────
@@ -69,12 +69,18 @@ public class ChatMessageBuilder
 
                 // For 1:1 messages, encrypt for BOTH the recipient AND ourselves,
                 // so self-copy can be decrypted by other devices of the same account.
-                // For group messages, only the group key is needed — all members
+                // For group-create messages, encrypt for the sender too — the recipient's
+                // personal key is used (not the group key), so the sender's other devices
+                // need the sender's key to decrypt the self-CC.
+                // For regular group messages, only the group key is needed — all members
                 // already have the group private key.
                 var pubKeys = new List<string> { message.RecipientPublicKey };
                 if (message.GroupId == null && !string.IsNullOrEmpty(_accountConfig.PublicKey))
                     pubKeys.Add(_accountConfig.PublicKey);
+                else if (message.SystemType == "group-create" && !string.IsNullOrEmpty(_accountConfig.PublicKey))
+                    pubKeys.Add(_accountConfig.PublicKey);
 
+                _fileLogger.Write("DEBUG", "ChatMessageBuilder", $"Encrypting for {pubKeys.Count} key(s), recipientKey length={message.RecipientPublicKey?.Length ?? 0}, selfKey length={_accountConfig.PublicKey?.Length ?? 0}, groupId={message.GroupId}, type={message.Type}");
                 var encrypted = await _pgpService.EncryptAsync(innerContent, pubKeys);
 
                 email.Body = new TextPart("plain") { Text = encrypted };
@@ -82,7 +88,7 @@ public class ChatMessageBuilder
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Encryption failed — message will NOT be sent as plaintext");
+                _fileLogger.Write("ERROR", "ChatMessageBuilder", $"Encryption failed — message will NOT be sent as plaintext: {ex.Message}");
                 throw; // Do NOT fallback to unencrypted — fail the send instead
             }
         }
@@ -182,6 +188,23 @@ public class ChatMessageBuilder
 
         sb.AppendLine(); // blank line — MIME-style separator between headers and body
         sb.Append(bodyText);
+
+        // Embed binary attachments as base64 sections so they survive PGP encryption
+        if (message.Attachments != null)
+        {
+            foreach (var att in message.Attachments)
+            {
+                sb.AppendLine();
+                sb.AppendLine("--echat-att--");
+                sb.Append("Content-Type: ").AppendLine(att.ContentType);
+                sb.Append("Content-Filename: ").AppendLine(att.FileName);
+                sb.Append("Content-Size: ").AppendLine(att.Data.Length.ToString());
+                sb.AppendLine();
+                sb.AppendLine(Convert.ToBase64String(att.Data));
+                sb.AppendLine("--echat-att-end--");
+            }
+        }
+
         return sb.ToString();
     }
 

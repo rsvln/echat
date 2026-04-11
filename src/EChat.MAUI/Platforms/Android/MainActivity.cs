@@ -2,6 +2,8 @@ using Android.App;
 using Android.Content.PM;
 using Android.OS;
 using Android.Views;
+using AndroidX.Activity;
+using EChat.UI.Services;
 
 namespace EChat.Maui;
 
@@ -22,6 +24,26 @@ public class MainActivity : MauiAppCompatActivity
         if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
         {
             RequestPermissions(new[] { Android.Manifest.Permission.PostNotifications }, 0);
+        }
+
+        // Use OnBackPressedDispatcher (works with both button and swipe gesture on all API levels)
+        OnBackPressedDispatcher.AddCallback(this, new BackCallback(this));
+    }
+
+    private sealed class BackCallback : OnBackPressedCallback
+    {
+        private readonly MainActivity _host;
+        public BackCallback(MainActivity host) : base(enabled: true) => _host = host;
+
+        public override void HandleOnBackPressed()
+        {
+            if (!AndroidBackHandler.TriggerBack())
+            {
+                // Nothing in Blazor handled it — let the system proceed (exit / home)
+                Enabled = false;
+                _host.OnBackPressedDispatcher.OnBackPressed();
+                Enabled = true;
+            }
         }
     }
 }

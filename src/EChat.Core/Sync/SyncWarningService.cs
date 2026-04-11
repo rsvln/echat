@@ -1,18 +1,18 @@
 using EChat.Core.Models;
-using Microsoft.Extensions.Logging;
+using EChat.Core.Services;
 
 namespace EChat.Core.Sync;
 
 public class SyncWarningService
 {
-    private readonly ILogger<SyncWarningService> _logger;
+    private readonly FileLogger _fileLogger;
 
     public event Action<string>? WarningRaised;
     public event Action<string>? InfoRaised;
 
-    public SyncWarningService(ILogger<SyncWarningService> logger)
+    public SyncWarningService(FileLogger fileLogger)
     {
-        _logger = logger;
+        _fileLogger = fileLogger;
     }
 
     public void ValidateSettings(SyncSettings settings)
@@ -55,13 +55,13 @@ public class SyncWarningService
 
     private void ShowWarning(string message)
     {
-        _logger.LogWarning(message);
+        _fileLogger.Write("WARN", "SyncWarningService", message);
         WarningRaised?.Invoke(message);
     }
 
     private void ShowInfo(string message)
     {
-        _logger.LogInformation(message);
+        _fileLogger.Write("INFO", "SyncWarningService", message);
         InfoRaised?.Invoke(message);
     }
 }

@@ -4,7 +4,8 @@ public enum MessageStatus
 {
     Sending = 0,  // saved locally, SMTP not yet confirmed
     Sent    = 1,  // confirmed sent via SMTP
-    Read    = 2   // recipient opened the chat
+    Read    = 2,  // recipient opened the chat
+    Failed  = 3   // permanent SMTP error (5xx) — will not retry automatically
 }
 
 public class ChatMessage

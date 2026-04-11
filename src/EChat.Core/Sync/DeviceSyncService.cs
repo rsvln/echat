@@ -1,14 +1,14 @@
 using System.Text.Json;
 using EChat.Core.Models;
 using EChat.Core.Protocol;
+using EChat.Core.Services;
 using EChat.Core.Transport;
-using Microsoft.Extensions.Logging;
 
 namespace EChat.Core.Sync;
 
 public class DeviceSyncService
 {
-    private readonly ILogger<DeviceSyncService> _logger;
+    private readonly FileLogger _fileLogger;
     private readonly EmailTransportService _transportService;
     private readonly AccountConfig _accountConfig;
 
@@ -17,11 +17,11 @@ public class DeviceSyncService
     public event Func<Dictionary<string, object>, Task>? SettingsReceived;
 
     public DeviceSyncService(
-        ILogger<DeviceSyncService> logger,
+        FileLogger fileLogger,
         EmailTransportService transportService,
         AccountConfig accountConfig)
     {
-        _logger = logger;
+        _fileLogger = fileLogger;
         _transportService = transportService;
         _accountConfig = accountConfig;
     }
@@ -89,7 +89,7 @@ public class DeviceSyncService
         
         await _transportService.SendMessageAsync(message);
         
-        _logger.LogDebug("Sent sync message: {SyncType} from device {DeviceId}", payload.SyncType, _accountConfig.DeviceId);
+        _fileLogger.Write("DEBUG", "DeviceSyncService", $"Sent sync message: {payload.SyncType} from device {_accountConfig.DeviceId}");
     }
     
     public async Task ProcessSyncMessageAsync(ParsedMessage message)
@@ -142,12 +142,11 @@ public class DeviceSyncService
                     break;
             }
             
-            _logger.LogDebug("Processed sync message: {SyncType} from device {DeviceId}", 
-                message.Headers.SyncType, message.Headers.SyncDeviceId);
+            _fileLogger.Write("DEBUG", "DeviceSyncService", $"Processed sync message: {message.Headers.SyncType} from device {message.Headers.SyncDeviceId}");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to process sync message");
+            _fileLogger.Write("ERROR", "DeviceSyncService", $"Failed to process sync message: {ex.Message}");
         }
     }
 }

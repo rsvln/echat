@@ -141,6 +141,19 @@
     </div>
 </div>
 
+@* ── Fullscreen image viewer ─────────────────────────────────────── *@
+@if (_lightboxUrl != null)
+{
+    <div style="position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;"
+         @onclick="CloseLightbox">
+        <img src="@_lightboxUrl"
+             style="max-width:95vw;max-height:92vh;object-fit:contain;border-radius:4px;box-shadow:0 8px 40px rgba(0,0,0,0.6);"
+             @onclick:stopPropagation="true" />
+        <button style="position:absolute;top:16px;right:16px;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:24px;width:44px;height:44px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;"
+                @onclick="CloseLightbox">✕</button>
+    </div>
+}
+
 @* ── Context menu (desktop only; mobile uses header action bar) ──── *@
 @if (_showMenu && !MobileMode)
 {
@@ -314,6 +327,7 @@
     private bool _showMenu;
     private double _menuX, _menuY;
     private string _selectedText = "";
+    private string? _lightboxUrl;
 
     private readonly string[] _quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
 
@@ -391,14 +405,14 @@
         return "";
     }
 
-    private async Task OpenImage(Attachment att)
+    private void OpenImage(Attachment att)
     {
         var url = GetAttachmentUrl(att);
         if (!string.IsNullOrEmpty(url))
-        {
-            await JS.InvokeVoidAsync("eval", $"window.open('{url}', '_blank');");
-        }
+            _lightboxUrl = url;
     }
+
+    private void CloseLightbox() => _lightboxUrl = null;
 
     private async Task DownloadFile(Attachment att)
     {

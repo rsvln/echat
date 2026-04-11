@@ -105,13 +105,12 @@
 
         @if (!string.IsNullOrEmpty(sendError))
         {
-            <div class="send-error">@sendError</div>
+            <div class="mob-reply-strip send-error">@sendError</div>
         }
 
         @if (replyingToMessage != null)
         {
-            <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;
-                        background:rgba(91,166,66,.08);border-top:1px solid rgba(91,166,66,.3);">
+            <div class="mob-reply-strip" style="background:rgba(91,166,66,.08);border-top:1px solid rgba(91,166,66,.3);">
                 <div style="flex:1;border-left:3px solid var(--primary,#5BA642);padding-left:8px;font-size:12px;">
                     <div style="font-weight:600;color:var(--primary,#5BA642);">
                         @(contactNames.GetValueOrDefault(replyingToMessage.Sender, replyingToMessage.Sender.Split('@')[0]))
@@ -127,8 +126,7 @@
 
         @if (editingMessage != null)
         {
-            <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;
-                        background:rgba(255,193,7,.08);border-top:1px solid rgba(255,193,7,.3);">
+            <div class="mob-reply-strip" style="background:rgba(255,193,7,.08);border-top:1px solid rgba(255,193,7,.3);">
                 <div style="flex:1;border-left:3px solid #ffc107;padding-left:8px;font-size:12px;">
                     <div style="font-weight:600;color:#ffc107;">Editing message</div>
                     <div style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px;">
@@ -318,6 +316,7 @@
 
     protected override async Task OnInitializedAsync()
     {
+        AndroidBackHandler.Register(() => InvokeAsync(GoBack));
         sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
         using var scope = ScopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
@@ -330,6 +329,7 @@
 
     public void Dispose()
     {
+        AndroidBackHandler.Unregister();
         ChatEvents.ChatUpdated -= OnChatUpdated;
         ChatEvents.AccountSwitched -= OnAccountSwitched;
     }
@@ -476,6 +476,7 @@
         if ((string.IsNullOrWhiteSpace(messageText) && pendingAttachments.Count == 0) || selectedChat == null) return;
         var text = messageText.Trim();
         messageText = string.Empty;
+        await JS.InvokeVoidAsync("resetTextareaHeight");
 
         if (editingMessage != null)
         {
@@ -641,7 +642,7 @@
     private void CancelEdit() { editingMessage = null; messageText = string.Empty; }
 
     private void SelectMessage(ChatMessage msg) => _selectedMessage = msg;
-    private void ClearSelection() => _selectedMessage = null;
+    private void ClearSelection() { _selectedMessage = null; showAttachMenu = false; showEmojiPicker = false; }
 
     private void ReplySelected() { if (_selectedMessage != null) { StartReply(_selectedMessage); ClearSelection(); } }
     private void EditSelected() { if (_selectedMessage != null) { StartEdit(_selectedMessage); ClearSelection(); } }
@@ -694,6 +695,18 @@
         var targetRecipients = await GetRecipientsForChatAsync(targetChat);
         if (targetRecipients == null || !targetRecipients.Any()) return;
 
+        var attachments = DbContext.Attachments
+            .Where(a => a.MessageId == forwardingMessage.MessageId)
+            .ToList()
+            .Select(a => new AttachmentInfo
+            {
+                FileName = a.FileName,
+                ContentType = a.ContentType,
+                Size = a.Size,
+                Data = System.IO.File.Exists(a.FilePath) ? System.IO.File.ReadAllBytes(a.FilePath) : Array.Empty<byte>()
+            })
+            .ToList();
+
         await TransportService.SendMessageAsync(new OutgoingMessage
         {
             MessageId = Guid.NewGuid().ToString(),
@@ -702,7 +715,8 @@
             GroupId = targetChat.Type == ChatType.Group ? targetChat.ChatId : null,
             Timestamp = DateTimeOffset.UtcNow,
             Tier = BatchTier.Immediate,
-            Subject = "[eChat]"
+            Subject = "[eChat]",
+            Attachments = attachments.Count > 0 ? attachments : null
         });
         forwardingMessage = null;
     }
@@ -745,7 +759,7 @@
             {
                 await JS.InvokeVoidAsync("eval", @"
                     var t = document.getElementById('messageInput');
-                    if (t) { t.value = ''; t.style.height = 'auto'; }
+                    if (t) { t.value = ''; t.style.height = '44px'; t.style.overflowY = 'hidden'; }
                 ");
                 await SendMessage();
             }

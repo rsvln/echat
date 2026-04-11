@@ -1,7 +1,11 @@
 using EChat.Core.Crypto;
+using EChat.Core.Data;
 using EChat.Core.Models;
 using EChat.Core.Protocol;
+using EChat.Core.Services;
 using EChat.Core.Transport;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using MimeKit;
 
@@ -18,8 +22,9 @@ public class AccountImapWorker
     private readonly ChatMessageParser _parser;
     private readonly PgpService _pgpService;
     private readonly MessageDeduplicator _deduplicator;
-    private readonly ILogger<AccountImapWorker> _logger;
+    private readonly FileLogger _fileLogger;
     private readonly Account _account;
+    private readonly IServiceScopeFactory _scopeFactory;
 
     private CancellationTokenSource? _cts;
 
@@ -30,17 +35,19 @@ public class AccountImapWorker
 
     public AccountImapWorker(
         Account account,
-        ILogger<AccountImapWorker> logger,
         ILogger<ImapService> imapLogger,
         ChatMessageParser parser,
         PgpService pgpService,
-        MessageDeduplicator deduplicator)
+        MessageDeduplicator deduplicator,
+        IServiceScopeFactory scopeFactory,
+        FileLogger fileLogger)
     {
         _account = account;
-        _logger = logger;
+        _fileLogger = fileLogger;
         _parser = parser;
         _pgpService = pgpService;
         _deduplicator = deduplicator;
+        _scopeFactory = scopeFactory;
         _imapService = new ImapService(imapLogger);
         _imapService.MessageReceived += OnMessageReceivedAsync;
     }
@@ -60,7 +67,7 @@ public class AccountImapWorker
                 await _imapService.StartIdleAsync(InboxFolder, EchatFolder, ct, knownMessageIds, syncInterval);
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex) { _logger.LogError(ex, "IMAP worker failed for {Email}", _account.Email); }
+            catch (Exception ex) { _fileLogger.Write("ERROR", "AccountImapWorker", $"IMAP worker failed for {_account.Email}: {ex.Message}"); }
         });
     }
 
@@ -79,30 +86,65 @@ public class AccountImapWorker
             m.ImapFolder = string.IsNullOrEmpty(imapFolder) ? null : imapFolder;
         }
 
-        if (_account.PrivateKey != null)
+        // Decrypt PGP-inline encrypted messages — try group key first, then personal key
+        foreach (var msg in messages)
         {
-            foreach (var msg in messages)
+            if (msg.Headers.Encryption != "pgp-inline" || string.IsNullOrEmpty(msg.Content))
+                continue;
+
+            bool decrypted = false;
+
+            // Step 1: For group messages, try the group's shared private key first
+            if (!string.IsNullOrEmpty(msg.Headers.GroupId))
             {
-                if (msg.Headers.Encryption == "pgp-inline" && !string.IsNullOrEmpty(msg.Content))
+                try
                 {
-                    try
+                    using var scope = _scopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                    var groupKey = await db.GroupKeyPairs.FindAsync(msg.Headers.GroupId);
+                    if (!string.IsNullOrEmpty(groupKey?.PrivateKey))
                     {
-                        var decrypted = await _pgpService.DecryptAsync(
-                            msg.Content, _account.PrivateKey, _account.Password);
-                        _parser.ApplyDecryptedContent(msg, decrypted);
-                        msg.IsEncrypted = false;
+                        try
+                        {
+                            var decryptedContent = await _pgpService.DecryptAsync(msg.Content, groupKey.PrivateKey, string.Empty);
+                            _parser.ApplyDecryptedContent(msg, decryptedContent);
+                            msg.IsEncrypted = false;
+                            decrypted = true;
+                        }
+                        catch
+                        {
+                            _fileLogger.Write("DEBUG", "AccountImapWorker", $"Group key found but decryption failed for {msg.Headers.MessageId}, trying personal key");
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "Failed to decrypt message {Id}", msg.Headers.MessageId);
-                    }
+                }
+                catch (Exception ex)
+                {
+                    _fileLogger.Write("WARN", "AccountImapWorker", $"Failed to look up group key for {msg.Headers.GroupId}: {ex.Message}");
+                }
+            }
+
+            // Step 2: Fall back to the account's personal private key
+            if (!decrypted && _account.PrivateKey != null)
+            {
+                try
+                {
+                    var decryptedContent = await _pgpService.DecryptAsync(msg.Content, _account.PrivateKey, _account.Password);
+                    _parser.ApplyDecryptedContent(msg, decryptedContent);
+                    msg.IsEncrypted = false;
+                }
+                catch (Exception ex)
+                {
+                    _fileLogger.Write("WARN", "AccountImapWorker", $"Failed to decrypt message {msg.Headers.MessageId}: {ex.Message}");
                 }
             }
         }
 
+        foreach (var msg in messages)
+            _fileLogger.Write("DEBUG", "AccountImapWorker",
+                $"Parsed msg {msg.Headers.MessageId}: encrypted={msg.IsEncrypted}, attachments={msg.Attachments?.Count ?? 0}, contentLen={msg.Content?.Length ?? 0}");
+
         var newMessages = messages.Where(m => !_deduplicator.IsDuplicate(_account.AccountId, m)).ToList();
-        _logger.LogInformation("[AccountImapWorker] Dedup for {Email}: {total} total, {new} new, {dup} duplicates",
-            _account.Email, messages.Count, newMessages.Count, messages.Count - newMessages.Count);
+        _fileLogger.Write("INFO", "AccountImapWorker", $"Dedup for {_account.Email}: {messages.Count} total, {newMessages.Count} new, {messages.Count - newMessages.Count} duplicates");
         if (newMessages.Any() && MessagesReceived != null)
             await MessagesReceived(_account.AccountId, newMessages);
     }

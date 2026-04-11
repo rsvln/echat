@@ -1,23 +1,23 @@
 using EChat.Core.Data;
 using EChat.Core.Models;
 using EChat.Core.Protocol;
+using EChat.Core.Services;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
 
 namespace EChat.Core.Groups;
 
 public class GroupStateManager
 {
-    private readonly ILogger<GroupStateManager> _logger;
+    private readonly FileLogger _fileLogger;
     private readonly ChatDbContext _dbContext;
     private readonly GroupMergeEngine _mergeEngine;
     
     public GroupStateManager(
-        ILogger<GroupStateManager> logger,
+        FileLogger fileLogger,
         ChatDbContext dbContext,
         GroupMergeEngine mergeEngine)
     {
-        _logger = logger;
+        _fileLogger = fileLogger;
         _dbContext = dbContext;
         _mergeEngine = mergeEngine;
     }
@@ -70,7 +70,7 @@ public class GroupStateManager
         
         if (localState.Version == remoteState.Version && !localState.Equals(remoteState))
         {
-            _logger.LogWarning("Group version conflict detected for {GroupId}", remoteState.GroupId);
+            _fileLogger.Write("WARN", "GroupStateManager", $"Group version conflict detected for {remoteState.GroupId}");
             var mergedState = _mergeEngine.MergeConflict(localState, remoteState);
             return await UpdateGroupAsync(mergedState, actor);
         }
@@ -107,8 +107,7 @@ public class GroupStateManager
         
         if (requiresAdmin && actorMember.Role != GroupRole.Admin)
         {
-            _logger.LogWarning("Unauthorized operation {Operation} by {Actor} in group {GroupId}", 
-                operation, actor, groupId);
+            _fileLogger.Write("WARN", "GroupStateManager", $"Unauthorized operation {operation} by {actor} in group {groupId}");
             return false;
         }
         
@@ -171,8 +170,7 @@ public class GroupStateManager
         _dbContext.Groups.Add(group);
         await _dbContext.SaveChangesAsync();
         
-        _logger.LogInformation("Created group {GroupId} with {MemberCount} members", 
-            state.GroupId, state.Members.Count);
+        _fileLogger.Write("INFO", "GroupStateManager", $"Created group {state.GroupId} with {state.Members.Count} members");
         
         return state;
     }
@@ -216,8 +214,7 @@ public class GroupStateManager
         
         await _dbContext.SaveChangesAsync();
         
-        _logger.LogInformation("Updated group {GroupId} to version {Version}", 
-            state.GroupId, state.Version);
+        _fileLogger.Write("INFO", "GroupStateManager", $"Updated group {state.GroupId} to version {state.Version}");
         
         return state;
     }

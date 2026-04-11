@@ -1,21 +1,20 @@
 using EChat.Core.Protocol;
-using Microsoft.Extensions.Logging;
+using EChat.Core.Services;
 
 namespace EChat.Core.Groups;
 
 public class GroupMergeEngine
 {
-    private readonly ILogger<GroupMergeEngine> _logger;
+    private readonly FileLogger _fileLogger;
     
-    public GroupMergeEngine(ILogger<GroupMergeEngine> logger)
+    public GroupMergeEngine(FileLogger fileLogger)
     {
-        _logger = logger;
+        _fileLogger = fileLogger;
     }
     
     public GroupState MergeConflict(GroupState local, GroupState remote)
     {
-        _logger.LogWarning("Merging group conflict for {GroupId}: local v{LocalVersion} vs remote v{RemoteVersion}",
-            local.GroupId, local.Version, remote.Version);
+        _fileLogger.Write("WARN", "GroupMergeEngine", $"Merging group conflict for {local.GroupId}: local v{local.Version} vs remote v{remote.Version}");
         
         var merged = new GroupState
         {
@@ -27,8 +26,7 @@ public class GroupMergeEngine
             Timestamp = DateTimeOffset.UtcNow
         };
         
-        _logger.LogInformation("Merged group {GroupId} to version {Version}: {MemberCount} members, {AdminCount} admins",
-            merged.GroupId, merged.Version, merged.Members.Count, merged.Admins.Count);
+        _fileLogger.Write("INFO", "GroupMergeEngine", $"Merged group {merged.GroupId} to version {merged.Version}: {merged.Members.Count} members, {merged.Admins.Count} admins");
         
         return merged;
     }

@@ -309,6 +309,18 @@ html, body, #app {
     text-overflow: ellipsis;
     white-space: nowrap;
     line-height: 1.8;
+    min-width: 0;
+    flex: 1;
+}
+
+.chat-name-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .chat-time {
@@ -331,6 +343,49 @@ html, body, #app {
 
 .preview-placeholder {
     color: var(--text-muted);
+}
+
+/* ── Context menu (chat list + message bubbles) ── */
+.ctx-menu {
+    position: fixed;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e8e8e8);
+    border-radius: 8px;
+    padding: 4px 0;
+    box-shadow: 0 8px 24px rgba(0,0,0,.15);
+    min-width: 180px;
+}
+.ctx-item {
+    padding: 9px 16px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text, #222);
+    user-select: none;
+    white-space: nowrap;
+}
+.ctx-item:hover { background: var(--hover, #f5f5f5); }
+.ctx-icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
+.ctx-divider { border-top: 1px solid var(--border, #f0f0f0); margin: 4px 0; }
+.ctx-danger { color: #e53935; }
+.ctx-danger .ctx-icon { color: #e53935; }
+
+.preview-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.chat-name-group-icon {
+    flex-shrink: 0;
+    opacity: 0.6;
+    color: var(--text-secondary);
+    vertical-align: middle;
+    margin-bottom: 1px;
 }
 
 .chat-badge {
@@ -534,19 +589,12 @@ html, body, #app {
 }
 
 .mobile-chat-view .message-input-bar {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 9999;
+    flex-shrink: 0;
     padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 .mob-reaction-strip {
-    position: fixed;
-    bottom: calc(60px + env(safe-area-inset-bottom, 0px));
-    left: 0;
-    right: 0;
+    flex-shrink: 0;
     background: var(--surface);
     border-top: 1px solid var(--divider);
     display: flex;
@@ -554,7 +602,14 @@ html, body, #app {
     justify-content: center;
     gap: 4px;
     padding: 6px 12px;
-    z-index: 9998;
+}
+
+.mob-reply-strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    flex-shrink: 0;
 }
 
 .attach-wrap {
@@ -829,6 +884,8 @@ html, body, #app {
 /* Mobile chat view (ChatView.razor) */
 
 .mobile-chat-view {
+    display: flex;
+    flex-direction: column;
     position: relative;
     height: 100%;
     padding-top: env(safe-area-inset-top, 0px);
@@ -912,11 +969,8 @@ html, body, #app {
 }
 
 .mobile-messages-container {
-    position: absolute;
-    top: calc(56px + env(safe-area-inset-top, 0px));
-    bottom: calc(60px + env(safe-area-inset-bottom, 0px));
-    left: 0;
-    right: 0;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 8px 8px 4px;
     display: flex;
@@ -2283,6 +2337,7 @@ input[type="checkbox"] {
     padding: 8px 12px;
     background: var(--right-header-bg);
     border-top: 1px solid var(--divider);
+    flex-shrink: 0;
 }
 
 .attachment-preview-item {

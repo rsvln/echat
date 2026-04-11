@@ -1,3 +1,4 @@
+using System.IO;
 using EChat.Core.Crypto;
 using EChat.Core.Data;
 using EChat.Core.Models;
@@ -80,7 +81,7 @@ public class EmailTransportService
 
     public async Task ReconnectAsync(Account account, string deviceId)
     {
-        _logger.LogInformation("Reconnecting transport for account {Email}", account.Email);
+        _fileLogger.Write("INFO", "EmailTransportService", $"Reconnecting transport for account {account.Email}");
 
         // Stop old IDLE first — before disconnecting, so the task sees cancellation
         // instead of a yanked-out connection (which causes InvalidOperationException)
@@ -99,7 +100,7 @@ public class EmailTransportService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error during disconnect before reconnect");
+            _fileLogger.Write("WARN", "EmailTransportService", $"Error during disconnect before reconnect: {ex.Message}");
         }
 
         IsConnected = false;
@@ -126,7 +127,7 @@ public class EmailTransportService
         };
 
         await ConnectAsync(emailConfig, account.Password);
-        _logger.LogInformation("Transport reconnected for {Email}", account.Email);
+        _fileLogger.Write("INFO", "EmailTransportService", $"Transport reconnected for {account.Email}");
 
         // Start sync loop based on SyncEngine strategy
         _idleCts = new CancellationTokenSource();
@@ -136,7 +137,7 @@ public class EmailTransportService
         _ = _idleTask.ContinueWith(t =>
         {
             if (t.IsFaulted)
-                _logger.LogError(t.Exception?.GetBaseException(), "Sync loop stopped for {Email}", account.Email);
+                _fileLogger.Write("ERROR", "EmailTransportService", $"Sync loop stopped for {account.Email}: {t.Exception?.GetBaseException()?.Message}");
         }, TaskContinuationOptions.OnlyOnFaulted);
     }
 
@@ -159,7 +160,7 @@ public class EmailTransportService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not load sync timestamp; defaulting to 30 days ago");
+            _fileLogger.Write("WARN", "EmailTransportService", $"Could not load sync timestamp; defaulting to 30 days ago: {ex.Message}");
             lastSync = DateTimeOffset.UtcNow.AddDays(-30);
         }
 
@@ -174,17 +175,25 @@ public class EmailTransportService
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            var ids = await db.Messages
-                .Where(m => m.MessageId != null && m.ReceivedAt >= since)
-                .Select(m => m.MessageId!)
+            // DateTimeOffset comparison doesn't translate to SQLite — filter date client-side
+            var rows = await db.Messages
+                .Where(m => m.MessageId != null)
+                .Select(m => new { m.MessageId, m.ReceivedAt })
                 .ToListAsync();
+            var ids = rows
+                .Where(m => m.ReceivedAt >= since)
+                .Select(m => m.MessageId!)
+                .ToList();
             knownIds = new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not load known message IDs; eChat sync may reprocess messages");
+            _fileLogger.Write("WARN", "EmailTransportService", $"Could not load known message IDs; eChat sync may reprocess messages: {ex.Message}");
             knownIds = new HashSet<string>();
         }
+
+        // Retry messages that were stuck in Sending status (app was killed mid-send)
+        await RetryStuckSendingAsync(account, ct);
 
         // Sync eChat folder before starting IDLE/polling
         _syncEngine.RecordWakeup();
@@ -198,14 +207,12 @@ public class EmailTransportService
 
         if (strategy.UseIdle)
         {
-            _logger.LogInformation("Starting IMAP IDLE for {Email} (sync interval={Interval}min)",
-                account.Email, strategy.PollingInterval.TotalMinutes);
+            _fileLogger.Write("INFO", "EmailTransportService", $"Starting IMAP IDLE for {account.Email} (sync interval={strategy.PollingInterval.TotalMinutes}min)");
             await _imapService.StartIdleAsync(InboxFolder, EchatFolder, ct, knownIds, strategy.PollingInterval);
         }
         else
         {
-            _logger.LogInformation("Starting polling loop for {Email} (interval={Interval})",
-                account.Email, strategy.PollingInterval);
+            _fileLogger.Write("INFO", "EmailTransportService", $"Starting polling loop for {account.Email} (interval={strategy.PollingInterval})");
             await StartPollingLoopAsync(strategy.PollingInterval, since, ct);
         }
     }
@@ -221,13 +228,16 @@ public class EmailTransportService
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
-                // Load known IDs only from last sync window (with 2-day overlap)
+                // Load known IDs only from last sync window (with 2-day overlap).
+                // DateTimeOffset comparison can't be translated by EF Core SQLite — filter in C#.
                 var overlapSince = lastSync.AddDays(-2);
-                var ids = await db.Messages
-                    .Where(m => m.MessageId != null && m.ReceivedAt >= overlapSince)
-                    .Select(m => m.MessageId!)
+                var allRows = await db.Messages
+                    .Where(m => m.MessageId != null)
+                    .Select(m => new { m.MessageId, m.ReceivedAt })
                     .ToListAsync();
-                var knownIds = new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
+                var knownIds = new HashSet<string>(
+                    allRows.Where(m => m.ReceivedAt >= overlapSince).Select(m => m.MessageId!),
+                    StringComparer.OrdinalIgnoreCase);
 
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeoutCts.CancelAfter(interval);
@@ -257,7 +267,7 @@ public class EmailTransportService
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Polling error for {Email}", _accountConfig.Email);
+                _fileLogger.Write("WARN", "EmailTransportService", $"Polling error for {_accountConfig.Email}: {ex.Message}");
             }
 
             if (!ct.IsCancellationRequested)
@@ -291,7 +301,7 @@ public class EmailTransportService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error during disconnect");
+            _fileLogger.Write("WARN", "EmailTransportService", $"Error during disconnect: {ex.Message}");
         }
 
         IsConnected = false;
@@ -300,6 +310,9 @@ public class EmailTransportService
     public async Task SendMessageAsync(OutgoingMessage message)
     {
         // Look up the appropriate public key for encryption
+        // IMPORTANT: If RecipientPublicKey is already set (e.g., from ChatList for group-create
+        // messages), preserve it — group-create must be encrypted per-recipient with their
+        // personal key, not the shared group key.
         if (message.RecipientPublicKey == null)
         {
             try
@@ -309,7 +322,9 @@ public class EmailTransportService
 
                 if (message.GroupId != null)
                 {
-                    // Group message — encrypt with the shared group public key
+                    // Regular group message (not group-create) — encrypt with the shared group public key
+                    // Group-create messages have RecipientPublicKey already set from the UI
+                    // and should NOT use the group key (they need per-recipient encryption)
                     var groupKey = await db.GroupKeyPairs.FindAsync(message.GroupId);
                     if (!string.IsNullOrEmpty(groupKey?.PublicKey))
                         message.RecipientPublicKey = groupKey.PublicKey;
@@ -324,16 +339,126 @@ public class EmailTransportService
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to look up public key for message");
+                _fileLogger.Write("WARN", "EmailTransportService", $"Failed to look up public key for message: {ex.Message}");
             }
         }
 
         await _batchQueue.Enqueue(message);
     }
 
+    private async Task RetryStuckSendingAsync(Account account, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+            // Find messages saved locally but never confirmed sent (app killed mid-send)
+            var stuck = await db.Messages
+                .Where(m => m.Status == MessageStatus.Sending && m.Sender == account.Email)
+                .OrderBy(m => m.Timestamp)
+                .ToListAsync(ct);
+
+            if (stuck.Count == 0) return;
+
+            _fileLogger.Write("INFO", "EmailTransportService", $"Retrying {stuck.Count} stuck Sending message(s) for {account.Email}");
+
+            foreach (var msg in stuck)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var chat = await db.Chats.FindAsync(new object[] { msg.ChatId }, ct);
+                    if (chat == null || chat.Deleted) continue;
+
+                    // Build recipients list
+                    List<string> recipients;
+                    string? groupId = null;
+                    if (chat.Type == ChatType.Group)
+                    {
+                        recipients = await db.GroupMembers
+                            .Where(m => m.GroupId == chat.ChatId)
+                            .Select(m => m.MemberEmail)
+                            .ToListAsync(ct);
+                        groupId = chat.ChatId;
+                    }
+                    else
+                    {
+                        recipients = string.IsNullOrEmpty(chat.PartnerEmail)
+                            ? new List<string>()
+                            : new List<string> { chat.PartnerEmail };
+                    }
+
+                    if (recipients.Count == 0) continue;
+
+                    // Load attachments from disk
+                    var dbAtts = await db.Attachments
+                        .Where(a => a.MessageId == msg.MessageId)
+                        .ToListAsync(ct);
+
+                    List<AttachmentInfo>? attachments = null;
+                    if (dbAtts.Count > 0)
+                    {
+                        attachments = new List<AttachmentInfo>();
+                        foreach (var att in dbAtts)
+                        {
+                            try
+                            {
+                                var data = att.FilePath != null && File.Exists(att.FilePath)
+                                    ? await File.ReadAllBytesAsync(att.FilePath, ct)
+                                    : Array.Empty<byte>();
+                                attachments.Add(new AttachmentInfo
+                                {
+                                    FileName = att.FileName ?? "file",
+                                    ContentType = att.ContentType ?? "application/octet-stream",
+                                    Size = data.Length,
+                                    Data = data
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                _fileLogger.Write("WARN", "EmailTransportService", $"Could not load attachment {att.FileName} for retry: {ex.Message}");
+                            }
+                        }
+                    }
+
+                    await SendMessageAsync(new OutgoingMessage
+                    {
+                        MessageId = msg.MessageId,
+                        Content = msg.Content,
+                        Recipients = recipients,
+                        GroupId = groupId,
+                        Timestamp = msg.Timestamp,
+                        InReplyTo = msg.InReplyTo,
+                        Tier = BatchTier.Immediate,
+                        Attachments = attachments?.Count > 0 ? attachments : null
+                    });
+
+                    _fileLogger.Write("INFO", "EmailTransportService", $"Retried stuck message {msg.MessageId}");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _fileLogger.Write("WARN", "EmailTransportService", $"Failed to retry stuck message {msg.MessageId}: {ex.Message}");
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("WARN", "EmailTransportService", $"RetryStuckSendingAsync failed: {ex.Message}");
+        }
+    }
+
     private async Task SendSingleAsync(OutgoingMessage message)
     {
         var email = await _builder.BuildSingleAsync(message);
+
+        _fileLogger.Write("INFO", "SendSingle", $"SENDING email: msgId={message.MessageId}, systemType={message.SystemType}, " +
+            $"groupId={message.GroupId}, type={message.Type}, encrypt={message.Encrypt}, " +
+            $"recipientKey={message.RecipientPublicKey != null}, " +
+            $"recipients={string.Join(",", message.Recipients)}, " +
+            $"from={_accountConfig.Email}, subject={email.Subject}");
 
         // Add self as a recipient so the message lands in our own IMAP inbox.
         // Other devices (e.g. desktop) will pick it up and show it as a sent message.
@@ -343,9 +468,39 @@ public class EmailTransportService
             !email.To.Mailboxes.Any(m => m.Address.Equals(selfEmail, StringComparison.OrdinalIgnoreCase)))
         {
             email.To.Add(new MailboxAddress("", selfEmail));
+            _fileLogger.Write("DEBUG", "SendSingle", $"Added self-CC for {selfEmail}");
         }
 
-        await _smtpService.SendAsync(email);
+        var result = await _smtpService.SendAsync(email);
+        _fileLogger.Write("INFO", "SendSingle", $"SMTP send result for {message.MessageId}: {result}");
+
+        await UpdateMessageStatusAsync(message.MessageId, result);
+    }
+
+    private async Task UpdateMessageStatusAsync(string messageId, SmtpSendResult result)
+    {
+        var newStatus = result switch
+        {
+            SmtpSendResult.Sent          => MessageStatus.Sent,
+            SmtpSendResult.Permanent     => MessageStatus.Failed,
+            // RateLimited / TransientError: leave as Sending — RetryStuckSendingAsync will retry
+            _                            => (MessageStatus?)null
+        };
+
+        if (newStatus == null) return;
+
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            await db.Messages
+                .Where(m => m.MessageId == messageId)
+                .ExecuteUpdateAsync(s => s.SetProperty(m => m.Status, newStatus.Value));
+        }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("WARN", "SendSingle", $"Failed to update message status for {messageId}: {ex.Message}");
+        }
     }
 
     private async Task SendBatchedAsync(List<OutgoingMessage> messages)
@@ -361,10 +516,21 @@ public class EmailTransportService
             email.To.Add(new MailboxAddress("", selfEmail));
         }
 
-        var success = await _smtpService.SendAsync(email);
-        if (!success)
+        var result = await _smtpService.SendAsync(email);
+        if (result == SmtpSendResult.Sent)
         {
-            _logger.LogWarning("Batch send failed, retrying individually");
+            foreach (var msg in messages)
+                await UpdateMessageStatusAsync(msg.MessageId, SmtpSendResult.Sent);
+        }
+        else if (result == SmtpSendResult.Permanent)
+        {
+            foreach (var msg in messages)
+                await UpdateMessageStatusAsync(msg.MessageId, SmtpSendResult.Permanent);
+        }
+        else
+        {
+            // Transient / rate-limited — try individually, each will update its own status
+            _fileLogger.Write("WARN", "EmailTransportService", $"Batch send result={result}, retrying individually");
             foreach (var msg in messages)
                 await SendSingleAsync(msg);
         }
@@ -375,6 +541,15 @@ public class EmailTransportService
         try
         {
             _fileLogger.Write("INFO", "OnMessageReceived", $"Email received: uid={imapUid}, folder={imapFolder}, from={email.From.Mailboxes.FirstOrDefault()?.Address}, to={string.Join(",", email.To.Mailboxes.Select(m => m.Address))}, subject={email.Subject}");
+
+            // Log group-related headers for debugging
+            var chatGroupId = email.Headers["Chat-Group-ID"];
+            var chatSystemType = email.Headers["Chat-System-Type"];
+            var chatEncryption = email.Headers["Chat-Encryption"];
+            if (chatGroupId != null || chatSystemType != null)
+            {
+                _fileLogger.Write("INFO", "OnMessageReceived", $"GROUP-RELATED headers: Chat-Group-ID={chatGroupId}, Chat-System-Type={chatSystemType}, Chat-Encryption={chatEncryption}");
+            }
 
             var autocrypt = email.Headers["Autocrypt"];
             if (!string.IsNullOrEmpty(autocrypt))
@@ -391,17 +566,19 @@ public class EmailTransportService
             }
 
             // Decrypt PGP-inline encrypted messages
+            // Try group key first (if applicable), then fall back to personal key.
+            // group-create messages are encrypted with the recipient's personal key,
+            // so if group key is found but decryption fails, we retry with the personal key.
             foreach (var msg in messages)
             {
                 if (msg.Headers.Encryption != "pgp-inline" || string.IsNullOrEmpty(msg.Content))
                     continue;
 
-                _fileLogger.Write("INFO", "OnMessageReceived", $"Decrypting message: {msg.Headers.MessageId}, encryption={msg.Headers.Encryption}");
+                _fileLogger.Write("INFO", "OnMessageReceived", $"Decrypting message: {msg.Headers.MessageId}, encryption={msg.Headers.Encryption}, groupId={msg.Headers.GroupId}");
 
-                string? privateKey = null;
-                string password = string.Empty;
+                bool decrypted = false;
 
-                // For group messages, use the group's shared private key
+                // Step 1: For group messages, try the group's shared private key first
                 if (!string.IsNullOrEmpty(msg.Headers.GroupId))
                 {
                     try
@@ -411,41 +588,49 @@ public class EmailTransportService
                         var groupKey = await db.GroupKeyPairs.FindAsync(msg.Headers.GroupId);
                         if (!string.IsNullOrEmpty(groupKey?.PrivateKey))
                         {
-                            privateKey = groupKey.PrivateKey;
-                            password = string.Empty; // group keys always use empty password
+                            try
+                            {
+                                var decryptedContent = await _pgpService.DecryptAsync(msg.Content, groupKey.PrivateKey, string.Empty);
+                                _parser.ApplyDecryptedContent(msg, decryptedContent);
+                                msg.IsEncrypted = false;
+                                decrypted = true;
+                                _fileLogger.Write("INFO", "OnMessageReceived", $"Decrypted with group key: {msg.Headers.MessageId}");
+                            }
+                            catch (Exception ex)
+                            {
+                                _fileLogger.Write("WARN", "OnMessageReceived", $"Group key found but decryption failed for {msg.Headers.MessageId}, trying personal key: {ex.Message}");
+                            }
                         }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Failed to look up group key for {GroupId}", msg.Headers.GroupId);
+                        _fileLogger.Write("WARN", "OnMessageReceived", $"Failed to look up group key for {msg.Headers.GroupId}: {ex.Message}");
                     }
                 }
 
-                // Fall back to the account's personal private key
-                if (privateKey == null && _accountConfig.PrivateKey != null)
+                // Step 2: Fall back to the account's personal private key
+                // (used for group-create messages encrypted per-recipient, regular 1:1 messages,
+                //  or when group key decryption failed)
+                if (!decrypted && _accountConfig.PrivateKey != null)
                 {
-                    privateKey = _accountConfig.PrivateKey;
-                    password = _accountConfig.KeyPassword ?? string.Empty;
+                    try
+                    {
+                        var decryptedContent = await _pgpService.DecryptAsync(msg.Content, _accountConfig.PrivateKey, _accountConfig.KeyPassword ?? string.Empty);
+                        _parser.ApplyDecryptedContent(msg, decryptedContent);
+                        msg.IsEncrypted = false;
+                        decrypted = true;
+                        _fileLogger.Write("INFO", "OnMessageReceived", $"Decrypted with personal key: {msg.Headers.MessageId}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _fileLogger.Write("WARN", "OnMessageReceived", $"Personal key decryption also failed for {msg.Headers.MessageId}: {ex.Message}");
+                    }
                 }
 
-                if (privateKey == null)
+                if (!decrypted)
                 {
-                    _fileLogger.Write("WARN", "OnMessageReceived", $"No private key available for message {msg.Headers.MessageId}");
-                    continue;
-                }
-
-                try
-                {
-                    var decrypted = await _pgpService.DecryptAsync(msg.Content, privateKey, password);
-                    // Parse metadata that was embedded inside the encrypted body
-                    _parser.ApplyDecryptedContent(msg, decrypted);
-                    msg.IsEncrypted = false;
-                    _fileLogger.Write("INFO", "OnMessageReceived", $"Decrypted successfully. Content preview: {msg.Content.Substring(0, Math.Min(50, msg.Content.Length))}");
-                }
-                catch (Exception ex)
-                {
-                    _fileLogger.Write("ERROR", "OnMessageReceived", $"Decrypt failed for {msg.Headers.MessageId}: {ex.Message}");
-                    _logger.LogWarning(ex, "Failed to decrypt message {Id}", msg.Headers.MessageId);
+                    _fileLogger.Write("WARN", "OnMessageReceived", $"Could not decrypt message {msg.Headers.MessageId}");
+                    _fileLogger.Write("WARN", "OnMessageReceived", $"Could not decrypt message {msg.Headers.MessageId}");
                 }
             }
 
@@ -465,7 +650,7 @@ public class EmailTransportService
         catch (Exception ex)
         {
             _fileLogger.Write("ERROR", "OnMessageReceived", $"Exception: {ex.Message}\n{ex.StackTrace}");
-            _logger.LogError(ex, "Error processing received message");
+            _fileLogger.Write("ERROR", "EmailTransportService", $"Error processing received message: {ex.Message}");
         }
     }
 
@@ -496,7 +681,7 @@ public class EmailTransportService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to delete IMAP messages for chat {ChatId}", chatId);
+            _fileLogger.Write("WARN", "EmailTransportService", $"Failed to delete IMAP messages for chat {chatId}: {ex.Message}");
         }
     }
 
@@ -550,11 +735,11 @@ public class EmailTransportService
             }
 
             await db.SaveChangesAsync();
-            _logger.LogInformation("Stored public key for {Email}", senderEmail);
+            _fileLogger.Write("INFO", "EmailTransportService", $"Stored public key for {senderEmail}");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to store Autocrypt key for {Email}", senderEmail);
+            _fileLogger.Write("WARN", "EmailTransportService", $"Failed to store Autocrypt key for {senderEmail}: {ex.Message}");
         }
     }
 
@@ -577,7 +762,7 @@ public class EmailTransportService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to save sync timestamp");
+            _fileLogger.Write("WARN", "EmailTransportService", $"Failed to save sync timestamp: {ex.Message}");
         }
     }
 }

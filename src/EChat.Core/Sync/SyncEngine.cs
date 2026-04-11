@@ -1,14 +1,14 @@
 using EChat.Core.Data;
 using EChat.Core.Models;
+using EChat.Core.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 
 namespace EChat.Core.Sync;
 
 public class SyncEngine
 {
-    private readonly ILogger<SyncEngine> _logger;
+    private readonly FileLogger _fileLogger;
     private readonly IServiceScopeFactory _scopeFactory;
     private SyncSettings _settings;
     private DateTime _lastActivityTime = DateTime.UtcNow;
@@ -19,10 +19,10 @@ public class SyncEngine
     public event Func<SyncSettings, Task>? SettingsChanged;
 
     public SyncEngine(
-        ILogger<SyncEngine> logger,
+        FileLogger fileLogger,
         IServiceScopeFactory scopeFactory)
     {
-        _logger = logger;
+        _fileLogger = fileLogger;
         _scopeFactory = scopeFactory;
         _settings = new SyncSettings();
     }
@@ -70,8 +70,7 @@ public class SyncEngine
             newSettings.PollingInterval = TimeSpan.FromMinutes(pollMin);
 
         UpdateSettings(newSettings);
-        _logger.LogInformation("Loaded sync settings for account {AccountId}: profile={Profile}, idle={Idle}, poll={Poll}min",
-            accountId, newSettings.Profile, newSettings.UseImapIdle, newSettings.PollingInterval.TotalMinutes);
+        _fileLogger.Write("INFO", "SyncEngine", $"Loaded sync settings for account {accountId}: profile={newSettings.Profile}, idle={newSettings.UseImapIdle}, poll={newSettings.PollingInterval.TotalMinutes}min");
     }
 
     public async Task SaveSettingsAsync(string accountId, SyncSettings settings)
@@ -114,7 +113,7 @@ public class SyncEngine
         await db.SaveChangesAsync();
         UpdateSettings(settings);
 
-        _logger.LogInformation("Saved sync settings for account {AccountId}", accountId);
+        _fileLogger.Write("INFO", "SyncEngine", $"Saved sync settings for account {accountId}");
     }
 
     public void UpdateSettings(SyncSettings settings)
@@ -170,7 +169,7 @@ public class SyncEngine
     {
         if (batteryLevel < 15)
         {
-            _logger.LogInformation("Low battery mode activated");
+            _fileLogger.Write("INFO", "SyncEngine", "Low battery mode activated");
             return new SyncStrategy
             {
                 UseIdle = false,
@@ -184,13 +183,13 @@ public class SyncEngine
         {
             if (IsQuietHours())
             {
-                _logger.LogInformation("Quiet hours active");
+                _fileLogger.Write("INFO", "SyncEngine", "Quiet hours active");
                 return ApplyProfile(_settings.QuietHoursProfile, chatPriority);
             }
 
             if (isMetered && !_settings.SyncOnMeteredConnection)
             {
-                _logger.LogInformation("Metered connection, reducing sync");
+                _fileLogger.Write("INFO", "SyncEngine", "Metered connection, reducing sync");
                 return new SyncStrategy
                 {
                     UseIdle = false,

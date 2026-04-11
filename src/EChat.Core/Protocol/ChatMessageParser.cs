@@ -79,6 +79,7 @@ public class ChatMessageParser
     {
         var content = ExtractContent(email.Body);
         var attachments = ExtractAttachments(email);
+        System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] ParseSingle: msgId={headers.MessageId}, contentLen={content?.Length ?? -1}, attachments={attachments?.Count ?? -1}, encryption={headers.Encryption}");
         
         return new ParsedMessage
         {
@@ -129,6 +130,8 @@ public class ChatMessageParser
     private List<AttachmentInfo>? ExtractAttachments(MimeMessage email)
     {
         var attachments = new List<AttachmentInfo>();
+        var count = email.Attachments.Count();
+        System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] ExtractAttachments: count={count}");
         
         foreach (var attachment in email.Attachments)
         {
@@ -137,6 +140,7 @@ public class ChatMessageParser
                 using var stream = new MemoryStream();
                 mimePart.Content.DecodeTo(stream);
                 
+                System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] MimePart extracted: filename={mimePart.FileName}, size={stream.Length}");
                 attachments.Add(new AttachmentInfo
                 {
                     FileName = mimePart.FileName ?? "unnamed",
@@ -250,8 +254,98 @@ public class ChatMessageParser
             msg.Headers.SyncDeviceId = syncDevId;
 
         // Body is everything after the blank separator line
-        msg.Content = contentStart < lines.Length
+        var fullBody = contentStart < lines.Length
             ? string.Join('\n', lines[contentStart..])
             : string.Empty;
+
+        // Extract attachment sections embedded by BuildInnerContent (encrypted messages)
+        const string attBegin = "--echat-att--";
+        const string attEnd   = "--echat-att-end--";
+        var firstAtt = fullBody.IndexOf(attBegin, StringComparison.Ordinal);
+        System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] ApplyDecryptedContent: msgId={msg.Headers.MessageId}, fullBodyLen={fullBody.Length}, firstAtt={firstAtt}");
+        if (firstAtt >= 0)
+        {
+            msg.Content = fullBody[..firstAtt].TrimEnd('\n', '\r');
+            System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] Content set, remaining length: {fullBody.Length - firstAtt}");
+            var attachments = new List<AttachmentInfo>();
+            var pos = firstAtt;
+            while (pos < fullBody.Length)
+            {
+                var begin = fullBody.IndexOf(attBegin, pos, StringComparison.Ordinal);
+                if (begin < 0) break;
+                var endPos = fullBody.IndexOf(attEnd, begin, StringComparison.Ordinal);
+                var actualBlockLen = endPos > begin ? endPos - begin - attBegin.Length : -1;
+                System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] Att block: begin={begin}, endPos={endPos}, blockLen={actualBlockLen}");
+                if (endPos < 0) break;
+
+                // Parse headers within the attachment block
+                var block = fullBody[(begin + attBegin.Length)..endPos];
+                System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] Block raw (len={block.Length}): {(block.Length > 200 ? block[..200] + "..." : block)}");
+                var blockLines = block.Replace("\r\n", "\n").Split('\n');
+                System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] BlockLines count={blockLines.Length}, lines: {string.Join("|", blockLines.Take(5))}");
+                var attHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                
+                // First 3 lines are headers (Content-Type, Content-Filename, Content-Size)
+                for (int k = 0; k < Math.Min(3, blockLines.Length); k++)
+                {
+                    var colon = blockLines[k].IndexOf(':');
+                    if (colon > 0)
+                        attHeaders[blockLines[k][..colon].Trim()] = blockLines[k][(colon + 1)..].Trim();
+                }
+                
+                // Find actual data start - look for first line without colon (after headers)
+                // Or use index 4+ (after expected empty line after Content-Size)
+                int dataStart = 4;
+                for (int k = 3; k < blockLines.Length; k++)
+                {
+                    if (string.IsNullOrWhiteSpace(blockLines[k])) continue; // skip empty lines
+                    if (blockLines[k].IndexOf(':') < 0) { dataStart = k; break; } // first non-header line = data
+                    dataStart = k + 1;
+                }
+
+                var base64Lines = blockLines[dataStart..];
+                if (base64Lines.Length == 0 || string.IsNullOrWhiteSpace(string.Join("", base64Lines)))
+                {
+                    System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] Attachment block has no data. Filename: {attHeaders.GetValueOrDefault("Content-Filename", "unknown")}, dataStart: {dataStart}, blockLinesCount: {blockLines.Length}");
+                }
+                else
+                {
+                    var base64 = string.Join("", base64Lines).Trim();
+                    if (string.IsNullOrEmpty(base64))
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] Base64 is empty after join. Filename: {attHeaders.GetValueOrDefault("Content-Filename", "unknown")}");
+                    }
+                    else
+                    {
+                        try
+                        {
+                            var cleanBase64 = new string(base64.Where(c => char.IsLetterOrDigit(c) || c == '+' || c == '/' || c == '=').ToArray());
+                            var data = Convert.FromBase64String(cleanBase64);
+                            System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] Attachment parsed: {attHeaders.GetValueOrDefault("Content-Filename", "unknown")}, size={data.Length}");
+                            attachments.Add(new AttachmentInfo
+                            {
+                                ContentType = attHeaders.GetValueOrDefault("Content-Type", "application/octet-stream"),
+                                FileName    = attHeaders.GetValueOrDefault("Content-Filename", "attachment"),
+                                Size        = data.Length,
+                                Data        = data
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            var preview = base64.Length > 100 ? base64[..100] + "..." : base64;
+                            System.Diagnostics.Debug.WriteLine($"[ChatMessageParser] Failed to decode base64 attachment '{attHeaders.GetValueOrDefault("Content-Filename", "unknown")}': {ex.Message}, base64Length: {base64.Length}, preview: {preview}");
+                        }
+                    }
+                }
+
+                pos = endPos + attEnd.Length;
+            }
+            if (attachments.Count > 0)
+                msg.Attachments = attachments;
+        }
+        else
+        {
+            msg.Content = fullBody;
+        }
     }
 }

@@ -38,90 +38,100 @@ public partial class App : Application
 
         _ = Task.Run(async () =>
         {
-            await serviceProvider.InitializeEChatDatabaseAsync();
+            try
+            {
+                await serviceProvider.InitializeEChatDatabaseAsync();
 
-            using var scope = serviceProvider.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                using var scope = serviceProvider.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
-            var accounts = await db.Accounts.ToListAsync();
-            var account = accounts.FirstOrDefault(a => a.IsActive) ?? accounts.FirstOrDefault();
-            if (account == null) return;
+                var accounts = await db.Accounts.ToListAsync();
+                var account = accounts.FirstOrDefault(a => a.IsActive) ?? accounts.FirstOrDefault();
+                if (account == null) return;
 
-            var deviceId = Microsoft.Maui.Storage.Preferences.Get("device_id", string.Empty);
+                var deviceId = Microsoft.Maui.Storage.Preferences.Get("device_id", string.Empty);
 
-            var userCtx = serviceProvider.GetRequiredService<UserContextService>();
-            userCtx.Initialize(account.AccountId, account.Email, deviceId);
+                var userCtx = serviceProvider.GetRequiredService<UserContextService>();
+                userCtx.Initialize(account.AccountId, account.Email, deviceId);
 
-            // Load sync settings for this account
-            var syncEngine = serviceProvider.GetRequiredService<EChat.Core.Sync.SyncEngine>();
-            await syncEngine.LoadSettingsAsync(account.AccountId);
+                // Load sync settings for this account
+                var syncEngine = serviceProvider.GetRequiredService<EChat.Core.Sync.SyncEngine>();
+                await syncEngine.LoadSettingsAsync(account.AccountId);
 
 #if ANDROID
-            // Android NAT/Doze can kill TCP silently. MailKit waits up to Timeout for the
-            // server's DONE response after IDLE break — default 5 min is too long.
-            // Reduce ImapClient.Timeout to 30 s so a dead connection is detected fast.
-            var imapService = serviceProvider.GetRequiredService<EChat.Core.Transport.ImapService>();
-            imapService.SetIdleTimeout(TimeSpan.FromSeconds(30));
+                // Android NAT/Doze can kill TCP silently. MailKit waits up to Timeout for the
+                // server's DONE response after IDLE break — default 5 min is too long.
+                // Reduce ImapClient.Timeout to 30 s so a dead connection is detected fast.
+                var imapService = serviceProvider.GetRequiredService<EChat.Core.Transport.ImapService>();
+                imapService.SetIdleTimeout(TimeSpan.FromSeconds(30));
 #endif
 
-            var transport = serviceProvider.GetRequiredService<EmailTransportService>();
-            var incomingMessages = serviceProvider.GetRequiredService<IncomingMessageService>();
-            var accountConfig = serviceProvider.GetRequiredService<AccountConfig>();
-            var multiImap = serviceProvider.GetRequiredService<MultiAccountImapManager>();
+                var transport = serviceProvider.GetRequiredService<EmailTransportService>();
+                var incomingMessages = serviceProvider.GetRequiredService<IncomingMessageService>();
+                var accountConfig = serviceProvider.GetRequiredService<AccountConfig>();
+                var multiImap = serviceProvider.GetRequiredService<MultiAccountImapManager>();
 
-            // Subscribe to OS-level notifications FIRST — before ReconnectAsync —
-            // so messages processed during the initial sync don't miss the handler.
-            var chatEvents = serviceProvider.GetRequiredService<ChatEventService>();
-            chatEvents.NewMessageArrived += payload =>
-            {
+                // Subscribe to OS-level notifications FIRST — before ReconnectAsync —
+                // so messages processed during the initial sync don't miss the handler.
+                var chatEvents = serviceProvider.GetRequiredService<ChatEventService>();
+                chatEvents.NewMessageArrived += payload =>
+                {
 #if ANDROID
-                global::Android.Util.Log.Debug("eChat", $"NewMessageArrived: chat={payload.ChatName}, unread={payload.TotalUnread}");
-                var ctx = global::Android.App.Application.Context;
-                EChat.Maui.Platforms.Android.Services.MessageNotificationHelper.Show(
-                    ctx, payload.ChatId, payload.ChatName, payload.Preview, payload.TotalUnread);
+                    global::Android.Util.Log.Debug("eChat", $"NewMessageArrived: chat={payload.ChatName}, unread={payload.TotalUnread}");
+                    var ctx = global::Android.App.Application.Context;
+                    EChat.Maui.Platforms.Android.Services.MessageNotificationHelper.Show(
+                        ctx, payload.ChatId, payload.ChatName, payload.Preview, payload.TotalUnread);
 #elif WINDOWS
-                EChat.Maui.Platforms.Windows.Services.TaskbarFlashHelper.Flash();
-                EChat.Maui.Platforms.Windows.Services.TaskbarBadgeHelper.SetBadge(payload.TotalUnread);
+                    EChat.Maui.Platforms.Windows.Services.TaskbarFlashHelper.Flash();
+                    EChat.Maui.Platforms.Windows.Services.TaskbarBadgeHelper.SetBadge(payload.TotalUnread);
 #endif
-            };
+                };
 
-            // Active account — EmailTransportService handles IMAP + SMTP
-            transport.MessagesReceived += async (messages) =>
-                await incomingMessages.SaveAsync(accountConfig.AccountId, messages);
+                // Active account — EmailTransportService handles IMAP + SMTP
+                transport.MessagesReceived += async (messages) =>
+                    await incomingMessages.SaveAsync(accountConfig.AccountId, messages);
 
-            // Background accounts — MultiAccountImapManager handles IMAP only
-            multiImap.MessagesReceived += async (accountId, messages) =>
-                await incomingMessages.SaveAsync(accountId, messages);
+                // Background accounts — MultiAccountImapManager handles IMAP only
+                multiImap.MessagesReceived += async (accountId, messages) =>
+                    await incomingMessages.SaveAsync(accountId, messages);
 
-            try
-            {
-                await transport.ReconnectAsync(account, deviceId);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[eChat] Transport connect failed: {ex.Message}");
-            }
+                try
+                {
+                    await transport.ReconnectAsync(account, deviceId);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[eChat] Transport connect failed: {ex.Message}");
+                }
 
 #if ANDROID
-            // Keep the process alive in background so the IMAP loop isn't killed by Android.
-            try
-            {
-                var ctx = global::Android.App.Application.Context;
-                var svcIntent = new global::Android.Content.Intent(ctx,
-                    typeof(EChat.Maui.Platforms.Android.Services.EmailSyncService));
-                if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.O)
-                    ctx.StartForegroundService(svcIntent);
-                else
-                    ctx.StartService(svcIntent);
+                // Keep the process alive in background so the IMAP loop isn't killed by Android.
+                try
+                {
+                    var ctx = global::Android.App.Application.Context;
+                    var svcIntent = new global::Android.Content.Intent(ctx,
+                        typeof(EChat.Maui.Platforms.Android.Services.EmailSyncService));
+                    if (global::Android.OS.Build.VERSION.SdkInt >= global::Android.OS.BuildVersionCodes.O)
+                        ctx.StartForegroundService(svcIntent);
+                    else
+                        ctx.StartService(svcIntent);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[eChat] Failed to start EmailSyncService: {ex.Message}");
+                }
+#endif
+
+                // Start IMAP workers for all non-active accounts
+                await multiImap.StartBackgroundAccountsAsync(accounts, account.AccountId);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[eChat] Failed to start EmailSyncService: {ex.Message}");
-            }
+                System.Diagnostics.Debug.WriteLine($"[eChat] App init failed: {ex}");
+#if ANDROID
+                global::Android.Util.Log.Error("eChat", $"App init failed: {ex}");
 #endif
-
-            // Start IMAP workers for all non-active accounts
-            await multiImap.StartBackgroundAccountsAsync(accounts, account.AccountId);
+            }
         });
     }
 }

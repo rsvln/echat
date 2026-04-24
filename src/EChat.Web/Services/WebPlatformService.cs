@@ -16,4 +16,21 @@ public class WebPlatformService : IPlatformService
         => Task.FromResult<Stream?>(null); // Web: загрузка через <InputFile>
 
     public void RestartApp() { } // Web: NavigationManager.NavigateTo в компоненте
+
+    public Task OpenAttachmentAsync(string filePath, string fileName, string mimeType)
+        => Task.CompletedTask; // Web: JS download в компоненте
+
+    public Task<bool> SaveToDownloadsAsync(string fileName, byte[] content, string mimeType)
+        => Task.FromResult(false); // Web: JS download в компоненте
+
+    public bool SupportsPickFolder => false; // Web: нет SAF
+
+    public Task<bool> SaveToPickedFolderAsync(string filename, byte[] content, string mimeType, CancellationToken ct = default)
+        => Task.FromResult(false); // Web: нет
+
+    public void UpdateBadge(int totalUnread) { } // Web: нет иконки приложения
+
+    public bool SupportsBackgroundNotificationToggle => false;
+    public Task SetBackgroundNotificationVisibleAsync(bool visible) => Task.CompletedTask;
+    public Task OpenBatteryOptimizationSettingsAsync() => Task.CompletedTask;
 }

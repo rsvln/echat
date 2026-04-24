@@ -278,10 +278,17 @@
 
     private async Task RestoreAndRestartAsync(Stream stream)
     {
-        if (!EChat.Core.Services.BackupService.IsValidBackup(stream))
+        // Buffer the stream into memory first — web InputFile streams are not seekable,
+        // so IsValidBackup would consume the stream and leave nothing for RestoreBackupAsync.
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms);
+        ms.Position = 0;
+
+        if (!EChat.Core.Services.BackupService.IsValidBackup(ms))
             throw new InvalidDataException("File is not a valid EChat backup.");
 
-        await BackupSvc.RestoreBackupAsync(stream);
+        ms.Position = 0;
+        await BackupSvc.RestoreBackupAsync(ms);
 
         if (Platform.SupportsMauiFilePicker)
             Platform.RestartApp();

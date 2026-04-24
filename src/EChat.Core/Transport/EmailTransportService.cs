@@ -2,6 +2,7 @@ using System.IO;
 using EChat.Core.Crypto;
 using EChat.Core.Data;
 using EChat.Core.Models;
+using static EChat.Core.ServiceCollectionExtensions;
 using EChat.Core.Protocol;
 using EChat.Core.Services;
 using EChat.Core.Sync;
@@ -26,8 +27,157 @@ public class EmailTransportService
     private readonly PgpService _pgpService;
     private readonly SyncEngine _syncEngine;
     private readonly FileLogger _fileLogger;
+    private readonly DatabasePathInfo _dbPathInfo;
 
     public bool IsConnected { get; private set; }
+
+    /// <summary>Set when SMTP is currently rate-limited; cleared automatically when the window expires.</summary>
+    public bool IsRateLimited { get; private set; }
+    public DateTimeOffset? RateLimitedUntil { get; private set; }
+
+    /// <summary>Fired when SMTP rate-limit starts. Argument = earliest retry time.</summary>
+    public event Action<DateTimeOffset>? RateLimitStarted;
+    /// <summary>Fired when the rate-limit window expires and sending may resume.</summary>
+    public event Action? RateLimitCleared;
+
+    private CancellationTokenSource? _rateLimitCts;
+    private const int RateLimitCooldownMinutes = 5;
+
+    private void OnSmtpRateLimited()
+    {
+        // Capture the sender email NOW — _accountConfig.Email may change if the user
+        // switches accounts before the 5-minute cooldown expires, which would cause
+        // RetryStuckMessagesAsync to query the wrong account and find nothing.
+        var senderEmailSnapshot = _accountConfig.Email;
+
+        // Cancel any previous cooldown timer so multiple rapid 451s don't stack
+        _rateLimitCts?.Cancel();
+        _rateLimitCts = new CancellationTokenSource();
+
+        var retryAfter = DateTimeOffset.UtcNow.AddMinutes(RateLimitCooldownMinutes);
+        IsRateLimited = true;
+        RateLimitedUntil = retryAfter;
+        RateLimitStarted?.Invoke(retryAfter);
+        _fileLogger.Write("WARN", "EmailTransportService",
+            $"SMTP rate-limited ({senderEmailSnapshot}) — will auto-retry at {retryAfter.ToLocalTime():HH:mm:ss}");
+
+        var cts = _rateLimitCts;
+        _ = Task.Delay(TimeSpan.FromMinutes(RateLimitCooldownMinutes), cts.Token)
+            .ContinueWith(async t =>
+            {
+                if (t.IsCanceled) return;
+                IsRateLimited = false;
+                RateLimitedUntil = null;
+                RateLimitCleared?.Invoke();
+                _fileLogger.Write("INFO", "EmailTransportService",
+                    $"SMTP rate-limit window expired — retrying stuck messages for {senderEmailSnapshot}");
+                // Pass the captured email so the retry targets the right account
+                // even if the user has switched accounts in the meantime.
+                await RetryStuckMessagesAsync(senderEmailSnapshot);
+            }, TaskScheduler.Default);
+    }
+
+    /// <summary>Retries messages stuck in Sending state after a rate-limit window expires.</summary>
+    /// <param name="senderEmail">
+    /// The account email to retry for. Pass the value captured at rate-limit time so the
+    /// retry targets the correct account even if the user has switched accounts since then.
+    /// Falls back to <see cref="AccountConfig.Email"/> if null.
+    /// </param>
+    private async Task RetryStuckMessagesAsync(string? senderEmail = null)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            senderEmail ??= _accountConfig.Email;
+            if (string.IsNullOrEmpty(senderEmail)) return;
+
+            // Messages stuck in Sending for more than 24 hours will never succeed
+            // (daily sending limit, deleted account, etc.) — mark them Failed so the
+            // user can see what happened and optionally retry manually.
+            var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
+            var abandoned = await db.Messages
+                .Where(m => m.Status == MessageStatus.Sending &&
+                            m.Sender == senderEmail &&
+                            m.Timestamp < cutoff)
+                .ToListAsync();
+            if (abandoned.Count > 0)
+            {
+                foreach (var msg in abandoned)
+                    msg.Status = MessageStatus.Failed;
+                await db.SaveChangesAsync();
+                _fileLogger.Write("WARN", "EmailTransportService",
+                    $"Abandoned {abandoned.Count} message(s) stuck in Sending >24h for {senderEmail}");
+            }
+
+            // Only retry messages within the 24h window (older ones were just abandoned above)
+            var stuck = await db.Messages
+                .Where(m => m.Status == MessageStatus.Sending &&
+                            m.Sender == senderEmail &&
+                            m.Timestamp >= cutoff)
+                .OrderBy(m => m.Timestamp)
+                .ToListAsync();
+
+            if (stuck.Count == 0)
+            {
+                _fileLogger.Write("INFO", "EmailTransportService", "Rate-limit retry: no stuck messages found");
+                return;
+            }
+
+            _fileLogger.Write("INFO", "EmailTransportService",
+                $"Rate-limit retry: re-queuing {stuck.Count} stuck message(s) for {senderEmail}");
+
+            foreach (var msg in stuck)
+            {
+                try
+                {
+                    var chat = await db.Chats.FindAsync(msg.ChatId);
+                    if (chat == null || chat.Deleted) continue;
+
+                    List<string> recipients;
+                    string? groupId = null;
+                    if (chat.Type == ChatType.Group)
+                    {
+                        recipients = await db.GroupMembers
+                            .Where(m => m.GroupId == chat.GroupId)
+                            .Select(m => m.MemberEmail)
+                            .ToListAsync();
+                        groupId = chat.GroupId;
+                    }
+                    else
+                    {
+                        recipients = string.IsNullOrEmpty(chat.ContactEmail)
+                            ? new List<string>()
+                            : new List<string> { chat.ContactEmail };
+                    }
+
+                    if (recipients.Count == 0) continue;
+
+                    await SendMessageAsync(new OutgoingMessage
+                    {
+                        MessageId = msg.MessageId,
+                        Content = msg.Content,
+                        Recipients = recipients,
+                        Timestamp = msg.Timestamp,
+                        Type = MessageType.Regular,
+                        GroupId = groupId,
+                        Tier = BatchTier.Immediate,
+                        Encrypt = true
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _fileLogger.Write("WARN", "EmailTransportService",
+                        $"Rate-limit retry failed for msg {msg.MessageId}: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("ERROR", "EmailTransportService",
+                $"RetryStuckMessagesAsync failed: {ex.Message}");
+        }
+    }
 
     private CancellationTokenSource? _idleCts;
     private CancellationTokenSource? _pollingCts;
@@ -49,7 +199,8 @@ public class EmailTransportService
         IServiceScopeFactory scopeFactory,
         PgpService pgpService,
         SyncEngine syncEngine,
-        FileLogger fileLogger)
+        FileLogger fileLogger,
+        DatabasePathInfo dbPathInfo)
     {
         _logger = logger;
         _imapService = imapService;
@@ -62,6 +213,7 @@ public class EmailTransportService
         _pgpService = pgpService;
         _syncEngine = syncEngine;
         _fileLogger = fileLogger;
+        _dbPathInfo = dbPathInfo;
 
         _batchQueue = new BatchQueue(
             SendBatchedAsync,
@@ -129,19 +281,81 @@ public class EmailTransportService
         await ConnectAsync(emailConfig, account.Password);
         _fileLogger.Write("INFO", "EmailTransportService", $"Transport reconnected for {account.Email}");
 
-        // Start sync loop based on SyncEngine strategy
+        // Start sync loop based on SyncEngine strategy.
+        // RunSyncWithRestartAsync wraps StartSyncLoopAsync in a restart loop so that
+        // an unexpected fault or exit is automatically recovered without requiring a
+        // full app restart or account switch.
         _idleCts = new CancellationTokenSource();
         _pollingCts = new CancellationTokenSource();
-        var cts = _idleCts;
-        _idleTask = StartSyncLoopAsync(account, cts.Token);
-        _ = _idleTask.ContinueWith(t =>
-        {
-            if (t.IsFaulted)
-                _fileLogger.Write("ERROR", "EmailTransportService", $"Sync loop stopped for {account.Email}: {t.Exception?.GetBaseException()?.Message}");
-        }, TaskContinuationOptions.OnlyOnFaulted);
+        _idleTask = RunSyncWithRestartAsync(account, _idleCts);
     }
 
     private const string SyncTimestampKeyPrefix = "imap_sync_last_at_";
+
+    /// <summary>
+    /// Runs <see cref="StartSyncLoopAsync"/> and automatically restarts it if it
+    /// faults or exits unexpectedly. Only stops when the <paramref name="cts"/> is
+    /// explicitly cancelled (i.e. account disconnect / reconnect).
+    /// </summary>
+    private async Task RunSyncWithRestartAsync(Account account, CancellationTokenSource cts)
+    {
+        var ct = cts.Token;
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await StartSyncLoopAsync(account, ct);
+                // StartSyncLoopAsync only returns normally when ct is cancelled.
+                // If it returns without cancellation, something exited the loop unexpectedly.
+                if (!ct.IsCancellationRequested)
+                    _fileLogger.Write("WARN", "EmailTransportService",
+                        $"Sync loop exited unexpectedly for {account.Email} — restarting in 30s");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break; // intentional stop — do not restart
+            }
+            catch (Exception ex)
+            {
+                _fileLogger.Write("ERROR", "EmailTransportService",
+                    $"Sync loop crashed for {account.Email}: {ex.Message} — restarting in 30s");
+            }
+
+            if (ct.IsCancellationRequested) break;
+
+            // Brief pause before restart to avoid hammering the server on repeated failures
+            try { await Task.Delay(TimeSpan.FromSeconds(30), ct); }
+            catch (OperationCanceledException) { break; }
+
+            // Re-establish the IMAP connection before restarting the sync loop.
+            // SMTP is intentionally NOT reconnected here: it is a stateless send-only
+            // protocol that reconnects itself on demand inside SmtpService.SendInternalAsync
+            // (via its own IsConnected check). Tying SMTP lifecycle to IMAP restarts would
+            // interrupt outgoing messages for no reason.
+            if (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    _fileLogger.Write("INFO", "EmailTransportService",
+                        $"Reconnecting IMAP before sync loop restart for {account.Email}");
+                    try { await _imapService.DisconnectAsync(); } catch { }
+                    await _imapService.ConnectAsync(
+                        account.ImapServer, account.ImapPort,
+                        account.Email, account.Password,
+                        account.ImapUseSsl);
+                }
+                catch (Exception ex)
+                {
+                    _fileLogger.Write("WARN", "EmailTransportService",
+                        $"IMAP reconnect before restart failed for {account.Email}: {ex.Message} — will retry in 30s");
+                    try { await Task.Delay(TimeSpan.FromSeconds(30), ct); }
+                    catch (OperationCanceledException) { break; }
+                }
+            }
+        }
+        _fileLogger.Write("INFO", "EmailTransportService",
+            $"Sync loop permanently stopped for {account.Email}");
+    }
 
     private async Task StartSyncLoopAsync(Account account, CancellationToken ct)
     {
@@ -169,16 +383,23 @@ public class EmailTransportService
         if ((DateTimeOffset.UtcNow - since).TotalDays > 30)
             since = DateTimeOffset.UtcNow.AddDays(-30);
 
-        // Load only recent known IDs — bounded by the sync window, not the whole DB
+        // Load only recent known IDs — strictly per-account and bounded by the sync window.
+        // Loading IDs from ALL accounts causes cross-account contamination: if account B
+        // already processed a group-chat message (same Chat-Message-ID), account A's IDLE
+        // loop would see it in knownIds and skip it, so account A never shows that message.
         HashSet<string> knownIds;
         try
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            // DateTimeOffset comparison doesn't translate to SQLite — filter date client-side
+            // DateTimeOffset comparison doesn't translate to SQLite — filter date client-side.
+            // Join with Chats to restrict to this account's messages only.
             var rows = await db.Messages
                 .Where(m => m.MessageId != null)
-                .Select(m => new { m.MessageId, m.ReceivedAt })
+                .Join(db.Chats, m => m.ChatId, c => c.ChatId,
+                      (m, c) => new { m.MessageId, m.ReceivedAt, c.AccountId })
+                .Where(x => x.AccountId == account.AccountId)
+                .Select(x => new { x.MessageId, x.ReceivedAt })
                 .ToListAsync();
             var ids = rows
                 .Where(m => m.ReceivedAt >= since)
@@ -228,12 +449,18 @@ public class EmailTransportService
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
-                // Load known IDs only from last sync window (with 2-day overlap).
-                // DateTimeOffset comparison can't be translated by EF Core SQLite — filter in C#.
+                // Load known IDs only from last sync window (with 2-day overlap),
+                // strictly filtered to this account. Cross-account IDs would cause this
+                // account's polling to skip messages that another account already processed
+                // (same Chat-Message-ID in group chats).
                 var overlapSince = lastSync.AddDays(-2);
+                var accountId = _accountConfig.AccountId;
                 var allRows = await db.Messages
                     .Where(m => m.MessageId != null)
-                    .Select(m => new { m.MessageId, m.ReceivedAt })
+                    .Join(db.Chats, m => m.ChatId, c => c.ChatId,
+                          (m, c) => new { m.MessageId, m.ReceivedAt, c.AccountId })
+                    .Where(x => x.AccountId == accountId)
+                    .Select(x => new { x.MessageId, x.ReceivedAt })
                     .ToListAsync();
                 var knownIds = new HashSet<string>(
                     allRows.Where(m => m.ReceivedAt >= overlapSince).Select(m => m.MessageId!),
@@ -377,16 +604,16 @@ public class EmailTransportService
                     if (chat.Type == ChatType.Group)
                     {
                         recipients = await db.GroupMembers
-                            .Where(m => m.GroupId == chat.ChatId)
+                            .Where(m => m.GroupId == chat.GroupId)
                             .Select(m => m.MemberEmail)
                             .ToListAsync(ct);
-                        groupId = chat.ChatId;
+                        groupId = chat.GroupId;
                     }
                     else
                     {
-                        recipients = string.IsNullOrEmpty(chat.PartnerEmail)
+                        recipients = string.IsNullOrEmpty(chat.ContactEmail)
                             ? new List<string>()
-                            : new List<string> { chat.PartnerEmail };
+                            : new List<string> { chat.ContactEmail };
                     }
 
                     if (recipients.Count == 0) continue;
@@ -404,8 +631,9 @@ public class EmailTransportService
                         {
                             try
                             {
-                                var data = att.FilePath != null && File.Exists(att.FilePath)
-                                    ? await File.ReadAllBytesAsync(att.FilePath, ct)
+                                var absPath = _dbPathInfo.ResolveFilePath(att.FilePath);
+                                var data = !string.IsNullOrEmpty(absPath) && File.Exists(absPath)
+                                    ? await File.ReadAllBytesAsync(absPath, ct)
                                     : Array.Empty<byte>();
                                 attachments.Add(new AttachmentInfo
                                 {
@@ -474,6 +702,7 @@ public class EmailTransportService
         var result = await _smtpService.SendAsync(email);
         _fileLogger.Write("INFO", "SendSingle", $"SMTP send result for {message.MessageId}: {result}");
 
+        if (result == SmtpSendResult.RateLimited) OnSmtpRateLimited();
         await UpdateMessageStatusAsync(message.MessageId, result);
     }
 
@@ -517,6 +746,7 @@ public class EmailTransportService
         }
 
         var result = await _smtpService.SendAsync(email);
+        if (result == SmtpSendResult.RateLimited) OnSmtpRateLimited();
         if (result == SmtpSendResult.Sent)
         {
             foreach (var msg in messages)
@@ -709,6 +939,7 @@ public class EmailTransportService
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
             var contact = await db.Contacts.FindAsync(senderEmail);
+            bool keyChanged;
             if (contact == null)
             {
                 contact = new Contact
@@ -718,10 +949,16 @@ public class EmailTransportService
                     PublicKey = keydata
                 };
                 db.Contacts.Add(contact);
+                keyChanged = true;
             }
             else if (contact.PublicKey != keydata)
             {
                 contact.PublicKey = keydata;
+                keyChanged = true;
+            }
+            else
+            {
+                keyChanged = false;
             }
 
             // Compute fingerprint if missing
@@ -730,12 +967,16 @@ public class EmailTransportService
                 try
                 {
                     contact.KeyFingerprint = _pgpService.GetFingerprint(contact.PublicKey);
+                    keyChanged = true; // fingerprint filled in — worth persisting
                 }
                 catch { }
             }
 
-            await db.SaveChangesAsync();
-            _fileLogger.Write("INFO", "EmailTransportService", $"Stored public key for {senderEmail}");
+            if (keyChanged)
+            {
+                await db.SaveChangesAsync();
+                _fileLogger.Write("INFO", "EmailTransportService", $"Stored public key for {senderEmail}");
+            }
         }
         catch (Exception ex)
         {

@@ -1,5 +1,6 @@
 @using EChat.Core.Models
 @using EChat.Core.Data
+@using EChat.UI.Services
 @using Microsoft.EntityFrameworkCore
 @using Microsoft.Extensions.DependencyInjection
 
@@ -95,11 +96,22 @@
                     <div class="modal-body">
                         @if (chat?.Type == ChatType.Group)
                         {
-                            <p>Are you an admin of this group?</p>
-                            <div class="delete-actions">
-                                <button class="new-chat-btn-danger" @onclick="DeleteGroupAsAdmin">Delete group (all members)</button>
-                                <button class="new-chat-btn-secondary" @onclick="LeaveGroup">Leave group</button>
-                            </div>
+                            var isAdmin = members?.Any(m => m.MemberEmail == UserContext.UserEmail && m.Role == GroupRole.Admin) == true;
+                            @if (isAdmin)
+                            {
+                                <p>Delete this group for all members?</p>
+                                <div class="delete-actions">
+                                    <button class="new-chat-btn-danger" @onclick="DeleteGroupAsAdmin">Delete group (all members)</button>
+                                    <button class="new-chat-btn-secondary" @onclick="LeaveGroup">Leave group</button>
+                                </div>
+                            }
+                            else
+                            {
+                                <p>Leave this group?</p>
+                                <div class="delete-actions">
+                                    <button class="new-chat-btn-secondary" @onclick="LeaveGroup">Leave group</button>
+                                </div>
+                            }
                         }
                         else
                         {
@@ -145,6 +157,9 @@
     public IServiceScopeFactory ScopeFactory { get; set; } = null!;
 
     [Inject]
+    public UserContextService UserContext { get; set; } = null!;
+
+    [Inject]
     public EChat.Core.Sync.SyncEngine SyncEngine { get; set; } = null!;
 
     [Inject]
@@ -177,7 +192,7 @@
             if (chat.Type == ChatType.Group)
             {
                 members = await db.GroupMembers.AsNoTracking()
-                    .Where(m => m.GroupId == ChatId)
+                    .Where(m => m.GroupId == chat.GroupId)
                     .ToListAsync();
             }
         }

@@ -25,16 +25,27 @@ public class EmailSyncService : Service
     public override StartCommandResult OnStartCommand(Intent? intent, StartCommandFlags flags, int startId)
     {
         CreateNotificationChannel();
-        
+
         var notification = new NotificationCompat.Builder(this, ChannelId)
             .SetContentTitle("EChat")
-            .SetContentText("Syncing messages...")
+            .SetContentText("Running in background")
             .SetSmallIcon(Resource.Drawable.notification_icon)
             .SetOngoing(true)
+            .SetPriority(NotificationCompat.PriorityMin)        // collapsed into overflow; no heads-up
+            .SetVisibility(NotificationCompat.VisibilitySecret) // hidden on lock screen
             .Build();
-        
+
         StartForeground(NotificationId, notification);
-        
+
+        // If the user turned off the persistent notification, remove it immediately.
+        // The service keeps running — Android only kills foreground services aggressively,
+        // and with battery optimisation disabled the service stays alive either way.
+        var prefs = IPlatformApplication.Current?.Services
+            ?.GetService<EChat.Core.Services.IAppPreferences>();
+        var showNotification = prefs?.Get("bg_notification_visible", "true") != "false";
+        if (!showNotification)
+            StopForeground(StopForegroundFlags.Remove);
+
         _cancellationTokenSource = new CancellationTokenSource();
         
         Task.Run(async () =>
@@ -76,8 +87,8 @@ public class EmailSyncService : Service
         {
             var channel = new NotificationChannel(
                 ChannelId,
-                "Email Sync",
-                NotificationImportance.Low)
+                "Background Sync",
+                NotificationImportance.Min)   // Min = no sound/vibration, collapsed by default
             {
                 Description = "Background email synchronization"
             };

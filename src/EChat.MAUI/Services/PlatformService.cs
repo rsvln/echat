@@ -4,6 +4,17 @@ namespace EChat.Maui.Services;
 
 public class PlatformService : IPlatformService
 {
+#if ANDROID
+    // SAF ACTION_CREATE_DOCUMENT request code
+    internal const int SafRequestCode = 2001;
+
+    // Completed by MainActivity.OnActivityResult when the user picks a destination
+    private static TaskCompletionSource<Android.Net.Uri?>? _safTcs;
+
+    internal static void OnSafResult(Android.Net.Uri? uri) =>
+        _safTcs?.TrySetResult(uri);
+#endif
+
 #if WINDOWS
     public bool IsDesktop => true;
 #else
@@ -11,6 +22,12 @@ public class PlatformService : IPlatformService
 #endif
 
     public bool SupportsMauiFilePicker => true;
+
+#if ANDROID
+    public bool SupportsPickFolder => true;
+#else
+    public bool SupportsPickFolder => false;
+#endif
 
     public async Task SaveFileAsync(string filename, byte[] content, CancellationToken ct = default, string? mimeType = null, string? title = null)
     {
@@ -71,6 +88,143 @@ public class PlatformService : IPlatformService
         var file = await FilePicker.Default.PickAsync(options);
         if (file == null) return null;
         return await file.OpenReadAsync();
+    }
+
+    public async Task OpenAttachmentAsync(string filePath, string fileName, string mimeType)
+    {
+#if ANDROID
+        // Copy to cache with correct name, then share (shows Open With + Save options)
+        var cachePath = Path.Combine(FileSystem.CacheDirectory, fileName);
+        File.Copy(filePath, cachePath, overwrite: true);
+        await Share.Default.RequestAsync(new ShareFileRequest
+        {
+            Title = fileName,
+            File  = new ShareFile(cachePath, mimeType)
+        });
+#elif WINDOWS
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(filePath) { UseShellExecute = true });
+        await Task.CompletedTask;
+#else
+        await Task.CompletedTask;
+#endif
+    }
+
+    public async Task<bool> SaveToDownloadsAsync(string fileName, byte[] content, string mimeType)
+    {
+#if ANDROID
+        try
+        {
+            var downloadsDir = Android.OS.Environment.GetExternalStoragePublicDirectory(
+                Android.OS.Environment.DirectoryDownloads)!.AbsolutePath;
+            var destPath = Path.Combine(downloadsDir, fileName);
+            // Avoid overwriting: append number if file exists
+            if (File.Exists(destPath))
+            {
+                var name = Path.GetFileNameWithoutExtension(fileName);
+                var ext  = Path.GetExtension(fileName);
+                var i = 1;
+                while (File.Exists(destPath))
+                    destPath = Path.Combine(downloadsDir, $"{name} ({i++}){ext}");
+            }
+            await File.WriteAllBytesAsync(destPath, content);
+            // Notify media scanner so file appears in Files app
+            Android.Media.MediaScannerConnection.ScanFile(
+                Android.App.Application.Context,
+                [destPath], [mimeType], null);
+            return true;
+        }
+        catch { return false; }
+#elif WINDOWS
+        // On Windows use the existing SaveFileAsync dialog
+        await SaveFileAsync(fileName, content, mimeType: mimeType);
+        return true;
+#else
+        await Task.CompletedTask;
+        return false;
+#endif
+    }
+
+    public async Task<bool> SaveToPickedFolderAsync(string filename, byte[] content, string mimeType, CancellationToken ct = default)
+    {
+#if ANDROID
+        try
+        {
+            _safTcs = new TaskCompletionSource<Android.Net.Uri?>();
+
+            var intent = new Android.Content.Intent(Android.Content.Intent.ActionCreateDocument);
+            intent.AddCategory(Android.Content.Intent.CategoryOpenable);
+            intent.SetType(mimeType);
+            intent.PutExtra(Android.Content.Intent.ExtraTitle, filename);
+
+            var activity = Microsoft.Maui.ApplicationModel.Platform.CurrentActivity
+                           ?? throw new InvalidOperationException("No current Android activity");
+            activity.StartActivityForResult(intent, SafRequestCode);
+
+            using var reg = ct.Register(() => _safTcs?.TrySetCanceled());
+            var uri = await _safTcs.Task;
+            if (uri == null) return false;
+
+            var cr = Android.App.Application.Context.ContentResolver
+                     ?? throw new InvalidOperationException("ContentResolver unavailable");
+            using var stream = cr.OpenOutputStream(uri)
+                               ?? throw new InvalidOperationException("Cannot open output stream for URI");
+            await stream.WriteAsync(content, ct);
+            await stream.FlushAsync(ct);
+            return true;
+        }
+        catch (OperationCanceledException) { return false; }
+        catch { return false; }
+#else
+        await Task.CompletedTask;
+        return false;
+#endif
+    }
+
+    public void UpdateBadge(int totalUnread)
+    {
+#if WINDOWS
+        EChat.Maui.Platforms.Windows.Services.TaskbarBadgeHelper.SetBadge(totalUnread);
+#endif
+        // Android: could update app-icon badge in future; no-op for now
+    }
+
+#if ANDROID
+    public bool SupportsBackgroundNotificationToggle => true;
+#else
+    public bool SupportsBackgroundNotificationToggle => false;
+#endif
+
+    public Task OpenBatteryOptimizationSettingsAsync()
+    {
+#if ANDROID
+        var ctx    = Android.App.Application.Context;
+        var intent = new Android.Content.Intent(
+            Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations);
+        intent.SetData(Android.Net.Uri.Parse("package:" + ctx.PackageName));
+        intent.AddFlags(Android.Content.ActivityFlags.NewTask);
+        ctx.StartActivity(intent);
+#endif
+        return Task.CompletedTask;
+    }
+
+    public async Task SetBackgroundNotificationVisibleAsync(bool visible)
+    {
+#if ANDROID
+        // Persist the setting so EmailSyncService reads it on next start
+        var prefs = IPlatformApplication.Current!.Services
+            .GetRequiredService<EChat.Core.Services.IAppPreferences>();
+        prefs.Set("bg_notification_visible", visible ? "true" : "false");
+
+        // Restart the foreground service so it picks up the new setting immediately
+        var ctx    = Android.App.Application.Context;
+        var intent = new Android.Content.Intent(ctx,
+            typeof(EChat.Maui.Platforms.Android.Services.EmailSyncService));
+        ctx.StopService(intent);
+        await Task.Delay(300); // give OnDestroy time to run
+        ctx.StartForegroundService(intent);
+#else
+        await Task.CompletedTask;
+#endif
     }
 
     public void RestartApp()

@@ -19,6 +19,7 @@ public class GroupMember
     public GroupRole Role { get; set; } = GroupRole.Member;
     public DateTimeOffset AddedAt { get; set; }
     public string? AddedBy { get; set; }
+    public string? NameColor { get; set; }
     
     // Navigation
     public ChatGroup? Group { get; set; }

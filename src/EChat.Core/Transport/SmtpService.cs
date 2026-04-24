@@ -136,10 +136,11 @@ public class SmtpService : IDisposable
 
                 // 421 = service temporarily unavailable (server overloaded / shutting down)
                 // 429 = too many requests (rate limit)
+                // 451 = requested action aborted / rate-limit exceeded (mail.ru, Yandex, etc.)
                 // 452 = insufficient system storage / sending limit reached
-                if (code == 421 || code == 429 || code == 452)
+                if (code == 421 || code == 429 || code == 451 || code == 452)
                 {
-                    _fileLogger.Write("WARN", "SmtpService", $"SMTP rate-limit {code} — message stays Sending for retry on next app start");
+                    _fileLogger.Write("WARN", "SmtpService", $"SMTP rate-limit {code} — will retry automatically after cooldown");
                     return SmtpSendResult.RateLimited;
                 }
 

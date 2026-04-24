@@ -30,9 +30,14 @@
 		<!-- App Identifier -->
 		<ApplicationId>com.echat.app</ApplicationId>
 
-		<!-- Versions -->
-		<ApplicationDisplayVersion>0.1.1</ApplicationDisplayVersion>
-		<ApplicationVersion>1</ApplicationVersion>
+		<!-- Versions — read from version.txt so publish.bat increments are reflected in the APK/exe -->
+		<_VerRaw>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)version.txt').Trim())</_VerRaw>
+		<ApplicationDisplayVersion>$(_VerRaw)</ApplicationDisplayVersion>
+		<!-- Android versionCode: last numeric segment (patch), e.g. "0.1.134" → 134 -->
+		<ApplicationVersion>$([System.Text.RegularExpressions.Regex]::Match('$(_VerRaw)', '(\d+)$').Value)</ApplicationVersion>
+		<Version>$(_VerRaw)</Version>
+		<AssemblyVersion>$(_VerRaw)</AssemblyVersion>
+		<InformationalVersion>$(_VerRaw)+$([System.DateTime]::UtcNow.ToString("yyyyMMddHHmm"))</InformationalVersion>
 
 		<WindowsPackageType>MSIX</WindowsPackageType>
 
@@ -53,6 +58,11 @@
 		<GenerateTestArtifacts>True</GenerateTestArtifacts>
 		<HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
 	</PropertyGroup>
+
+	<!-- Track version.txt so MSBuild incremental build detects version bumps even without .cs changes -->
+	<ItemGroup>
+		<UpToDateCheckInput Include="$(MSBuildThisFileDirectory)version.txt" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<!-- App Icon -->

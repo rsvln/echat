@@ -1,4 +1,5 @@
 @page "/settings"
+@using EChat.Core
 @using EChat.Core.Models
 @using EChat.Core.Services
 @using EChat.Core.Sync
@@ -11,12 +12,14 @@
 @inject SyncEngine SyncEngine
 @inject SyncWarningService SyncWarnings
 @inject IServiceScopeFactory ScopeFactory
+@inject IServiceProvider ServiceProvider
 @inject UserContextService UserContext
 @inject IJSRuntime JS
 @inject IAppPreferences Prefs
 @inject EChat.Core.ServiceCollectionExtensions.DatabasePathInfo DbPathInfo
 @inject EChat.Core.Services.BackupService BackupSvc
 @inject EChat.Core.Services.FileLogger FileLogger
+@inject EChat.Core.Services.AppStartupService AppStartup
 @inject IPlatformService Platform
 
 <div class="settings-page">
@@ -167,14 +170,71 @@
                     }
                     @(sendOnEnter ? "Enter" : "Ctrl+Enter")
                 </button>
+                @if (Platform.SupportsBackgroundNotificationToggle)
+                {
+                    <button class="new-chat-btn-toggle @(bgNotificationVisible ? "active" : "")"
+                            @onclick="ToggleBgNotification">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                        BG notify
+                    </button>
+                    <button class="new-chat-btn-toggle"
+                            @onclick="() => Platform.OpenBatteryOptimizationSettingsAsync()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="18" height="10" rx="2" ry="2"/><line x1="22" y1="11" x2="22" y2="13"/></svg>
+                        Battery
+                    </button>
+                }
             </div>
         </div>
+
+        @if (!Platform.SupportsMauiFilePicker)
+        {
+            <div class="settings-section">
+                <h2>Notifications</h2>
+                <div class="settings-row" style="align-items:center;gap:12px;">
+                    @if (_notifPermission == "granted")
+                    {
+                        <span style="font-size:13px;color:var(--text-secondary);">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;"><polyline points="20 6 9 17 4 12"/></svg>
+                            Browser notifications enabled
+                        </span>
+                    }
+                    else if (_notifPermission == "denied")
+                    {
+                        <div style="display:flex;flex-direction:column;gap:8px;">
+                            <span style="font-size:13px;color:var(--text-secondary);">
+                                Notifications are blocked. To enable them, click the
+                                <strong style="color:var(--text-primary);">lock icon</strong>
+                                in the browser address bar → <strong style="color:var(--text-primary);">Notifications</strong> → <strong style="color:var(--text-primary);">Allow</strong>,
+                                then click Re-check below.
+                            </span>
+                            <button class="new-chat-btn-toggle" @onclick="RecheckNotificationPermissionAsync">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                                Re-check
+                            </button>
+                        </div>
+                    }
+                    else if (_notifPermission == "unsupported")
+                    {
+                        <span style="font-size:13px;color:var(--text-secondary);">
+                            This browser does not support notifications.
+                        </span>
+                    }
+                    else
+                    {
+                        <button class="new-chat-btn-toggle" @onclick="RequestNotificationPermissionAsync">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                            Enable notifications
+                        </button>
+                    }
+                </div>
+            </div>
+        }
 
         <div class="settings-section">
             <h2>Logging</h2>
             <div class="settings-row" style="align-items:center;gap:12px;">
                 <label style="font-size:14px;white-space:nowrap;">Log level</label>
-                <select @bind="logLevel" @bind:event="onchange" @bind:after="OnLogLevelChanged">
+                <select value="@logLevel" @onchange="OnLogLevelChanged">
                     <option value="@EChat.Core.Services.AppLogLevel.None">None</option>
                     <option value="@EChat.Core.Services.AppLogLevel.Error">Error</option>
                     <option value="@EChat.Core.Services.AppLogLevel.Warn">Warn</option>
@@ -233,9 +293,21 @@
                     else
                     {
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                        <span>Export Backup</span>
+                        <span>Export (Share)</span>
                     }
                 </button>
+
+                @if (Platform.SupportsPickFolder)
+                {
+                    <button class="new-chat-btn-toggle" @onclick="ExportToFolderAsync" disabled="@backupBusy">
+                        @if (backupBusy && backupOp == "export-folder") { <span>Saving…</span> }
+                        else
+                        {
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Save to Folder</span>
+                        }
+                    </button>
+                }
 
                 @if (Platform.SupportsMauiFilePicker)
                 {
@@ -286,12 +358,16 @@
     private SyncProfile quietHoursProfile = SyncProfile.PowerSaver;
     private bool useDarkTheme = false;
     private bool sendOnEnter = true;
+    private bool bgNotificationVisible = true;
     private EChat.Core.Services.AppLogLevel logLevel = EChat.Core.Services.AppLogLevel.Info;
     private bool showSyncWarning;
     private string syncWarningText = string.Empty;
     private SyncStats? syncStats;
 
     private string? currentAccountId;
+
+    // ── Notifications (web only) ─────────────────────────────────────────────
+    private string? _notifPermission; // "granted" | "denied" | "default" | "unsupported" | null
 
     // ── Backup ──────────────────────────────────────────────────────────────
     private bool   backupBusy   = false;
@@ -304,10 +380,14 @@
     private string? logError  = null;
     private string? logStatus = null;
 
-    private void OnLogLevelChanged()
+    private void OnLogLevelChanged(ChangeEventArgs e)
     {
-        FileLogger.MinLevel = logLevel;
-        Prefs.Set("log_level", logLevel.ToString());
+        if (Enum.TryParse<EChat.Core.Services.AppLogLevel>(e.Value?.ToString(), out var level))
+        {
+            logLevel = level;
+            FileLogger.MinLevel = logLevel;
+            Prefs.Set("log_level", logLevel.ToString());
+        }
     }
 
     private async Task ExportLogAsync()
@@ -352,6 +432,24 @@
         finally { backupBusy = false; backupOp = ""; StateHasChanged(); }
     }
 
+    private async Task ExportToFolderAsync()
+    {
+        backupBusy = true; backupOp = "export-folder";
+        backupError = null; backupStatus = null;
+        StateHasChanged();
+        try
+        {
+            var bytes    = await BackupSvc.CreateBackupAsync();
+            var filename = BackupSvc.SuggestedFileName;
+            var saved    = await Platform.SaveToPickedFolderAsync(filename, bytes, "application/zip");
+            if (saved)
+                backupStatus = "Backup saved successfully.";
+            // If not saved (user cancelled) — silently do nothing
+        }
+        catch (Exception ex) { backupError = $"Save failed: {ex.Message}"; }
+        finally { backupBusy = false; backupOp = ""; StateHasChanged(); }
+    }
+
     private async Task ImportBackupMauiAsync()
     {
         backupBusy = true; backupOp = "import";
@@ -390,19 +488,40 @@
 
     private async Task RestoreAndRestartAsync(Stream stream)
     {
-        if (!EChat.Core.Services.BackupService.IsValidBackup(stream))
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms);
+        ms.Position = 0;
+
+        if (!EChat.Core.Services.BackupService.IsValidBackup(ms))
             throw new InvalidDataException("File is not a valid EChat backup.");
 
-        await BackupSvc.RestoreBackupAsync(stream);
+        ms.Position = 0;
+        await BackupSvc.RestoreBackupAsync(ms);
 
         backupStatus = "Import successful. Restarting…";
         StateHasChanged();
         await Task.Delay(800); // дать время показать сообщение
 
         if (Platform.SupportsMauiFilePicker)
+        {
             Platform.RestartApp();
+        }
         else
-            Navigation.NavigateTo("/", forceLoad: true);
+        {
+            // Web: re-run DB initialisation so preferences, WAL mode and
+            // the startup signal are all refreshed against the restored DB,
+            // then navigate straight to /chats (we know accounts exist in a
+            // valid backup — going via / risks a false "no account" race).
+            AppStartup.Reset();
+            await ServiceProvider.InitializeEChatDatabaseAsync();
+
+            // Apply the restored theme to localStorage before the hard reload so
+            // App.razor's IIFE picks it up immediately on the next page paint.
+            var darkTheme = ServiceProvider.GetRequiredService<IAppPreferences>().Get("dark_theme", "false");
+            await JS.InvokeVoidAsync("applyDarkThemeFromBlazor", darkTheme == "true");
+
+            Navigation.NavigateTo("/chats", forceLoad: true);
+        }
     }
 
     // ── Sync stats ───────────────────────────────────────────────────────────
@@ -418,11 +537,51 @@
         currentAccountId = UserContext.AccountId;
         await LoadSyncSettingsAsync();
         await LoadThemeStateAsync();
-        sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
-        var savedLevel = Prefs.Get("log_level", EChat.Core.Services.AppLogLevel.Info.ToString());
-        logLevel = Enum.TryParse<EChat.Core.Services.AppLogLevel>(savedLevel, out var parsed)
-            ? parsed : EChat.Core.Services.AppLogLevel.Info;
+
+        // Read directly from DB to avoid cache-not-loaded-yet race on startup
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+        var dbSettings = await db.Settings.AsNoTracking()
+            .Where(s => s.Key == "send_on_enter" || s.Key == "log_level")
+            .ToDictionaryAsync(s => s.Key, s => s.Value);
+
+        sendOnEnter = dbSettings.TryGetValue("send_on_enter", out var soe)
+            ? bool.TryParse(soe, out var b) && b
+            : true;
+
+        logLevel = dbSettings.TryGetValue("log_level", out var ll) &&
+                   Enum.TryParse<EChat.Core.Services.AppLogLevel>(ll, out var parsed)
+            ? parsed
+            : EChat.Core.Services.AppLogLevel.Info;
+
         FileLogger.MinLevel = logLevel;
+
+        // Load current browser notification permission (web only).
+        if (!Platform.SupportsMauiFilePicker)
+        {
+            try { _notifPermission = await JS.InvokeAsync<string>("getNotificationPermission"); }
+            catch { }
+        }
+    }
+
+    private async Task RequestNotificationPermissionAsync()
+    {
+        try
+        {
+            _notifPermission = await JS.InvokeAsync<string>("requestNotificationPermission");
+            StateHasChanged();
+        }
+        catch { }
+    }
+
+    private async Task RecheckNotificationPermissionAsync()
+    {
+        try
+        {
+            _notifPermission = await JS.InvokeAsync<string>("getNotificationPermission");
+            StateHasChanged();
+        }
+        catch { }
     }
 
     private async Task LoadSyncSettingsAsync()
@@ -488,10 +647,20 @@
     {
         try
         {
-            var isDark = await JS.InvokeAsync<bool>("eval", "localStorage.getItem('darkMode') === 'true'");
-            useDarkTheme = isDark;
+            // Prefer the DB value (survives backup/restore); fall back to localStorage.
+            var dbValue = Prefs.Get("dark_theme", "");
+            if (!string.IsNullOrEmpty(dbValue))
+            {
+                useDarkTheme = dbValue == "true";
+            }
+            else
+            {
+                useDarkTheme = await JS.InvokeAsync<bool>("eval", "localStorage.getItem('darkMode') === 'true'");
+            }
         }
         catch { }
+
+        bgNotificationVisible = Prefs.Get("bg_notification_visible", "true") != "false";
     }
 
     private async void OnProfileChanged(ChangeEventArgs e)
@@ -569,6 +738,7 @@
     private async Task ToggleDarkTheme()
     {
         useDarkTheme = !useDarkTheme;
+        Prefs.Set("dark_theme", useDarkTheme ? "true" : "false");
         await ApplyThemeAsync();
         StateHasChanged();
     }
@@ -577,6 +747,13 @@
     {
         sendOnEnter = !sendOnEnter;
         Prefs.Set("send_on_enter", sendOnEnter.ToString());
+        StateHasChanged();
+    }
+
+    private async Task ToggleBgNotification()
+    {
+        bgNotificationVisible = !bgNotificationVisible;
+        await Platform.SetBackgroundNotificationVisibleAsync(bgNotificationVisible);
         StateHasChanged();
     }
 

@@ -47,10 +47,28 @@ public class BackupService
             using var ms = new MemoryStream();
             using (var archive = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
             {
-                var entry = archive.CreateEntry("echat.db", CompressionLevel.Optimal);
-                await using var entryStream = entry.Open();
-                await using var fileStream = File.OpenRead(tempPath);
-                await fileStream.CopyToAsync(entryStream, ct);
+                // DB snapshot — close entry stream before creating more entries
+                {
+                    var dbEntry = archive.CreateEntry("echat.db", CompressionLevel.Optimal);
+                    await using var entryStream = dbEntry.Open();
+                    await using var fileStream = File.OpenRead(tempPath);
+                    await fileStream.CopyToAsync(entryStream, ct);
+                }
+
+                // Attachments — stored flat under attachments/<filename>
+                var attDir = _dbPathInfo.AttachmentsDir;
+                if (Directory.Exists(attDir))
+                {
+                    foreach (var file in Directory.EnumerateFiles(attDir, "*", SearchOption.AllDirectories))
+                    {
+                        var relPath = Path.GetRelativePath(attDir, file).Replace('\\', '/');
+                        var attEntry = archive.CreateEntry($"attachments/{relPath}", CompressionLevel.NoCompression);
+                        await using var aes = attEntry.Open();
+                        await using var afs = File.OpenRead(file);
+                        await afs.CopyToAsync(aes, ct);
+                        // aes disposed here before next iteration creates a new entry
+                    }
+                }
             }
             return ms.ToArray();
         }
@@ -110,8 +128,60 @@ public class BackupService
         DeleteIfExists(_dbPathInfo.Path + "-wal");
         DeleteIfExists(_dbPathInfo.Path + "-shm");
 
-        // Атомарная замена
+        // Атомарная замена DB
         File.Move(tempPath, _dbPathInfo.Path, overwrite: true);
+
+        // Восстанавливаем вложения и собираем map filename → новый абсолютный путь
+        var attDir = _dbPathInfo.AttachmentsDir;
+        var attEntries = archive.Entries
+            .Where(e => e.FullName.StartsWith("attachments/", StringComparison.OrdinalIgnoreCase) && e.Length > 0)
+            .ToList();
+
+        // filename (without dirs) → absolute local path
+        var restoredFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (attEntries.Count > 0)
+        {
+            Directory.CreateDirectory(attDir);
+            foreach (var entry in attEntries)
+            {
+                var relPath = entry.FullName["attachments/".Length..].Replace('/', Path.DirectorySeparatorChar);
+                var destPath = Path.Combine(attDir, relPath);
+                Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+                await using var src = entry.Open();
+                await using var dst = File.Create(destPath);
+                await src.CopyToAsync(dst, ct);
+                restoredFiles[Path.GetFileName(destPath)] = destPath;
+            }
+        }
+
+        // FilePath в БД теперь хранится как относительное имя файла.
+        // Старые записи с абсолютными путями обновляем: заменяем на имя файла.
+        if (restoredFiles.Count > 0)
+        {
+            var cs = new SqliteConnectionStringBuilder
+            {
+                DataSource = _dbPathInfo.Path,
+                Pooling = false
+            }.ToString();
+            await using var conn = new SqliteConnection(cs);
+            await conn.OpenAsync(ct);
+            await using var tx = await conn.BeginTransactionAsync(ct);
+            foreach (var fileName in restoredFiles.Keys)
+            {
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText =
+                    "UPDATE Attachments SET FilePath = @rel " +
+                    "WHERE (FilePath LIKE @pattern OR FilePath LIKE @patternBS) " +
+                    "AND FilePath != @rel";
+                cmd.Parameters.AddWithValue("@rel",       fileName);
+                cmd.Parameters.AddWithValue("@pattern",   $"%/{fileName}");
+                cmd.Parameters.AddWithValue("@patternBS", $@"%\{fileName}");
+                cmd.Transaction = (SqliteTransaction)tx;
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+            await tx.CommitAsync(ct);
+        }
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────

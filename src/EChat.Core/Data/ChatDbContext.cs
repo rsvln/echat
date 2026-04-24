@@ -45,7 +45,18 @@ public class ChatDbContext : DbContext
             entity.HasIndex(e => e.LastActivityAt);
             entity.HasIndex(e => new { e.Archived, e.LastActivityAt });
             entity.HasIndex(e => e.AccountId);
-            entity.HasIndex(e => new { e.AccountId, e.PartnerEmail });
+            entity.HasIndex(e => new { e.AccountId, e.ContactEmail });
+            entity.HasIndex(e => e.GroupId);
+
+            entity.HasOne(e => e.Contact)
+                  .WithMany()
+                  .HasForeignKey(e => e.ContactEmail)
+                  .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.Group)
+                  .WithMany()
+                  .HasForeignKey(e => e.GroupId)
+                  .OnDelete(DeleteBehavior.Restrict);
         });
 
         // Account

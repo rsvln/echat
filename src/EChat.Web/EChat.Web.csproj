@@ -7,7 +7,15 @@
     <RootNamespace>EChat.Web</RootNamespace>
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
     <DockerfileContext>..\..</DockerfileContext>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)version.txt').Trim())</Version>
+    <AssemblyVersion>$(Version)</AssemblyVersion>
+    <InformationalVersion>$(Version)+$([System.DateTime]::UtcNow.ToString("yyyyMMddHHmm"))</InformationalVersion>
   </PropertyGroup>
+
+  <!-- Track version.txt so MSBuild incremental build detects version bumps even without .cs changes -->
+  <ItemGroup>
+    <UpToDateCheckInput Include="$(MSBuildThisFileDirectory)version.txt" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />

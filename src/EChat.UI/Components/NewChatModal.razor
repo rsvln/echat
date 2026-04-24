@@ -1,0 +1,204 @@
+﻿@using EChat.Core.Models
+@using EChat.Core.Data
+@using EChat.Core.Protocol
+@using EChat.Core.Transport
+@using EChat.Core.Crypto
+@using EChat.UI.Services
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.DependencyInjection
+@using Net.Codecrete.QrCodeGenerator
+@inject ChatDbContext DbContext
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Navigation
+@inject UserContextService UserContext
+@inject PgpService Pgp
+@inject IPlatformService PlatformService
+@inject EmailTransportService TransportService
+@inject EChat.Core.Services.FileLogger FileLogger
+@inject IJSRuntime JS
+
+@if (IsVisible)
+{
+    <div class="nc-overlay" @onclick="HandleClose">
+        <div class="new-chat-modal" @onclick:stopPropagation>
+
+            <!-- Tabs -->
+            <div class="new-chat-modal-header">
+                <button class="new-chat-tab @(newChatTab == "invite" ? "active" : "")"
+                        @onclick="@(() => SwitchTab("invite"))">My Invite</button>
+                <button class="new-chat-tab @(newChatTab == "add" ? "active" : "")"
+                        @onclick="@(() => SwitchTab("add"))">Add Contact</button>
+                <button class="new-chat-tab @(newChatTab == "group" ? "active" : "")"
+                        @onclick="@(() => SwitchTab("group"))">New Group</button>
+                <button class="new-chat-close" @onclick="HandleClose">✕</button>
+            </div>
+
+            <!-- ── MY INVITE tab ── -->
+            @if (newChatTab == "invite")
+            {
+                <div class="new-chat-body">
+                    <p class="new-chat-hint">
+                        Share this invite with your contact so they can add you with verified encryption.
+                    </p>
+
+                    <!-- QR code -->
+                    <div class="invite-qr-box">
+                        @myInviteQr
+                    </div>
+
+                    <!-- Invite code – display only, for visual identification -->
+                    <div class="invite-code-row">
+                        <span class="invite-code-label">ID</span>
+                        <span class="invite-code">@myInviteCode</span>
+                    </div>
+
+                    <!-- Copy button – always copies the full link (contains public key) -->
+                    <div class="invite-link-row">
+                        <button class="invite-copy-btn invite-copy-primary" @onclick="@(() => CopyToClipboard(myInviteLink))">
+                            @(copied == "link" ? "✓ Copied!" : "Copy invite link")
+                        </button>
+                    </div>
+
+                    <p class="invite-note">
+                        Scan the QR code or share the link — it includes your public key so your contact can write to you with encryption from the first message.
+                    </p>
+                </div>
+            }
+
+            <!-- ── ADD CONTACT tab ── -->
+            @if (newChatTab == "add")
+            {
+                <div class="new-chat-body">
+
+                    @* ── Variant 1: invite link (contains everything) ── *@
+                    <div class="new-chat-field">
+                        <label class="new-chat-label">Invite link</label>
+                        <input type="text"
+                               class="new-chat-input"
+                               placeholder="echat://invite?..."
+                               @bind="inviteInput"
+                               @bind:event="oninput"
+                               @onkeydown="OnAddContactKeyDown" />
+                        <p class="invite-field-hint">Paste the full invite link your contact shared with you — it contains their email and encryption key</p>
+                    </div>
+
+                    <div class="invite-divider"><span>or enter manually</span></div>
+
+                    @* ── Variant 2: code + email ── *@
+                    <div class="new-chat-field">
+                        <label class="new-chat-label">Invite code</label>
+                        <input type="text"
+                               class="new-chat-input"
+                               placeholder="ABCDE-FGHJ2"
+                               @bind="inviteCodeInput"
+                               @bind:event="oninput"
+                               @onkeydown="OnAddContactKeyDown" />
+                    </div>
+                    <div class="new-chat-field">
+                        <label class="new-chat-label">Their email</label>
+                        <input type="email"
+                               class="new-chat-input"
+                               placeholder="contact@example.com"
+                               @bind="newChatEmail"
+                               @bind:event="oninput"
+                               @onkeydown="OnNewChatKeyDown" />
+                    </div>
+
+                    @if (filteredContacts.Any() && !string.IsNullOrEmpty(newChatEmail))
+                    {
+                        <div class="new-chat-contacts">
+                            @foreach (var contact in filteredContacts)
+                            {
+                                <div class="new-chat-contact-item" @onclick="@(() => SelectContact(contact.Email))">
+                                    <div class="contact-avatar">
+                                        @((contact.DisplayName ?? contact.Email).Substring(0, 1).ToUpper())
+                                    </div>
+                                    <div class="contact-info">
+                                        <span class="contact-name">@(contact.DisplayName ?? contact.Email)</span>
+                                        <span class="contact-email">@contact.Email</span>
+                                        @if (contact.Verified)
+                                        {
+                                            <span class="contact-verified">✓ verified</span>
+                                        }
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+
+                    @if (!string.IsNullOrEmpty(newChatError))
+                    {
+                        <p class="new-chat-error">@newChatError</p>
+                    }
+
+                    <div class="new-chat-actions">
+                        <button class="new-chat-btn-primary"
+                                @onclick="AddContactFromInviteOrEmail"
+                                disabled="@(string.IsNullOrWhiteSpace(inviteInput) && string.IsNullOrWhiteSpace(newChatEmail))">
+                            Start Chat
+                        </button>
+                    </div>
+                </div>
+            }
+
+            <!-- ── NEW GROUP tab ── -->
+            @if (newChatTab == "group")
+            {
+                <div class="new-chat-body">
+                    <div class="new-chat-field">
+                        <label class="new-chat-label">Group name</label>
+                        <input type="text"
+                               class="new-chat-input"
+                               placeholder="My Group"
+                               @bind="newGroupName"
+                               @bind:event="oninput" />
+                    </div>
+
+                    <div class="new-chat-field">
+                        <label class="new-chat-label">Members</label>
+                        @foreach (var selectedEmail in groupMemberEmails.ToList())
+                        {
+                            var email = selectedEmail;
+                            <div class="group-member-row">
+                                <select class="new-chat-input"
+                                        @onchange="@(e => UpdateGroupMember(email, e.Value?.ToString() ?? ""))">
+                                    <option value="">— select contact —</option>
+                                    @foreach (var contact in contactsWithKeys)
+                                    {
+                                        <option value="@contact.Email" selected="@(email == contact.Email)">
+                                            @contact.DisplayName (@contact.Email)
+                                        </option>
+                                    }
+                                </select>
+                                <button class="group-member-remove"
+                                        @onclick="@(() => RemoveGroupMember(email))"
+                                        disabled="@(groupMemberEmails.Count <= 1)">✕</button>
+                            </div>
+                        }
+                        <button class="new-chat-btn-secondary" @onclick="AddGroupMember">+ Add member</button>
+                        @if (!contactsWithKeys.Any())
+                        {
+                            <p class="new-chat-error" style="margin-top:8px;">
+                                No contacts with verified encryption keys. Add contacts first via the Add Contact tab.
+                            </p>
+                        }
+                    </div>
+
+                    @if (!string.IsNullOrEmpty(newChatError))
+                    {
+                        <p class="new-chat-error">@newChatError</p>
+                    }
+
+                    <div class="new-chat-actions">
+                        <button class="new-chat-btn-primary"
+                                @onclick="CreateGroup"
+                                disabled="@string.IsNullOrWhiteSpace(newGroupName)">
+                            Create Group
+                        </button>
+                    </div>
+                </div>
+            }
+
+        </div>
+    </div>
+}

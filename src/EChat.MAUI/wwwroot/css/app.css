@@ -388,6 +388,14 @@ html, body, #app {
     margin-bottom: 1px;
 }
 
+.chat-name-lock-icon {
+    flex-shrink: 0;
+    opacity: 0.55;
+    color: var(--primary);
+    vertical-align: middle;
+    margin-bottom: 1px;
+}
+
 .chat-badge {
     background: var(--primary);
     color: white;

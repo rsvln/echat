@@ -47,10 +47,21 @@ public class FileLogger
         _       => AppLogLevel.Debug
     };
 
+    /// <summary>
+    /// When true, each log line is also written to stdout (Console.Out).
+    /// Set this on server / Docker deployments so <c>docker logs</c> mirrors the file log.
+    /// </summary>
+    public bool WriteToConsole { get; set; }
+
     public void Write(string level, string category, string message)
     {
         if (MinLevel == AppLogLevel.None) return;
         if (ParseLevel(level) > MinLevel) return;
+
+        var line = $"[{DateTimeOffset.Now:O}] [{level}] [{category}] {message}";
+
+        if (WriteToConsole)
+            Console.WriteLine(line);
 
         lock (_lock)
         {
@@ -64,7 +75,6 @@ public class FileLogger
                     File.Move(_logPath, oldPath);
                 }
 
-                var line = $"[{DateTimeOffset.Now:O}] [{level}] [{category}] {message}";
                 File.AppendAllText(_logPath, line + Environment.NewLine, Encoding.UTF8);
             }
             catch { /* never crash the app */ }

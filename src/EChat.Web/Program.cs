@@ -1,3 +1,4 @@
+using System.Reflection;
 using EChat.Core;
 using EChat.Core.Data;
 using EChat.Core.Models;
@@ -7,7 +8,20 @@ using EChat.Web.Components;
 using EChat.Web.Services;
 using Microsoft.EntityFrameworkCore;
 
+EChat.Core.Services.VersionInfo.PlatformOverride = "Web";
+
+// Report the Web host's own version in the About screen (not EChat.Core's version).
+var hostVersion = Assembly.GetExecutingAssembly()
+    .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+    ?.InformationalVersion;
+if (!string.IsNullOrEmpty(hostVersion))
+    EChat.Core.Services.VersionInfo.VersionOverride = hostVersion;
+
 var builder = WebApplication.CreateBuilder(args);
+
+// Suppress all framework / EF Core logging to stdout.
+// Our FileLogger (with WriteToConsole = true) is the only log sink for Docker.
+builder.Logging.ClearProviders();
 
 // Explicitly bind to all interfaces so Docker port mapping works.
 // ASPNETCORE_URLS env var can still override this if needed.
@@ -21,7 +35,9 @@ var dataDir = Environment.GetEnvironmentVariable("ECHAT_DATA_DIR")
     ?? Path.Combine(builder.Environment.ContentRootPath, "data");
 Directory.CreateDirectory(dataDir);
 
-var dbPath = Path.Combine(dataDir, "echat.db");
+var dbDir = Path.Combine(dataDir, "db");
+Directory.CreateDirectory(dbDir);
+var dbPath = Path.Combine(dbDir, "echat.db");
 
 // Device ID — generated once and persisted in the Settings table via DbAppPreferences.
 // On first run before the DB is ready, generate a new ID and pass it to AddEChatCore;
@@ -36,6 +52,9 @@ builder.Services.AddSingleton<UserContextService>();
 builder.Services.AddSingleton<IPlatformService, WebPlatformService>();
 
 var app = builder.Build();
+
+// Mirror FileLogger output to stdout so `docker logs` shows the same thing as the log file.
+app.Services.GetRequiredService<EChat.Core.Services.FileLogger>().WriteToConsole = true;
 
 // No HTTPS redirect — SSL termination is handled by nginx/reverse proxy upstream.
 app.UseStaticFiles();
@@ -78,7 +97,11 @@ _ = Task.Run(async () =>
         await incomingMessages.SaveAsync(accountId, messages);
 
     try { await transport.ReconnectAsync(account, resolvedDeviceId); }
-    catch (Exception ex) { app.Logger.LogError(ex, "Transport connect failed"); }
+    catch (Exception ex)
+    {
+        app.Services.GetRequiredService<EChat.Core.Services.FileLogger>()
+            .Write("ERROR", "Transport", $"ReconnectAsync failed: {ex}");
+    }
 
     await multiImap.StartBackgroundAccountsAsync(accounts, account.AccountId);
 });

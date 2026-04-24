@@ -138,11 +138,17 @@ namespace EChat.Core.Data.Migrations
                     b.Property<bool>("Archived")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("ContactEmail")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("TEXT");
 
                     b.Property<bool>("Deleted")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("GroupId")
+                        .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset?>("LastActivityAt")
                         .HasColumnType("TEXT");
@@ -155,9 +161,6 @@ namespace EChat.Core.Data.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("PartnerEmail")
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Priority")
@@ -173,9 +176,13 @@ namespace EChat.Core.Data.Migrations
 
                     b.HasIndex("AccountId");
 
+                    b.HasIndex("ContactEmail");
+
+                    b.HasIndex("GroupId");
+
                     b.HasIndex("LastActivityAt");
 
-                    b.HasIndex("AccountId", "PartnerEmail");
+                    b.HasIndex("AccountId", "ContactEmail");
 
                     b.HasIndex("Archived", "LastActivityAt");
 
@@ -352,6 +359,9 @@ namespace EChat.Core.Data.Migrations
                     b.Property<string>("AddedBy")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("NameColor")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Role")
                         .HasColumnType("INTEGER");
 
@@ -444,6 +454,23 @@ namespace EChat.Core.Data.Migrations
                     b.HasKey("Key");
 
                     b.ToTable("Settings");
+                });
+
+            modelBuilder.Entity("EChat.Core.Models.Chat", b =>
+                {
+                    b.HasOne("EChat.Core.Models.Contact", "Contact")
+                        .WithMany()
+                        .HasForeignKey("ContactEmail")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("EChat.Core.Models.ChatGroup", "Group")
+                        .WithMany()
+                        .HasForeignKey("GroupId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Contact");
+
+                    b.Navigation("Group");
                 });
 
             modelBuilder.Entity("EChat.Core.Models.ChatMessage", b =>

@@ -1,33 +1,34 @@
 using System.Collections.Concurrent;
-using Microsoft.Data.Sqlite;
-using static EChat.Core.ServiceCollectionExtensions;
+using EChat.Core.Data;
+using EChat.Core.Models;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace EChat.Core.Services;
 
 public class DbAppPreferences : IAppPreferences
 {
-    private readonly string _dbPath;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ConcurrentDictionary<string, string> _cache = new();
 
-    public DbAppPreferences(DatabasePathInfo dbPathInfo)
+    public DbAppPreferences(IServiceScopeFactory scopeFactory)
     {
-        _dbPath = dbPathInfo.Path;
+        _scopeFactory = scopeFactory;
     }
 
     /// <summary>Called from InitializeEChatDatabaseAsync after migrations.</summary>
     public async Task LoadAsync()
     {
-        if (!File.Exists(_dbPath)) return;
         try
         {
-            using var conn = new SqliteConnection($"Data Source={_dbPath};Pooling=false");
-            await conn.OpenAsync();
-            using var cmd = conn.CreateCommand();
-            // Load only app preference keys (exclude imap sync timestamps and account-scoped settings)
-            cmd.CommandText = "SELECT Key, Value FROM Settings WHERE Key NOT LIKE 'imap_sync_%'";
-            using var reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
-                _cache[reader.GetString(0)] = reader.GetString(1);
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            var settings = await db.Settings
+                .AsNoTracking()
+                .Where(s => !s.Key.StartsWith("imap_sync_"))
+                .ToListAsync();
+            foreach (var s in settings)
+                _cache[s.Key] = s.Value;
         }
         catch { /* DB not ready yet */ }
     }
@@ -45,18 +46,24 @@ public class DbAppPreferences : IAppPreferences
     {
         try
         {
-            using var conn = new SqliteConnection($"Data Source={_dbPath};Pooling=false");
-            await conn.OpenAsync();
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = """
-                INSERT INTO Settings (Key, Value, UpdatedAt)
-                VALUES (@k, @v, @t)
-                ON CONFLICT(Key) DO UPDATE SET Value = @v, UpdatedAt = @t
-                """;
-            cmd.Parameters.AddWithValue("@k", key);
-            cmd.Parameters.AddWithValue("@v", value);
-            cmd.Parameters.AddWithValue("@t", DateTimeOffset.UtcNow.ToString("O"));
-            await cmd.ExecuteNonQueryAsync();
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            var existing = await db.Settings.FindAsync(key);
+            if (existing == null)
+            {
+                db.Settings.Add(new Setting
+                {
+                    Key = key,
+                    Value = value,
+                    UpdatedAt = DateTimeOffset.UtcNow
+                });
+            }
+            else
+            {
+                existing.Value = value;
+                existing.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+            await db.SaveChangesAsync();
         }
         catch { }
     }

@@ -160,6 +160,20 @@ public class SyncEngine
             return _wakeupTimes.Count(t => t >= cutoff);
     }
 
+    /// <summary>
+    /// Applies platform-level overrides on top of whatever was loaded from DB.
+    /// Called from Android-specific startup code to disable IDLE (unreliable when
+    /// Android kills background TCP connections) and reduce the polling interval
+    /// so messages arrive within ~1 minute instead of 5.
+    /// </summary>
+    public void ApplyMobileOverrides(bool useIdle = false, TimeSpan? pollingInterval = null)
+    {
+        _settings.UseImapIdle = useIdle;
+        if (pollingInterval.HasValue)
+            _settings.PollingInterval = pollingInterval.Value;
+        _fileLogger.Write("INFO", "SyncEngine", $"Mobile overrides applied: idle={useIdle}, poll={_settings.PollingInterval.TotalMinutes}min");
+    }
+
     public SyncStrategy GetCurrentStrategy(int batteryLevel, bool isMetered, bool isCellular)
     {
         return GetCurrentStrategy(batteryLevel, isMetered, isCellular, ChatPriority.Normal);
@@ -257,25 +271,29 @@ public class SyncEngine
 
     private SyncStrategy ApplyProfile(SyncProfile profile, ChatPriority chatPriority = ChatPriority.Normal)
     {
+        // UseImapIdle = false acts as a platform-level override (e.g. Android forces polling).
+        // High-priority chats can still bypass this to get near-instant delivery.
+        bool idleAllowed = _settings.UseImapIdle || chatPriority == ChatPriority.High;
+
         return profile switch
         {
             SyncProfile.Realtime => new SyncStrategy
             {
-                UseIdle = true,
+                UseIdle = idleAllowed,
                 PollingInterval = TimeSpan.FromMinutes(1),
                 Reason = "Realtime mode"
             },
             SyncProfile.Balanced => new SyncStrategy
             {
-                UseIdle = !IsQuietHours() || chatPriority == ChatPriority.High,
+                UseIdle = idleAllowed && (!IsQuietHours() || chatPriority == ChatPriority.High),
                 PollingInterval = chatPriority == ChatPriority.High
                     ? TimeSpan.FromMinutes(1)
-                    : TimeSpan.FromMinutes(5),
+                    : _settings.PollingInterval,
                 Reason = "Balanced mode"
             },
             SyncProfile.PowerSaver => new SyncStrategy
             {
-                UseIdle = chatPriority == ChatPriority.High,
+                UseIdle = idleAllowed && chatPriority == ChatPriority.High,
                 PollingInterval = chatPriority switch
                 {
                     ChatPriority.High => TimeSpan.FromMinutes(5),

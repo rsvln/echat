@@ -1,6 +1,10 @@
 @using EChat.Core.Models
 @using static EChat.Core.Models.MessageStatus
+@using EChat.UI.Services
+@using static EChat.Core.ServiceCollectionExtensions
 @inject IJSRuntime JS
+@inject IPlatformService PlatformService
+@inject DatabasePathInfo DbPathInfo
 
 <div class="message-bubble-wrap @(IsOwn ? "own" : "other") @(IsSelected ? "mob-msg-selected" : "")"
      id="msg-@Message.MessageId"
@@ -12,7 +16,7 @@
     <div class="message-bubble @(IsOwn ? "own" : "other")">
         @if (!IsOwn)
         {
-            <div class="message-sender">@(SenderDisplayName ?? Message.Sender)</div>
+            <div class="message-sender" style="@(SenderColor != null ? $"color:{SenderColor}" : "")">@(SenderDisplayName ?? Message.Sender)</div>
         }
 
         @* ── Quoted / replied-to message (inside bubble, like Telegram) ── *@
@@ -60,7 +64,7 @@
                 else
                 {
                     <div class="message-attachment">
-                        <div class="message-attachment-file" @onclick="@(() => DownloadFile(att))">
+                        <div class="message-attachment-file" @onclick="@(() => OnAttachmentClick(att))">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                             <span>@att.FileName</span>
                             <span style="color:var(--text-muted);font-size:11px;">(@FormatSize(att.Size))</span>
@@ -144,13 +148,23 @@
 @* ── Fullscreen image viewer ─────────────────────────────────────── *@
 @if (_lightboxUrl != null)
 {
-    <div style="position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;"
-         @onclick="CloseLightbox">
-        <img src="@_lightboxUrl"
-             style="max-width:95vw;max-height:92vh;object-fit:contain;border-radius:4px;box-shadow:0 8px 40px rgba(0,0,0,0.6);"
+    <div style="position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;"
+         @onclick="CloseLightboxSafe">
+        <img id="echat-lightbox-img"
+             src="@_lightboxUrl"
+             style="max-width:95vw;max-height:92vh;object-fit:contain;border-radius:4px;box-shadow:0 8px 40px rgba(0,0,0,0.6);touch-action:none;user-select:none;-webkit-user-select:none;"
              @onclick:stopPropagation="true" />
         <button style="position:absolute;top:16px;right:16px;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:24px;width:44px;height:44px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;"
                 @onclick="CloseLightbox">✕</button>
+        @if (_attActionTarget != null)
+        {
+            <button style="position:absolute;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.18);border:none;color:#fff;font-size:15px;padding:10px 24px;border-radius:24px;cursor:pointer;display:flex;align-items:center;gap:8px;"
+                    @onclick:stopPropagation="true"
+                    @onclick="SaveLightboxImage"
+                    disabled="@_attSaving">
+                @(_attSaving ? "Saving..." : "⬇ Save to Downloads")
+            </button>
+        }
     </div>
 }
 
@@ -158,7 +172,7 @@
 @if (_showMenu && !MobileMode)
 {
     <div style="position:fixed;inset:0;z-index:999;" @onclick="CloseMenu" @onclick:stopPropagation="true"></div>
-    <div class="ctx-menu" style="left:@(_menuX)px;top:@(_menuY)px;">
+    <div class="ctx-menu" id="ctx-menu-@Message.MessageId" style="left:@(_menuX)px;top:@(_menuY)px;visibility:hidden;">
 
         @* ── Reaction strip (Telegram-style) ────────────────────────── *@
         <div class="ctx-reaction-strip">
@@ -176,32 +190,51 @@
         @if (!string.IsNullOrEmpty(_selectedText))
         {
             <div class="ctx-item" @onclick="ReplyWithQuoteClicked" @onclick:stopPropagation="true">
-                <span class="ctx-icon">↩</span> Reply with quote
+                <span class="ctx-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg></span> Reply with quote
             </div>
         }
         <div class="ctx-item" @onclick="ReplyClicked" @onclick:stopPropagation="true">
-            <span class="ctx-icon">↩</span> Reply
+            <span class="ctx-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg></span> Reply
         </div>
         <div class="ctx-item" @onclick="CopyClicked" @onclick:stopPropagation="true">
-            <span class="ctx-icon">⎘</span> Copy text
+            <span class="ctx-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span> Copy text
         </div>
         <div class="ctx-item" @onclick="ForwardClicked" @onclick:stopPropagation="true">
-            <span class="ctx-icon">↪</span> Forward
+            <span class="ctx-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg></span> Forward
         </div>
         @if (IsOwn)
         {
             <div class="ctx-item" @onclick="EditClicked" @onclick:stopPropagation="true">
-                <span class="ctx-icon">✏</span> Edit
+                <span class="ctx-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></span> Edit
             </div>
+        }
+        @if (FileAttachments.Any())
+        {
+            <div class="ctx-divider"></div>
+            @foreach (var att in FileAttachments)
+            {
+                var a = att;
+                var shortName = a.FileName.Length > 22 ? a.FileName[..20] + "…" : a.FileName;
+                <div class="ctx-item" @onclick="@(() => ContextOpenAtt(a))" @onclick:stopPropagation="true">
+                    <span class="ctx-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                    </span> Open @shortName
+                </div>
+                <div class="ctx-item" @onclick="@(() => ContextSaveAtt(a))" @onclick:stopPropagation="true">
+                    <span class="ctx-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </span> Save @shortName
+                </div>
+            }
         }
         <div class="ctx-divider"></div>
         <div class="ctx-item ctx-danger" @onclick="DeleteForMeClicked" @onclick:stopPropagation="true">
-            <span class="ctx-icon">🗑</span> Delete for me
+            <span class="ctx-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></span> Delete for me
         </div>
         @if (IsOwn)
         {
             <div class="ctx-item ctx-danger" @onclick="DeleteForAllClicked" @onclick:stopPropagation="true">
-                <span class="ctx-icon">🗑</span> Delete for everyone
+                <span class="ctx-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></span> Delete for everyone
             </div>
         }
     </div>
@@ -239,7 +272,7 @@
         line-height: 1;
     }
     .ctx-reaction-btn:hover {
-        background: var(--hover, #f0f0f0);
+        background: var(--surface-variant, #f0f0f0);
         transform: scale(1.2);
     }
     .ctx-reaction-btn.active {
@@ -250,20 +283,20 @@
         margin: 4px 0;
     }
     .ctx-item {
-        padding: 9px 16px;
+        padding: 6px 14px;
         cursor: pointer;
-        font-size: 14px;
+        font-size: 13px;
         display: flex;
         align-items: center;
-        gap: 10px;
-        color: var(--text, #222);
+        gap: 9px;
+        color: var(--text-primary, #222);
         user-select: none;
         white-space: nowrap;
     }
-    .ctx-item:hover { background: var(--hover, #f5f5f5); }
-    .ctx-icon { font-size: 16px; width: 20px; text-align: center; }
-    .ctx-danger { color: #e53935; }
-    .ctx-danger .ctx-icon { color: #e53935; }
+    .ctx-item:hover { background: var(--surface-variant, #f5f5f5); }
+    .ctx-icon { font-size: 14px; width: 18px; text-align: center; }
+    .ctx-danger { color: var(--error, #e53935); }
+    .ctx-danger .ctx-icon { color: var(--error, #e53935); }
 
     .message-reactions-inline {
         display: flex;
@@ -277,16 +310,17 @@
         align-items: center;
         gap: 3px;
         padding: 2px 8px;
-        border: 1px solid rgba(0,0,0,0.12);
+        border: 1px solid var(--divider);
         border-radius: 12px;
-        background: rgba(0,0,0,0.06);
+        background: var(--surface-variant);
+        color: var(--text-primary);
         cursor: pointer;
         font-size: 13px;
         line-height: 1.3;
         transition: all 0.15s;
     }
     .reaction-badge:hover {
-        background: rgba(0,0,0,0.12);
+        background: var(--surface);
     }
     .reaction-badge.active {
         border-color: #5BA642;
@@ -308,6 +342,7 @@
     [Parameter] public ChatMessage Message { get; set; } = null!;
     [Parameter] public bool IsOwn { get; set; }
     [Parameter] public string? SenderDisplayName { get; set; }
+    [Parameter] public string? SenderColor { get; set; }
     [Parameter] public ChatMessage? QuotedMessage { get; set; }
     [Parameter] public string? QuotedSenderName { get; set; }
     [Parameter] public EventCallback<ChatMessage> OnReply { get; set; }
@@ -328,6 +363,9 @@
     private double _menuX, _menuY;
     private string _selectedText = "";
     private string? _lightboxUrl;
+    private bool _lightboxJsInit;
+    private Attachment? _attActionTarget;
+    private bool _attSaving;
 
     private readonly string[] _quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
 
@@ -345,6 +383,18 @@
     }
 
     private void CloseMenu() => _showMenu = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_lightboxUrl != null && !_lightboxJsInit)
+        {
+            _lightboxJsInit = true;
+            await JS.InvokeVoidAsync("initLightboxZoom");
+        }
+        if (_showMenu)
+            await JS.InvokeVoidAsync("positionMenu",
+                $"ctx-menu-{Message.MessageId}", _menuX, _menuY);
+    }
 
     private async Task PickReaction(string emoji)
     {
@@ -397,9 +447,10 @@
 
     private string GetAttachmentUrl(Attachment att)
     {
-        if (!string.IsNullOrEmpty(att.FilePath) && System.IO.File.Exists(att.FilePath))
+        var absPath = DbPathInfo.ResolveFilePath(att.FilePath);
+        if (!string.IsNullOrEmpty(absPath) && System.IO.File.Exists(absPath))
         {
-            var bytes = System.IO.File.ReadAllBytes(att.FilePath);
+            var bytes = System.IO.File.ReadAllBytes(absPath);
             return $"data:{att.ContentType};base64,{Convert.ToBase64String(bytes)}";
         }
         return "";
@@ -409,10 +460,95 @@
     {
         var url = GetAttachmentUrl(att);
         if (!string.IsNullOrEmpty(url))
+        {
             _lightboxUrl = url;
+            _lightboxJsInit = false;
+            _attActionTarget = att;
+        }
     }
 
-    private void CloseLightbox() => _lightboxUrl = null;
+    private void CloseLightbox()
+    {
+        _lightboxUrl = null;
+        _lightboxJsInit = false;
+        _attActionTarget = null;
+    }
+
+    private async Task CloseLightboxSafe()
+    {
+        // If zoomed in — reset zoom first; second tap closes
+        var zoomed = await JS.InvokeAsync<bool>("isLightboxZoomed");
+        if (zoomed)
+        {
+            await JS.InvokeVoidAsync("resetLightboxZoom");
+            _lightboxJsInit = false; // allow re-init on next render
+        }
+        else
+        {
+            CloseLightbox();
+        }
+    }
+
+    private IEnumerable<Attachment> FileAttachments =>
+        Attachments?.Where(a => !a.IsImage) ?? Enumerable.Empty<Attachment>();
+
+    private void OnAttachmentClick(Attachment att)
+    {
+        if (PlatformService.SupportsMauiFilePicker)
+            _ = OpenFileDirect(att);
+        else
+            _ = DownloadFile(att);
+    }
+
+    private async Task OpenFileDirect(Attachment att)
+    {
+        var absPath = DbPathInfo.ResolveFilePath(att.FilePath);
+        if (!string.IsNullOrEmpty(absPath) && System.IO.File.Exists(absPath))
+            await PlatformService.OpenAttachmentAsync(absPath, att.FileName, att.ContentType ?? "application/octet-stream");
+    }
+
+    private async Task ContextOpenAtt(Attachment att)
+    {
+        _showMenu = false;
+        if (PlatformService.SupportsMauiFilePicker)
+            await OpenFileDirect(att);
+        else
+            await DownloadFile(att);
+    }
+
+    private async Task ContextSaveAtt(Attachment att)
+    {
+        _showMenu = false;
+        if (PlatformService.SupportsMauiFilePicker)
+        {
+            var absPath = DbPathInfo.ResolveFilePath(att.FilePath);
+            if (!string.IsNullOrEmpty(absPath) && System.IO.File.Exists(absPath))
+            {
+                var bytes = await System.IO.File.ReadAllBytesAsync(absPath);
+                await PlatformService.SaveToDownloadsAsync(att.FileName, bytes, att.ContentType ?? "application/octet-stream");
+            }
+        }
+        else
+        {
+            await DownloadFile(att);
+        }
+    }
+
+    private async Task SaveLightboxImage()
+    {
+        if (_attActionTarget == null) return;
+        _attSaving = true;
+        StateHasChanged();
+        var target = _attActionTarget;
+        _attActionTarget = null;
+        var absPath = DbPathInfo.ResolveFilePath(target.FilePath);
+        if (!string.IsNullOrEmpty(absPath) && System.IO.File.Exists(absPath))
+        {
+            var bytes = await System.IO.File.ReadAllBytesAsync(absPath);
+            await PlatformService.SaveToDownloadsAsync(target.FileName, bytes, target.ContentType ?? "image/jpeg");
+        }
+        _attSaving = false;
+    }
 
     private async Task DownloadFile(Attachment att)
     {

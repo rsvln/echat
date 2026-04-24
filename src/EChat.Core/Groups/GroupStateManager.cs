@@ -163,7 +163,8 @@ public class GroupStateManager
                 MemberEmail = memberEmail,
                 Role = state.Admins.Contains(memberEmail) ? GroupRole.Admin : GroupRole.Member,
                 AddedAt = DateTimeOffset.UtcNow,
-                AddedBy = creator
+                AddedBy = creator,
+                NameColor = GroupPalette.PickColor(memberEmail)
             });
         }
         
@@ -196,7 +197,8 @@ public class GroupStateManager
                     MemberEmail = memberEmail,
                     Role = state.Admins.Contains(memberEmail) ? GroupRole.Admin : GroupRole.Member,
                     AddedAt = DateTimeOffset.UtcNow,
-                    AddedBy = actor
+                    AddedBy = actor,
+                    NameColor = GroupPalette.PickColor(memberEmail)
                 });
             }
             else

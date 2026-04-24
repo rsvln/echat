@@ -51,9 +51,34 @@ public class ImapService : IDisposable
         _fileLogger = fileLogger ?? new FileLogger(".");
         _client = new ImapClient
         {
-            ServerCertificateValidationCallback = AllowRevocationUnknown
+            ServerCertificateValidationCallback = AllowRevocationUnknown,
+            // Allow up to 5 min per IMAP operation (default is 2 min which is too short
+            // for large messages / slow servers and causes TaskCanceledException mid-fetch).
+            Timeout = (int)TimeSpan.FromMinutes(5).TotalMilliseconds
         };
    }
+
+    /// <summary>
+    /// Timeout used when fetching messages (connect, auth, download). Default 5 min.
+    /// Kept large so big attachments don't time out.
+    /// </summary>
+    private int _fetchTimeout = (int)TimeSpan.FromMinutes(5).TotalMilliseconds;
+
+    /// <summary>
+    /// Short timeout used only around the IDLE command itself (DONE + OK round-trip).
+    /// On Android set to ~30 s so a silently-dead TCP connection is detected quickly.
+    /// </summary>
+    private int _idleTimeout = (int)TimeSpan.FromMinutes(5).TotalMilliseconds;
+
+    /// <summary>
+    /// Sets the IDLE-specific timeout (DONE round-trip). The fetch timeout stays at 5 min
+    /// so large attachment downloads don't fail. Call with 30 s on Android.
+    /// </summary>
+    public void SetIdleTimeout(TimeSpan timeout)
+    {
+        _idleTimeout = (int)timeout.TotalMilliseconds;
+        _fileLogger.Write("INFO", "ImapService", $"IDLE timeout set to {timeout.TotalSeconds}s");
+    }
 
     public async Task ConnectAsync(string server, int port, string email, string password, bool useSsl = true)
     {
@@ -84,19 +109,21 @@ public class ImapService : IDisposable
     public async Task<IMailFolder> GetOrCreateFolderAsync(string folderName)
     {
         var personalNamespace = _client.PersonalNamespaces[0];
+        var parentFolder = await _client.GetFolderAsync(personalNamespace.Path);
 
-        try
-        {
-            return await _client.GetFolderAsync(personalNamespace.Path + folderName);
-       }
-        catch
-        {
-            var parentFolder = await _client.GetFolderAsync(personalNamespace.Path);
-            var folder = await parentFolder.CreateAsync(folderName, true);
-            _fileLogger.Write("INFO", "ImapService", $"Created IMAP folder {folderName}");
-            return folder;
-       }
-   }
+        // Case-insensitive match: "Echat" on server == "eChat" in settings.
+        // Enumerate subfolders rather than calling GetFolderAsync by exact name
+        // so we never create a duplicate folder with different casing.
+        var subfolders = await parentFolder.GetSubfoldersAsync(false);
+        var existing = subfolders.FirstOrDefault(f =>
+            string.Equals(f.Name, folderName, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+            return existing;
+
+        var folder = await parentFolder.CreateAsync(folderName, true);
+        _fileLogger.Write("INFO", "ImapService", $"Created IMAP folder {folderName}");
+        return folder;
+    }
 
     /// <summary>
     /// IDLEs on <paramref name="inboxFolderName"/>. When new mail arrives, fetches headers,
@@ -137,17 +164,26 @@ public class ImapService : IDisposable
                 var since = lastEchatSync.AddMinutes(-1); // 1-min overlap to avoid gaps
                 await SyncEchatFolderAsync(echatFolderName, knownEchatIds!, since, cancellationToken);
                 lastEchatSync = DateTime.UtcNow;
-                // Re-open inbox so the next IDLE cycle works
-                inbox = await OpenInboxAsync();
+                // Do NOT reopen inbox here. Setting null forces the reconnect block on the next
+                // iteration to reopen AND drain — catching any messages that arrived while the
+                // eChat folder was being synced (server won't fire EXISTS for those).
+                inbox = null;
             }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { _fileLogger.Write("WARN", "ImapService", $"Periodic eChat folder sync failed: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                // SyncEchatFolderAsync may have closed INBOX via SELECT before throwing.
+                // Force reopen so the next iteration doesn't try to IDLE on a closed folder.
+                inbox = null;
+                _fileLogger.Write("WARN", "ImapService", $"Periodic eChat folder sync failed: {ex.Message}");
+            }
         }
 
         try
         {
             inbox = await OpenInboxAsync();
             await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken, knownEchatIds);
+            // Ignore return value here — if it failed we'll retry in the IDLE loop anyway.
        }
         catch (OperationCanceledException) { return; }
         catch (System.IO.IOException ex)
@@ -181,6 +217,13 @@ public class ImapService : IDisposable
                     try { await Task.Delay(TimeSpan.FromSeconds(15), cancellationToken); } catch { break; }
                     continue;
                }
+
+                // Drain any messages already sitting in inbox before entering IDLE.
+                // After reconnect the server won't send a COUNT change for mail that was
+                // already there, so IDLE would miss them until the sync-interval timeout.
+                bool ok = await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken, knownEchatIds);
+                if (!ok) { inbox = null; continue; }
+                await SyncEchatIfDueAsync();
            }
 
             // Break IDLE after syncInterval so we can re-check the eChat folder.
@@ -198,7 +241,13 @@ public class ImapService : IDisposable
             try
             {
                 if (_client.Capabilities.HasFlag(ImapCapabilities.Idle))
-                    await _client.IdleAsync(idleOrTimeout.Token, cancellationToken);
+                {
+                    // Use short timeout for the IDLE command so a dead TCP connection is
+                    // detected quickly (Android: 30 s; Desktop: 5 min).
+                    _client.Timeout = _idleTimeout;
+                    try { await _client.IdleAsync(idleOrTimeout.Token, cancellationToken); }
+                    finally { _client.Timeout = _fetchTimeout; }
+                }
                 else
                 {
                     await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken);
@@ -229,7 +278,13 @@ public class ImapService : IDisposable
 
             if (inbox != null)
             {
-                await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken, knownEchatIds);
+                bool ok = await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken, knownEchatIds);
+                if (!ok)
+                {
+                    // Fetch error — force inbox reopen on next iteration so we skip IDLE
+                    // and immediately retry the unprocessed messages.
+                    inbox = null;
+                }
            }
 
             // Periodically check eChat folder for messages moved there by other devices.
@@ -237,34 +292,38 @@ public class ImapService : IDisposable
        }
    }
 
-    // Use only ASCII subject prefixes — non-ASCII (e.g. Greek ε) in IMAP SEARCH
+    // Build the IMAP subject search query from the configured folder/subject name.
+    // "[eChat]" when folderName="eChat". Use only ASCII — non-ASCII in IMAP SEARCH
     // is not universally supported and silently returns empty results on many servers.
-    private static readonly SearchQuery ChatSubjectQuery =
-        SearchQuery.SubjectContains("[eChat]");
+    private static SearchQuery BuildSubjectQuery(string folderName) =>
+        SearchQuery.SubjectContains($"[{folderName}]");
 
-    private async Task ProcessChatMessagesAsync(IMailFolder inbox, string echatFolderName, CancellationToken ct, HashSet<string>? knownMessageIds = null)
+    /// <returns>true = processed normally; false = broke early due to fetch error (caller should skip IDLE and retry).</returns>
+    private async Task<bool> ProcessChatMessagesAsync(IMailFolder inbox, string echatFolderName, CancellationToken ct, HashSet<string>? knownMessageIds = null)
     {
         IList<UniqueId> uids;
+        var subjectToken = $"[{echatFolderName}]";
 
         try
         {
-            uids = await inbox.SearchAsync(ChatSubjectQuery, ct);
-            if (uids.Count == 0) return;
+            uids = await inbox.SearchAsync(BuildSubjectQuery(echatFolderName), ct);
+            if (uids.Count == 0) return true;
        }
         catch (OperationCanceledException) { throw; }
         catch (System.IO.IOException ex)
         {
             _fileLogger.Write("WARN", "ImapService", $"IO error searching inbox for eChat messages: {ex.Message}");
-            return;
+            return false;
        }
         catch (Exception ex)
         {
             _fileLogger.Write("ERROR", "ImapService", $"Failed to search inbox for eChat messages: {ex.Message}");
-            return;
+            return false;
        }
 
         IMailFolder? echatFolder = null;
         var movedEchatUids = new List<UniqueId>();
+        bool fetchError = false;
 
         foreach (var uid in uids)
         {
@@ -275,12 +334,22 @@ public class ImapService : IDisposable
             {
                 message = await inbox.GetMessageAsync(uid, ct);
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
-                _fileLogger.Write("ERROR", "ImapService", $"Failed to fetch message {uid}: {ex.Message}");
-                continue;
+                // After a timeout or transient error the inbox folder reference is stale
+                // (the underlying connection may have been reset). Break so the outer
+                // StartIdleAsync loop can re-open inbox cleanly on the next iteration.
+                // The message will be picked up on the very next IDLE cycle.
+                _fileLogger.Write("WARN", "ImapService", $"Failed to fetch inbox message {uid}: {ex.Message}. Breaking to reconnect.");
+                fetchError = true;
+                break;
             }
+
+            // Client-side subject guard — IMAP SEARCH may return false positives on some
+            // servers (e.g. Yandex doesn't always honour SubjectContains reliably).
+            if (message.Subject?.Contains(subjectToken, StringComparison.OrdinalIgnoreCase) != true)
+                continue;
 
             // Skip if already processed in this session
             var chatMsgId = message.Headers["Chat-Message-ID"];
@@ -341,6 +410,8 @@ public class ImapService : IDisposable
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { _fileLogger.Write("WARN", "ImapService", $"Failed to mark echat messages as Seen: {ex.Message}"); }
         }
+
+        return !fetchError;
     }
 
     private readonly object knownMessageIdsLock = new();
@@ -358,8 +429,9 @@ public class ImapService : IDisposable
             var echatFolder = await GetOrCreateFolderAsync(echatFolderName);
             await echatFolder.OpenAsync(FolderAccess.ReadWrite, ct);
 
+            var subjectToken = $"[{echatFolderName}]";
             var uids = await echatFolder.SearchAsync(
-                ChatSubjectQuery.And(SearchQuery.DeliveredAfter(since)), ct);
+                BuildSubjectQuery(echatFolderName).And(SearchQuery.DeliveredAfter(since)), ct);
             if (uids.Count == 0)
             {
                 try { await echatFolder.CloseAsync(false, ct); } catch { }
@@ -376,7 +448,19 @@ public class ImapService : IDisposable
 
                 MimeMessage message;
                 try { message = await echatFolder.GetMessageAsync(uid, ct); }
-                catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"Failed to fetch eChat message {uid}: {ex.Message}"); continue; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    // After a timeout the echatFolder reference is stale — break so the caller
+                    // can re-open it on the next sync cycle rather than spinning with errors.
+                    _fileLogger.Write("WARN", "ImapService", $"Failed to fetch eChat message {uid}: {ex.Message}. Breaking to reconnect.");
+                    break;
+                }
+
+                // Client-side subject guard — double-check after fetch in case the IMAP
+                // server returned messages that don't actually contain the subject token.
+                if (message.Subject?.Contains(subjectToken, StringComparison.OrdinalIgnoreCase) != true)
+                    continue;
 
                 // Chat-Message-ID is a custom header — only available in the full message,
                 // not in IMAP summary/envelope. Check it here against DB-derived knownIds.

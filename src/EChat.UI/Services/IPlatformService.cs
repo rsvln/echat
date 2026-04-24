@@ -24,4 +24,53 @@ public interface IPlatformService
     /// На Web — no-op; компонент должен вызвать NavigationManager.NavigateTo("/", forceLoad:true).
     /// </summary>
     void RestartApp();
+
+    /// <summary>
+    /// Открывает файл через нативное приложение (MAUI).
+    /// На Android показывает системный шаринг/открытие.
+    /// На Web — no-op (используй JS download в компоненте).
+    /// </summary>
+    Task OpenAttachmentAsync(string filePath, string fileName, string mimeType);
+
+    /// <summary>
+    /// Сохраняет файл в папку Загрузки (Android) или через диалог (Windows).
+    /// На Web — no-op.
+    /// </summary>
+    Task<bool> SaveToDownloadsAsync(string fileName, byte[] content, string mimeType);
+
+    /// <summary>
+    /// true на Android (SAF ACTION_CREATE_DOCUMENT доступен).
+    /// false на Windows (там SaveFileAsync уже показывает диалог) и Web.
+    /// </summary>
+    bool SupportsPickFolder { get; }
+
+    /// <summary>
+    /// Открывает системный диалог выбора папки/имени файла (Android SAF) и сохраняет байты туда.
+    /// Возвращает true при успехе, false при отмене или ошибке.
+    /// </summary>
+    Task<bool> SaveToPickedFolderAsync(string filename, byte[] content, string mimeType, CancellationToken ct = default);
+
+    /// <summary>
+    /// Обновляет счётчик непрочитанных на иконке приложения.
+    /// Windows: overlay-иконка на кнопке таскбара.
+    /// Другие платформы и Web: no-op (пока).
+    /// </summary>
+    void UpdateBadge(int totalUnread);
+
+    /// <summary>
+    /// true только на Android — там есть постоянное уведомление foreground-сервиса.
+    /// </summary>
+    bool SupportsBackgroundNotificationToggle { get; }
+
+    /// <summary>
+    /// Показывает или скрывает уведомление "Running in background" (Android).
+    /// Сервис продолжает работать в любом случае.
+    /// </summary>
+    Task SetBackgroundNotificationVisibleAsync(bool visible);
+
+    /// <summary>
+    /// Открывает системный диалог отключения оптимизации батареи для этого приложения (Android).
+    /// На других платформах — no-op.
+    /// </summary>
+    Task OpenBatteryOptimizationSettingsAsync();
 }

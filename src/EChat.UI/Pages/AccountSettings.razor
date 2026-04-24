@@ -131,7 +131,7 @@
             <div class="settings-section">
                 <h2>Email Folders</h2>
                 <div class="settings-field">
-                    <label>Chat folder name</label>
+                    <label>Chat folder name and subject</label>
                     <input type="text" @bind="chatFolderName" />
                 </div>
             </div>
@@ -225,6 +225,11 @@
         };
 
         await SyncEngine.SaveSettingsAsync(account.AccountId, settings);
+
+        // Persist folder/subject name
+        var folderKey = $"acct_{account.AccountId}_folder_name";
+        await UpsertSettingAsync(folderKey, chatFolderName);
+        await DbContext.SaveChangesAsync();
 
         // Hot-reconnect transport with updated credentials
         _ = Task.Run(async () =>

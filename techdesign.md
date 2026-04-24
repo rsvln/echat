@@ -72,15 +72,22 @@ InReplyTo        // MessageId цитируемого сообщения
 
 ### Chat
 ```csharp
-ChatId           // PK (для группы = GroupId)
+ChatId           // PK — случайный UUID, независимый от GroupId
 Type             // OneToOne | Group
 AccountId        // Владелец чата
-PartnerEmail     // Только для 1:1: email собеседника
+ContactEmail     // FK → Contact.Email — только для 1:1: email собеседника
+GroupId          // FK → ChatGroup.GroupId — только для Group: ссылка на группу
 Deleted          // Tombstone — не удалять строку, иначе group-create пересоздаст чат
 UnreadCount      // Инкрементируется атомарно через ExecuteUpdateAsync
 Muted / Archived
 LastActivityAt
 ```
+
+**FK-связи**:
+- `ContactEmail → Contacts.Email` (`Restrict`) — контакт должен существовать до создания 1:1 чата
+- `GroupId → Groups.GroupId` (`Restrict`) — группа для групповых чатов
+
+**Навигация**: `Chat.Contact`, `Chat.Group` — доступны через `.Include()`.
 
 **Tombstone-паттерн**: удалённые чаты помечаются `Deleted=true` и остаются в БД. Это предотвращает повторное создание группы при ресинке IMAP-папки.
 
@@ -247,7 +254,8 @@ Content-Size: 12345
 **Важные индексы**:
 - `Messages(MessageId)` — дедупликация
 - `Messages(ChatId, Timestamp)` — загрузка чата
-- `Chats(AccountId, PartnerEmail)` — роутинг 1:1
+- `Chats(AccountId, ContactEmail)` — роутинг 1:1
+- `Chats(GroupId)` — роутинг групп
 - `Chats(Archived, LastActivityAt)` — список чатов
 
 **DateTimeOffset и SQLite**: EF Core не умеет транслировать сравнения `DateTimeOffset` в WHERE-условия на SQLite. Паттерн: загружай все строки в память (`.ToListAsync()`), фильтруй в C#. ORDER BY работает нормально (хранится как ISO-8601 TEXT).

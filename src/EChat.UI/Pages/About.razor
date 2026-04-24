@@ -17,11 +17,11 @@
         <div class="settings-section">
             <h2>εChat (Epsilon Chat)</h2>
 
-            <div style="height: 12px;"></div>
+            @* <div style="height: 2px;"></div> *@
 
             <div class="settings-info-row">
                 <span class="settings-info-label">Version</span>
-                <span>@VersionInfo.AppVersion (@VersionInfo.BuildDate · @VersionInfo.Platform)</span>
+                <span>@VersionInfo.AppVersion<br/>@VersionInfo.BuildDate · @VersionInfo.Platform</span>
             </div>
 
             @foreach (var lib in VersionInfo.Libraries.Where(l => l.Name.StartsWith("EChat")))
@@ -32,21 +32,14 @@
                 </div>
             }
 
-            <div style="height: 12px;"></div>
-
-            <div class="settings-info-row">
-                <span class="settings-info-label">Protocol</span>
-                <span>Email / IMAP + SMTP</span>
-            </div>
-
-            <div style="height: 12px;"></div>
+            @* <div style="height: 2px;"></div> *@
 
             <div class="settings-info-row">
                 <span class="settings-info-label">.NET</span>
                 <span>@VersionInfo.RuntimeVersion</span>
             </div>
 
-            <div style="height: 12px;"></div>
+            @* <div style="height: 2px;"></div> *@
 
             @foreach (var lib in VersionInfo.Libraries.Where(l => !l.Name.StartsWith("EChat")))
             {
@@ -56,14 +49,21 @@
                 </div>
             }
 
-            <div style="height: 12px;"></div>
+            @* <div style="height: 2px;"></div> *@
+            
+            <div class="settings-info-row">
+                <span class="settings-info-label">Protocol</span>
+                <span>IMAP + SMTP</span>
+            </div>
+
+            @* <div style="height: 2px;"></div> *@
 
             <div class="settings-info-row">
                 <span class="settings-info-label">Source</span>
-                <a href="@VersionInfo.ProjectUrl" target="_blank" style="color:var(--primary);text-decoration:none;">@VersionInfo.ProjectUrl</a>
+                <br><a href="@VersionInfo.ProjectUrl" target="_blank" style="color:var(--primary);text-decoration:none;">@VersionInfo.ProjectUrl</a>
             </div>
 
-            <div style="height: 12px;"></div>
+            @* <div style="height: 2px;"></div> *@
 
             <div class="settings-info-row">
                 <span class="settings-info-label">Database</span>

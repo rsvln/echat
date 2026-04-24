@@ -21,6 +21,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 UninstallDisplayName={#MyAppName}
+SetupIconFile={#PublishDir}\appicon.ico
+UninstallDisplayIcon={app}\appicon.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

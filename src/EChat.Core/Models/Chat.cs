@@ -6,7 +6,8 @@ public class Chat
     public required ChatType Type { get; set; }
     public required string Name { get; set; }
     public string? AccountId { get; set; }
-    public string? PartnerEmail { get; set; }
+    public string? ContactEmail { get; set; }
+    public string? GroupId { get; set; }
     public string? LastMessageId { get; set; }
     public int UnreadCount { get; set; }
     public bool Muted { get; set; }
@@ -15,8 +16,10 @@ public class Chat
     public ChatPriority Priority { get; set; } = ChatPriority.Normal;
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? LastActivityAt { get; set; }
-    
+
     // Navigation
+    public Contact? Contact { get; set; }
+    public ChatGroup? Group { get; set; }
     public ICollection<ChatMessage> Messages { get; set; } = new List<ChatMessage>();
 }
 

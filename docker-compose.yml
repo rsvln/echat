@@ -7,6 +7,6 @@ services:
     container_name: echat
     privileged: true
     volumes:
-      - /srv/md0/echat/db:/app/data/
+      - /srv/md0/echat/data:/app/data
     ports:
       - 9999:8080

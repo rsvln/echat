@@ -16,6 +16,77 @@
     <script src="_framework/blazor.web.js"></script>
     <script>
         window.getSelectedText = function () { return window.getSelection()?.toString() ?? ''; };
+        window.positionMenu = function (id, x, y) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            var vw = window.innerWidth, vh = window.innerHeight;
+            var w = el.offsetWidth || 220, h = el.offsetHeight || 100;
+            var left = x + w + 8 > vw ? vw - w - 8 : x;
+            var top  = y + h + 8 > vh ? vh - h - 8 : y;
+            if (left < 8) left = 8;
+            if (top  < 8) top  = 8;
+            el.style.left = left + 'px';
+            el.style.top  = top  + 'px';
+            el.style.visibility = 'visible';
+        };
+        (function () {
+            if (localStorage.getItem('darkMode') === 'true')
+                document.documentElement.setAttribute('data-theme', 'dark');
+        })();
+        window.applyDarkThemeFromBlazor = function (isDark) {
+            if (isDark) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                localStorage.setItem('darkMode', 'true');
+            } else {
+                document.documentElement.removeAttribute('data-theme');
+                localStorage.setItem('darkMode', 'false');
+            }
+        };
+        window._textareaSetup = false;
+        window.setupTextareaResize = function () {
+            if (window._textareaSetup) return;
+            var t = document.getElementById('messageInput');
+            if (!t) return;
+            window._textareaSetup = true;
+            t.addEventListener('input', function () {
+                this.style.height = '1px';
+                void this.offsetHeight;
+                var sh = this.scrollHeight;
+                var maxH = 12 * 21;
+                var newH = Math.max(44, Math.min(sh, maxH));
+                this.style.height = newH + 'px';
+                this.style.overflowY = sh > maxH ? 'auto' : 'hidden';
+            });
+        };
+        window.autoResizeTextarea = function () {
+            window.setupTextareaResize();
+            var t = document.getElementById('messageInput');
+            if (t) {
+                t.style.height = '1px';
+                void t.offsetHeight;
+                var sh = t.scrollHeight;
+                var maxH = 12 * 21;
+                var newH = Math.max(44, Math.min(sh, maxH));
+                t.style.height = newH + 'px';
+                t.style.overflowY = sh > maxH ? 'auto' : 'hidden';
+            }
+        };
+        window.requestNotificationPermission = async function () {
+            if (!('Notification' in window)) return 'unsupported';
+            return await Notification.requestPermission();
+        };
+        window.getNotificationPermission = function () {
+            if (!('Notification' in window)) return 'unsupported';
+            return Notification.permission;
+        };
+        window.showWebNotification = function (title, body) {
+            if (!('Notification' in window) || Notification.permission !== 'granted') return;
+            // Don't interrupt if the tab is actively focused
+            if (document.visibilityState === 'visible') return;
+            var n = new Notification(title, { body: body, icon: '/favicon.ico', tag: 'echat-msg' });
+            n.onclick = function () { window.focus(); n.close(); };
+            setTimeout(function () { n.close(); }, 8000);
+        };
         window.copyToClipboard = function (text) { return navigator.clipboard.writeText(text); };
         window.getChatScrollTop = function () {
             var el = document.querySelector('.messages-container');

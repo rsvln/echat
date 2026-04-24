@@ -10,7 +10,15 @@
 		<AddRazorSupportForMvc>true</AddRazorSupportForMvc>
 		<DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>
 		<DebugSymbols Condition="'$(Configuration)'=='Release'">false</DebugSymbols>
+		<Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)version.txt').Trim())</Version>
+		<AssemblyVersion>$(Version)</AssemblyVersion>
+		<InformationalVersion>$(Version)+$([System.DateTime]::UtcNow.ToString("yyyyMMddHHmm"))</InformationalVersion>
 	</PropertyGroup>
+
+	<!-- Track version.txt so MSBuild incremental build detects version bumps even without .cs changes -->
+	<ItemGroup>
+		<UpToDateCheckInput Include="$(MSBuildThisFileDirectory)version.txt" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<SupportedPlatform Include="browser" />
@@ -18,7 +26,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="10.0.0" />
-		<PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="2.0.3" />
+		<PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="2.1.0" />
 	</ItemGroup>
 
 	<ItemGroup>

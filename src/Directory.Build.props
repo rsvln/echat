@@ -25,25 +25,5 @@
     <InformationalVersion>$(EChatVersion)+$(EChatBuildDate)</InformationalVersion>
   </PropertyGroup>
 
-  <!--
-    Auto-increment version.txt after successful build.
-    A lock file next to version.txt prevents double-increment when MSBuild builds
-    multiple projects (or multiple TFMs) in the same process / same second.
-    The lock file stores the already-incremented version; if it matches what we
-    would write, we skip the write.
-  -->
-  <PropertyGroup>
-    <EChatVersionLockFile>$(MSBuildProjectDirectory)\version.lock</EChatVersionLockFile>
-    <EChatNextPatch>$([MSBuild]::Add('$(EChatPatch)', '1'))</EChatNextPatch>
-    <EChatNextVersion>$(EChatMajor).$(EChatMinor).$(EChatNextPatch)</EChatNextVersion>
-    <EChatLockContent Condition="Exists('$(EChatVersionLockFile)')">$([System.IO.File]::ReadAllText('$(EChatVersionLockFile)').Trim())</EChatLockContent>
-    <EChatAlreadyIncremented Condition="'$(EChatLockContent)' == '$(EChatNextVersion)'">true</EChatAlreadyIncremented>
-  </PropertyGroup>
-
-  <Target Name="IncrementEChatVersion" AfterTargets="Build"
-          Condition="'$(EChatAlreadyIncremented)' != 'true'">
-    <WriteLinesToFile File="$(EChatVersionFile)" Lines="$(EChatNextVersion)" Overwrite="true" />
-    <WriteLinesToFile File="$(EChatVersionLockFile)" Lines="$(EChatNextVersion)" Overwrite="true" />
-    <Message Text="$(MSBuildProjectName): version $(EChatVersion) -> $(EChatNextVersion)" Importance="high" />
-  </Target>
+  <!-- Version increment is handled by publish.bat before the build, not during. -->
 </Project>

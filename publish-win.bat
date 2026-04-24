@@ -11,6 +11,13 @@ set PUB=%~dp0pub
 set ERRORS=0
 
 :: -------------------------------------------
+:: Bump versions (Core/UI only if changed, MAUI always)
+:: -------------------------------------------
+echo Bumping versions...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\bump-versions.ps1" -Mode win
+echo.
+
+:: -------------------------------------------
 :: Clean: bin + obj for all projects
 :: -------------------------------------------
 echo Cleaning bin and obj...

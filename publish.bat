@@ -11,13 +11,19 @@ set PUB=%~dp0pub
 set ERRORS=0
 
 :: -------------------------------------------
-:: Clean: bin + obj for all projects + version lock
+:: Bump versions (Core/UI only if changed, Web+MAUI always)
+:: -------------------------------------------
+echo Bumping versions...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\bump-versions.ps1" -Mode all
+echo.
+
+:: -------------------------------------------
+:: Clean: bin + obj for all projects
 :: -------------------------------------------
 echo Cleaning bin and obj...
 for %%P in (EChat.Core EChat.UI EChat.Web EChat.MAUI) do (
     if exist "src\%%P\bin" rd /s /q "src\%%P\bin"
     if exist "src\%%P\obj" rd /s /q "src\%%P\obj"
-    if exist "src\%%P\version.lock" del /q "src\%%P\version.lock"
 )
 echo   OK: clean done
 echo.
@@ -182,7 +188,7 @@ echo Writing docker-compose.yml to distr...
     echo     container_name: echat
     echo     privileged: true
     echo     volumes:
-    echo       - /srv/md0/echat/db:/app/data/
+    echo       - /srv/md0/echat/data:/app/data
     echo     ports:
     echo       - 9999:8080
 ) > "%PUB%\distr\docker-compose.yml"

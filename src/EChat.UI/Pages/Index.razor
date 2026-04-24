@@ -1,28 +1,26 @@
 @page "/"
 @using EChat.Core.Data
+@using EChat.Core.Services
 @using Microsoft.EntityFrameworkCore
 @inject ChatDbContext DbContext
 @inject NavigationManager Navigation
+@inject AppStartupService Startup
 
 @code {
     protected override async Task OnInitializedAsync()
     {
-        // On fresh install DB migrations run in a background Task — wait up to 5 s for the table to appear
-        for (int i = 0; i < 50; i++)
+        // Wait for migrations to complete (signalled by InitializeEChatDatabaseAsync).
+        // Timeout 15 s as a safety net — on failure fall through to /setup.
+        await Startup.MigrationsReady.WaitAsync(TimeSpan.FromSeconds(15));
+
+        try
         {
-            try
-            {
-                var hasAccount = await DbContext.Accounts.AnyAsync();
-                Navigation.NavigateTo(hasAccount ? "/chats" : "/setup", replace: true);
-                return;
-            }
-            catch (Exception)
-            {
-                if (i < 49)
-                    await Task.Delay(100);
-            }
+            var hasAccount = await DbContext.Accounts.AnyAsync();
+            Navigation.NavigateTo(hasAccount ? "/chats" : "/setup", replace: true);
         }
-        // Fallback after 5 s: assume no accounts yet
-        Navigation.NavigateTo("/setup", replace: true);
+        catch
+        {
+            Navigation.NavigateTo("/setup", replace: true);
+        }
     }
 }

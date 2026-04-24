@@ -8,15 +8,24 @@
 		<NoWarn>CS8600;CS8601;CS8602;CS8603;CS8604;CS0168;CS0219</NoWarn>
 		<DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>
 		<DebugSymbols Condition="'$(Configuration)'=='Release'">false</DebugSymbols>
+		<!-- Version is read from version.txt so publish.bat increments are reflected in the binary -->
+		<Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)version.txt').Trim())</Version>
+		<AssemblyVersion>$(Version)</AssemblyVersion>
+		<InformationalVersion>$(Version)+$([System.DateTime]::UtcNow.ToString("yyyyMMddHHmm"))</InformationalVersion>
 	</PropertyGroup>
+
+	<!-- Track version.txt so MSBuild incremental build detects version bumps even without .cs changes -->
+	<ItemGroup>
+		<UpToDateCheckInput Include="$(MSBuildThisFileDirectory)version.txt" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<!-- Email transport -->
-		<PackageReference Include="MailKit" Version="4.15.1" />
-		<PackageReference Include="MimeKit" Version="4.15.1" />
+		<PackageReference Include="MailKit" Version="4.16.0" />
+		<PackageReference Include="MimeKit" Version="4.16.0" />
 
 		<!-- Cryptography -->
-		<PackageReference Include="PgpCore" Version="6.5.0" />
+		<PackageReference Include="PgpCore" Version="7.0.0" />
 
 		<!-- Database -->
 		<PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.4" />

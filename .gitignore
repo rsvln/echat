@@ -361,3 +361,12 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# EChat publish output
+pub/
+
+# Source hash files used by bump-versions.ps1 to detect changes since last publish
+.src-hash
+
+# Claude Code memory/session data
+.claude/

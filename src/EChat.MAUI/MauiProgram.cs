@@ -1,4 +1,6 @@
+using System.Reflection;
 using EChat.Core;
+using EChat.Core.Services;
 using EChat.Maui.Services;
 using EChat.UI.Services;
 using Microsoft.Extensions.Logging;
@@ -58,6 +60,13 @@ public static class MauiProgram
         builder.Services.AddEChatCore(dbPath, deviceId);
         builder.Services.AddSingleton<UserContextService>();
         builder.Services.AddSingleton<IPlatformService, PlatformService>();
+
+        // Report this host's version in the About screen (not EChat.Core's version).
+        var hostVersion = typeof(MauiProgram).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+        if (!string.IsNullOrEmpty(hostVersion))
+            VersionInfo.VersionOverride = hostVersion;
 
         return builder.Build();
     }

@@ -1,0 +1,36 @@
+@* Headless component — no UI. Subscribes to ChatEventService.NewMessageArrived and
+   forwards payloads to the browser Notifications API via JS interop.
+   Must be rendered inside the InteractiveServer circuit (see Routes.razor). *@
+@using EChat.Core.Services
+@using Microsoft.JSInterop
+@inject IJSRuntime JS
+@inject ChatEventService ChatEvents
+@implements IDisposable
+
+@code {
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+            ChatEvents.NewMessageArrived += HandleNewMessage;
+    }
+
+    private async void HandleNewMessage(NewMessagePayload payload)
+    {
+        try
+        {
+            // Marshal to the Blazor circuit dispatcher so IJSRuntime is called
+            // from the correct synchronisation context (event fires on a thread-pool thread).
+            await InvokeAsync(async () =>
+            {
+                var title = payload.ChatName;
+                var body  = payload.SenderName == payload.ChatName
+                    ? payload.Preview
+                    : $"{payload.SenderName}: {payload.Preview}";
+                await JS.InvokeVoidAsync("showWebNotification", title, body);
+            });
+        }
+        catch { /* circuit may be disposed — swallow */ }
+    }
+
+    public void Dispose() => ChatEvents.NewMessageArrived -= HandleNewMessage;
+}

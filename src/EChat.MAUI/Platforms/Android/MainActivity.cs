@@ -1,4 +1,5 @@
 using Android.App;
+using Android.Content;
 using Android.Content.PM;
 using Android.OS;
 using Android.Views;
@@ -28,6 +29,17 @@ public class MainActivity : MauiAppCompatActivity
 
         // Use OnBackPressedDispatcher (works with both button and swipe gesture on all API levels)
         OnBackPressedDispatcher.AddCallback(this, new BackCallback(this));
+    }
+
+    protected override void OnActivityResult(int requestCode, Result resultCode, Intent? data)
+    {
+        base.OnActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == EChat.Maui.Services.PlatformService.SafRequestCode)
+        {
+            var uri = resultCode == Result.Ok ? data?.Data : null;
+            EChat.Maui.Services.PlatformService.OnSafResult(uri);
+        }
     }
 
     private sealed class BackCallback : OnBackPressedCallback

@@ -11,8 +11,28 @@ namespace EChat.Maui;
 [Activity(Theme = "@style/Maui.SplashTheme", MainLauncher = true, HardwareAccelerated = true, ConfigurationChanges = ConfigChanges.ScreenSize | ConfigChanges.Orientation | ConfigChanges.UiMode | ConfigChanges.ScreenLayout | ConfigChanges.SmallestScreenSize | ConfigChanges.Density)]
 public class MainActivity : MauiAppCompatActivity
 {
+    // True once the process has fully started the app normally.
+    // Stays false if the process was killed by Android and this Activity is being
+    // restored from savedInstanceState — in that case Blazor WebView can't restore
+    // its state and we get a blank screen. We detect this and restart fresh.
+    private static bool _processProperlyStarted;
+
     protected override void OnCreate(Bundle? savedInstanceState)
     {
+        // If Android is trying to restore the Activity after killing our process,
+        // savedInstanceState will be non-null but _processProperlyStarted will be false
+        // (static field was reset when the process was killed).
+        // Blazor WebView cannot restore from saved state — force a clean restart.
+        if (savedInstanceState != null && !_processProperlyStarted)
+        {
+            var fresh = new Intent(this, typeof(MainActivity));
+            fresh.AddFlags(ActivityFlags.ClearTask | ActivityFlags.NewTask);
+            StartActivity(fresh);
+            Finish();
+            return;
+        }
+        _processProperlyStarted = true;
+
         base.OnCreate(savedInstanceState);
 
         // Disable edge-to-edge: content must not go behind the system navigation bar

@@ -47,30 +47,45 @@ public class EmailSyncService : Service
             StopForeground(StopForegroundFlags.Remove);
 
         _cancellationTokenSource = new CancellationTokenSource();
-        
+
+        // IPlatformApplication.Current can be null when Android restarts the Sticky
+        // service after a process kill, before MAUI finishes initializing.
+        // Retry for up to 10 seconds to give MAUI time to come up.
         Task.Run(async () =>
         {
             try
             {
-                var serviceProvider = IPlatformApplication.Current?.Services;
-                if (serviceProvider == null) return;
-                
+                IServiceProvider? serviceProvider = null;
+                for (var i = 0; i < 20; i++)
+                {
+                    serviceProvider = IPlatformApplication.Current?.Services;
+                    if (serviceProvider != null) break;
+                    await Task.Delay(500, _cancellationTokenSource.Token);
+                }
+
+                if (serviceProvider == null)
+                {
+                    global::Android.Util.Log.Warn("eChat", "EmailSyncService: MAUI not ready after 10 s, giving up");
+                    return;
+                }
+
                 _logger = serviceProvider.GetService<ILogger<EmailSyncService>>();
                 _transportService = serviceProvider.GetService<EmailTransportService>();
-                
+
                 if (_transportService != null && !_transportService.IsConnected)
                 {
                     _logger?.LogInformation("Starting email sync service");
-                    // IDLE is managed inside ReconnectAsync; if already connected, nothing to do
                     _logger?.LogInformation("Transport already initialised by app startup");
                 }
             }
+            catch (OperationCanceledException) { /* service was stopped */ }
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Email sync service error");
+                global::Android.Util.Log.Error("eChat", $"EmailSyncService error: {ex}");
             }
         });
-        
+
         return StartCommandResult.Sticky;
     }
     

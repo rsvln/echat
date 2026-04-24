@@ -15,9 +15,7 @@
 
     <div class="settings-body">
         <div class="settings-section">
-            <h2>εChat (Epsilon Chat)</h2>
-
-            @* <div style="height: 2px;"></div> *@
+            <h2>εChat (epsilon Chat)</h2>
 
             <div class="settings-info-row">
                 <span class="settings-info-label">Version</span>
@@ -32,14 +30,10 @@
                 </div>
             }
 
-            @* <div style="height: 2px;"></div> *@
-
             <div class="settings-info-row">
                 <span class="settings-info-label">.NET</span>
                 <span>@VersionInfo.RuntimeVersion</span>
             </div>
-
-            @* <div style="height: 2px;"></div> *@
 
             @foreach (var lib in VersionInfo.Libraries.Where(l => !l.Name.StartsWith("EChat")))
             {
@@ -49,26 +43,20 @@
                 </div>
             }
 
-            @* <div style="height: 2px;"></div> *@
-            
             <div class="settings-info-row">
                 <span class="settings-info-label">Protocol</span>
                 <span>IMAP + SMTP</span>
             </div>
 
-            @* <div style="height: 2px;"></div> *@
-
             <div class="settings-info-row">
-                <span class="settings-info-label">Source</span>
-                <br><a href="@VersionInfo.ProjectUrl" target="_blank" style="color:var(--primary);text-decoration:none;">@VersionInfo.ProjectUrl</a>
-            </div>
-
-            @* <div style="height: 2px;"></div> *@
-
-            <div class="settings-info-row">
-                <span class="settings-info-label">Database</span>
+                <span class="settings-info-label">DB</span>
                 <span class="db-path">@DbPathInfo.Path</span>
             </div>
+
+            <div class="settings-info-row">
+                <a href="@VersionInfo.ProjectUrl" target="_blank" style="color:var(--primary);text-decoration:none;">@VersionInfo.ProjectUrl</a>
+            </div>
+
         </div>
     </div>
 </div>

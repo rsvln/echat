@@ -16,21 +16,25 @@ src/
 │   ├── Sync/            # SyncEngine, NtpTimeService, DeviceSyncService
 │   ├── Groups/          # GroupStateManager, GroupMergeEngine
 │   ├── Crypto/          # PgpService (PgpCore/BouncyCastle)
-│   └── Services/        # FileLogger, ChatEventService, BackupService
+│   └── Services/        # FileLogger, ChatEventService, BackupService, VersionInfo
 ├── EChat.UI/            # Razor-компоненты (платформонезависимые)
-│   ├── Pages/           # Index, AccountSetup, ChatList, ChatView, Settings, AccountSettings, About
-│   ├── Components/      # MessageBubble, ChatListItem, ChatInfoModal
-│   └── Services/        # UserContextService, IAppPreferences, IPlatformService, AndroidBackHandler
+│   ├── Pages/           # Index, AccountSetup, ChatList, ChatList.razor.cs,
+│   │                    # ChatView, Settings, AccountSettings, About
+│   ├── Components/      # MessageBubble, ChatListItem, ChatInfoModal, NewChatModal
+│   └── Services/        # UserContextService, IAppPreferences, IPlatformService,
+│                        # AndroidBackHandler
 ├── EChat.MAUI/          # .NET MAUI хост (Windows + Android)
-│   ├── MauiProgram.cs   # DI-сборка, платформенные пути
-│   ├── App.xaml.cs      # Инициализация БД до запуска Blazor
+│   ├── MauiProgram.cs   # DI-сборка, платформенные пути, VersionInfo.VersionOverride
+│   ├── App.xaml.cs      # Инициализация, запуск транспорта и foreground-сервиса
 │   └── Platforms/
-│       ├── Android/     # MainActivity (OnBackPressed), AndroidManifest.xml, EmailSyncService
-│       └── Windows/
+│       ├── Android/     # MainActivity, MainApplication, AndroidManifest.xml,
+│       │                # EmailSyncService, MessageNotificationHelper
+│       └── Windows/     # TaskbarBadgeHelper, TaskbarFlashHelper
 ├── EChat.Web/           # ASP.NET Core Blazor Server (Docker-деплой)
-│   ├── Program.cs       # Настройка, авто-старт транспорта
+│   ├── Program.cs       # Настройка, авто-старт транспорта, VersionInfo.VersionOverride
 │   └── Dockerfile       # Alpine multi-stage build
-└── EChat.HA/            # Home Assistant интеграция (Python)
+└── scripts/
+    └── bump-versions.ps1 # Умная инкрементация версий перед публикацией
 ```
 
 ---
@@ -83,23 +87,20 @@ Muted / Archived
 LastActivityAt
 ```
 
-**FK-связи**:
-- `ContactEmail → Contacts.Email` (`Restrict`) — контакт должен существовать до создания 1:1 чата
-- `GroupId → Groups.GroupId` (`Restrict`) — группа для групповых чатов
-
-**Навигация**: `Chat.Contact`, `Chat.Group` — доступны через `.Include()`.
-
 **Tombstone-паттерн**: удалённые чаты помечаются `Deleted=true` и остаются в БД. Это предотвращает повторное создание группы при ресинке IMAP-папки.
 
 ### Attachment
 ```csharp
 Id           // Guid
 MessageId    // НЕ FK (без каскадного удаления — намеренно)
-FilePath     // Абсолютный путь к файлу на диске
+FilePath     // Имя файла относительно AttachmentsDir (новые записи)
+             // или абсолютный путь (старые записи — ResolveFilePath умеет оба формата)
 FileName / ContentType / Size / Caption / IsImage
 ```
 
 Файлы хранятся по пути: `{AppDir}/attachments/{MessageId}_{FileName}`
+
+`DatabasePathInfo.ResolveFilePath(stored)` — всегда используй этот метод для получения абсолютного пути из `att.FilePath`. Обрабатывает оба формата (относительный и абсолютный).
 
 ### Account / AccountConfig
 - `Account` — персистентная запись в БД (credentials, PGP-ключи)
@@ -124,7 +125,7 @@ FileName / ContentType / Size / Caption / IsImage
 ### Жизненный цикл соединения
 
 ```
-ChatList.razor → TransportService.ReconnectAsync(account)
+App.xaml.cs (Task.Run) → TransportService.ReconnectAsync(account)
   → StopOldIdle()
   → ImapService.DisconnectAsync() + SmtpService.DisconnectAsync()
   → AccountConfig обновляется (email, keys, deviceId)
@@ -136,7 +137,7 @@ ChatList.razor → TransportService.ReconnectAsync(account)
 ```
 
 `ReconnectAsync` вызывается при:
-- Старте приложения (ChatList.razor OnInitializedAsync)
+- Старте приложения (из `App.xaml.cs`, не из Blazor)
 - Переключении аккаунта
 - Сохранении настроек аккаунта
 
@@ -157,7 +158,7 @@ ImapService.MessageReceived (event)
 ### Отправка сообщений
 
 ```
-ChatView.razor → TransportService.SendMessageAsync(OutgoingMessage)
+ChatList/ChatView → TransportService.SendMessageAsync(OutgoingMessage)
   → Lookup RecipientPublicKey (группа → GroupKeyPairs, 1:1 → Contacts)
   → BatchQueue.Enqueue(message)
       Tier=Immediate → SendSingleAsync() напрямую
@@ -166,9 +167,6 @@ ChatView.razor → TransportService.SendMessageAsync(OutgoingMessage)
           → SmtpService.SendAsync()
               → SmtpSendResult: Sent | RateLimited | Permanent | TransientError
           → UpdateMessageStatusAsync()
-              Sent → Status=Sent
-              Permanent → Status=Failed
-              RateLimited/TransientError → Status остаётся Sending (ретрай при следующем старте)
 ```
 
 ### SmtpSendResult и обработка ошибок
@@ -188,8 +186,6 @@ ChatView.razor → TransportService.SendMessageAsync(OutgoingMessage)
 ## Протокол сообщений
 
 ### Chat-* заголовки
-
-Все метаданные передаются в заголовках SMTP-письма:
 
 ```
 Chat-Version: 2.0
@@ -219,7 +215,6 @@ In-Reply-To: <target-msg-id>
 ```
 Chat-Message-ID: <uuid>
 Chat-Timestamp: ...
-Chat-In-Reply-To: ...
 <прочие метаданные>
                            ← пустая строка-разделитель
 Текст сообщения
@@ -233,32 +228,20 @@ Content-Size: 12345
 --echat-att-end--
 ```
 
-`ChatMessageBuilder.BuildInnerContent()` собирает этот формат.  
-`ChatMessageParser.ApplyDecryptedContent()` парсит его после расшифровки.
-
 **Важно**: `email.Attachments` (MimeKit) содержит только вложения с `Content-Disposition: attachment` — для зашифрованных писем они недоступны. Поэтому вложения кодируются в текстовый блок внутри шифрограммы.
 
 ### Батчинг
 
-`BatchKey = {Recipients (HashSet), GroupId, Tier}`. Сообщения одного ключа упаковываются в `multipart/mixed` с частями `message/rfc822`. Тиры:
-- `Immediate` — немедленная отправка, без батча
+`BatchKey = {Recipients (HashSet), GroupId, Tier}`. Тиры:
+- `Immediate` — немедленная отправка, без батча (все пользовательские сообщения)
 - `System` — быстрый батч (системные сообщения)
-- `LowPriority` — медленный батч (читабельность, экономия лимитов)
+- `LowPriority` — медленный батч (экономия лимитов)
 
 ---
 
 ## База данных
 
 **СУБД**: SQLite с WAL-mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`).
-
-**Важные индексы**:
-- `Messages(MessageId)` — дедупликация
-- `Messages(ChatId, Timestamp)` — загрузка чата
-- `Chats(AccountId, ContactEmail)` — роутинг 1:1
-- `Chats(GroupId)` — роутинг групп
-- `Chats(Archived, LastActivityAt)` — список чатов
-
-**DateTimeOffset и SQLite**: EF Core не умеет транслировать сравнения `DateTimeOffset` в WHERE-условия на SQLite. Паттерн: загружай все строки в память (`.ToListAsync()`), фильтруй в C#. ORDER BY работает нормально (хранится как ISO-8601 TEXT).
 
 **EF Core scoped context**: `ChatDbContext` — scoped, не singleton. Используй `IServiceScopeFactory.CreateScope()` в синглтонах:
 ```csharp
@@ -273,6 +256,8 @@ await db.Chats
     .ExecuteUpdateAsync(s => s.SetProperty(c => c.UnreadCount, c => c.UnreadCount + 1));
 ```
 
+**DateTimeOffset и SQLite**: EF Core не умеет транслировать сравнения `DateTimeOffset` в WHERE-условия на SQLite. Паттерн: загружай строки в память (`.ToListAsync()`), фильтруй в C#. ORDER BY работает нормально.
+
 ---
 
 ## UI
@@ -283,55 +268,154 @@ await db.Chats
 
 `ChatList.razor` содержит оба layout внутри одного файла, переключение через `@if (Platform.IsDesktop)`.
 
+Вся логика `ChatList` вынесена в code-behind файл `ChatList.razor.cs` (partial class).
+
+### Компоненты
+
+| Компонент | Описание |
+|---|---|
+| `MessageBubble` | Рендер одного сообщения. Используется и на десктопе, и на мобиле |
+| `ChatListItem` | Элемент списка чатов |
+| `ChatInfoModal` | Информация о чате / участниках группы |
+| `NewChatModal` | Модальное окно создания чата (3 вкладки: My Invite, Add Contact, New Group) |
+
+### IPlatformService
+
+Интерфейс для платформенных операций. Реализации: `PlatformService` (MAUI) и `WebPlatformService` (Web).
+
+```csharp
+bool IsDesktop                          // Windows = true, остальные = false
+bool SupportsMauiFilePicker             // MAUI = true, Web = false
+bool SupportsPickFolder                 // Android = true (SAF), остальные = false
+bool SupportsBackgroundNotificationToggle // Android = true, остальные = false
+
+Task SaveFileAsync(...)                 // Нативный диалог сохранения
+Task<Stream?> PickFileAsync(...)        // Нативный файловый пикер
+Task OpenAttachmentAsync(...)           // Открыть файл через нативное приложение
+Task<bool> SaveToDownloadsAsync(...)    // Сохранить в папку Загрузки (Android/Windows)
+Task<bool> SaveToPickedFolderAsync(...) // SAF диалог (Android)
+void UpdateBadge(int totalUnread)       // Счётчик на иконке (Windows taskbar)
+void RestartApp()                       // Перезапуск приложения
+Task SetBackgroundNotificationVisibleAsync(bool) // BG уведомление (Android)
+Task OpenBatteryOptimizationSettingsAsync()      // Диалог батареи (Android)
+```
+
+На Web все методы-no-op возвращают `Task.CompletedTask` / `false`.
+
 ### Мобильная кнопка "Назад" (Android)
 
 `AndroidBackHandler` (static класс в `EChat.UI/Services/`):
-- `ChatView.razor` при инициализации вызывает `AndroidBackHandler.Register(() => InvokeAsync(GoBack))`
-- `ChatView.razor.Dispose()` вызывает `AndroidBackHandler.Unregister()`
-- `MainActivity.OnBackPressedDispatcher.AddCallback()` вызывает `AndroidBackHandler.TriggerBack()`
-
-Использует `OnBackPressedDispatcher`, а **не** `override OnBackPressed()` — последний не работает с жестовой навигацией на Android 13+.
+- `ChatView.razor` при инициализации регистрирует callback
+- `ChatView.razor.Dispose()` отменяет регистрацию
+- `MainActivity` использует `OnBackPressedDispatcher.AddCallback()` (не `override OnBackPressed()` — не работает с жестовой навигацией на Android 13+)
 
 ### MessageBubble
 
-Компонент `EChat.UI/Components/MessageBubble.razor` — используется и в десктопе, и в мобиле. Ключевые детали:
-- `GetAttachmentUrl(att)` читает `att.FilePath` с диска, возвращает `data:{contentType};base64,...`. Если файл не найден — возвращает `""`, изображение не показывается.
-- Лайтбокс: `_lightboxUrl` поле, `@onclick` на картинке открывает fullscreen overlay
+- `GetAttachmentUrl(att)` — читает файл по `DbPathInfo.ResolveFilePath(att.FilePath)`, возвращает `data:{contentType};base64,...`
+- **Лайтбокс**: открывается по клику на картинку. На мобиле поддерживает pinch-to-zoom (×1–×6), двойной тап (переключение ×1/×2.5), pan одним пальцем. JS-функции: `initLightboxZoom`, `isLightboxZoomed`, `resetLightboxZoom` в `index.html`
+- Тап по фону при zoom > 1 — сначала сбрасывает zoom; при zoom = 1 — закрывает
 - `MobileMode` prop отключает контекстное меню (на мобиле — action bar вверху)
 
 ### CSS
 
-Глобальные стили: `src/EChat.MAUI/wwwroot/css/app.css` и `src/EChat.UI/wwwroot/css/app.css`. Стили контекстного меню (`.ctx-menu`, `.ctx-item`, etc.) должны быть в **глобальном** CSS, а не в inline `<style>` компонента — иначе они не загружаются в пустом чате.
+Глобальные стили: `src/EChat.MAUI/wwwroot/css/app.css` и `src/EChat.UI/wwwroot/css/app.css`.
+
+**Важно**: inline `<style>` в компонентах инжектируются только при рендере. Общие стили (`.ctx-menu`, etc.) — только в `app.css`, иначе не загрузятся в пустом чате.
 
 ---
 
 ## Многоаккаунтность
 
-- Только один аккаунт — `IsActive=true` — обслуживается `EmailTransportService`
-- Остальные аккаунты — фоновые воркеры `AccountImapWorker`, управляемые `MultiAccountImapManager`
-- При переключении аккаунта: `ChatEventService.NotifyAccountSwitched()` → MultiAccountImapManager перезапускает воркеры
+- Один аккаунт — `IsActive=true` — обслуживается `EmailTransportService`
+- Остальные — фоновые воркеры `AccountImapWorker`, управляемые `MultiAccountImapManager`
+- При переключении: `ChatEventService.NotifyAccountSwitched()` → воркеры перезапускаются
 
 ---
 
 ## Синхронизация устройств
 
-При отправке сообщения отправитель всегда добавляет себя в CC. Другое устройство с тем же ящиком получает письмо, парсит его как `isSentSync=true` (sender == accountEmail) и сохраняет со статусом `Sent` (не инкрементируя UnreadCount).
+При отправке сообщения отправитель добавляет себя в CC. Другое устройство с тем же ящиком получает письмо, парсит его как `isSentSync=true` (sender == accountEmail) и сохраняет со статусом `Sent` без инкремента UnreadCount.
 
-`DeviceSyncService` отправляет специальные sync-сообщения (`Chat-Sync-Type: read-state`), которые `IncomingMessageService` обрабатывает отдельно.
+`DeviceSyncService` отправляет sync-сообщения (`Chat-Sync-Type: read-state`), которые `IncomingMessageService` обрабатывает отдельно.
+
+---
+
+## Версионирование
+
+### Файлы версий
+
+Каждый проект имеет свой `version.txt` (отслеживается в git):
+```
+src/EChat.Core/version.txt    # Например: 0.2.17
+src/EChat.UI/version.txt
+src/EChat.MAUI/version.txt
+src/EChat.Web/version.txt
+```
+
+Версия читается в `.csproj` через MSBuild: `$([System.IO.File]::ReadAllText('version.txt'))`.  
+`InformationalVersion` формируется как `{version}+{yyyyMMddHHmm}` — каждая сборка уникально штампована.
+
+`UpToDateCheckInput` в каждом `.csproj` гарантирует пересборку при изменении `version.txt`.
+
+### Отображение версии
+
+`VersionInfo.VersionOverride` (static) — устанавливается хост-проектом при старте:
+- `MauiProgram.cs` — из `AssemblyInformationalVersionAttribute` MAUI-сборки
+- `Web/Program.cs` — из `Assembly.GetExecutingAssembly()`
+
+Это гарантирует, что экран About показывает версию хоста, а не `EChat.Core`.
+
+`VersionInfo.BuildDate` парсит `yyyyMMddHHmm` суффикс и форматирует как `"20260424 15:23"`.
+
+### Скрипт bump-versions.ps1
+
+`scripts/bump-versions.ps1` — умная инкрементация перед публикацией:
+
+```powershell
+# Режимы:
+bump-versions.ps1            # all: Core/UI если изменились + MAUI + Web
+bump-versions.ps1 -Mode win  # Core/UI если изменились + MAUI
+bump-versions.ps1 -Mode web  # Core/UI если изменились + Web
+bump-versions.ps1 -Diagnose  # Показать изменённые файлы без бампа
+```
+
+Обнаружение изменений: SHA256-хэш всех `.cs`, `.razor`, `.csproj` файлов проекта (кроме `bin/` и `obj/`) хранится в `.src-hash` рядом с проектом. При следующем запуске хэши сравниваются.
+
+`.src-hash` добавлен в `.gitignore`.
+
+---
+
+## Android — Фоновая работа
+
+### EmailSyncService
+
+Foreground-сервис (`ForegroundService.TypeDataSync`). Запускается из `App.xaml.cs` после `ReconnectAsync`. Держит процесс живым пока Android не убьёт его принудительно.
+
+`StartCommandResult.Sticky` — Android перезапускает сервис после убийства. При перезапуске `IPlatformApplication.Current` может быть `null` пока MAUI не инициализировался. Сервис ждёт до 10 секунд с ретраями.
+
+**Видимость уведомления**: после `StartForeground()` (обязательного) читается `bg_notification_visible` из `IAppPreferences`. Если `false` — сразу вызывается `StopForeground(StopForegroundFlags.Remove)`. Сервис продолжает работать, уведомление исчезает.
+
+### Жизненный цикл Activity
+
+`MainActivity` содержит статический флаг `_processProperlyStarted`. При восстановлении Activity после убийства процесса Android'ом (`savedInstanceState != null && !_processProperlyStarted`) — Activity перезапускается чисто через `StartActivity + Finish`. Это предотвращает пустой экран: Blazor WebView не умеет восстанавливать состояние из `savedInstanceState`.
+
+### Глобальная обработка исключений
+
+`MainApplication.cs` регистрирует:
+- `TaskScheduler.UnobservedTaskException` — `SetObserved()` + лог в `Android.Util.Log`. Без этого необработанные исключения в `Task.Run` убивают процесс
+- `AppDomain.CurrentDomain.UnhandledException` — лог перед крашем
 
 ---
 
 ## Логирование
 
-`FileLogger` — синглтон. Уровни: `None | Error | Warn | Info | Debug`. Настраивается в Settings UI, сохраняется в `Settings` таблице (`log_level` ключ).
-
-При старте `ChatList.razor` читает `log_level` из `Prefs` и применяет к `FileLogger.MinLevel`.
+`FileLogger` — синглтон. Уровни: `None | Error | Warn | Info | Debug`. Настраивается в Settings UI.
 
 ```csharp
 _fileLogger.Write("INFO", "MyService", $"Something happened: {detail}");
 ```
 
-Категория — произвольная строка, обычно имя класса или метода.
+На Android дополнительно: `Android.Util.Log.Debug/Error("eChat", message)` — видно в logcat.
 
 ---
 
@@ -340,78 +424,65 @@ _fileLogger.Write("INFO", "MyService", $"Something happened: {detail}");
 ### Разработка
 
 ```bash
-# Windows desktop (для разработки)
+# Windows desktop
 dotnet run --project src/EChat.MAUI -f net10.0-windows10.0.19041.0
 
 # Android (нужен эмулятор или устройство)
 dotnet build src/EChat.MAUI -f net10.0-android -c Release -t:SignAndroidPackage
-
-# Core unit tests
-dotnet build src/EChat.Core -c Release
 ```
 
-### Полная сборка всех платформ
+### Публикация
 
 ```bat
-publish.bat
+publish.bat       # Все платформы: Core/UI (если изменились) + MAUI + Web
+publish-win.bat   # Только Windows: Core/UI (если изменились) + MAUI
 ```
 
-Скрипт:
-1. Чистит `bin/obj` всех проектов
-2. Собирает Windows desktop → `pub/win/`, переименовывает `EChat.Maui.exe` → `echat.exe`
-3. Упаковывает `pub/distr/EChat-win.zip`
-4. Запускает Inno Setup → `pub/distr/EChat-Setup-x.x.x.exe`
-5. Собирает Android APK → `pub/android/` и `pub/distr/EChat.apk`
-6. Собирает Docker-образ, пушит в локальный registry и Docker Hub
-7. Генерирует `pub/distr/docker-compose.yml`
-8. Копирует `pub/distr/*` в `e:\YandexDisk\share\echat\`
+`publish.bat` выполняет:
+1. `scripts/bump-versions.ps1` — инкрементирует версии
+2. Собирает Windows desktop → `pub/win/`, создаёт `pub/distr/EChat-win.zip`
+3. Запускает Inno Setup → `pub/distr/EChat-Setup-x.x.x.exe`
+4. Собирает Android APK → `pub/distr/EChat.apk`
+5. Собирает и пушит Docker-образ, генерирует `pub/distr/docker-compose.yml`
+6. Копирует дистрибутивы в `e:\YandexDisk\share\echat\`
 
-### Версионирование
+Папки `pub/` и `.claude/` исключены из git через `.gitignore`.
 
-Версия хранится в нескольких файлах:
-- `src/EChat.Core/version.txt`
-- `src/EChat.UI/version.txt`
-- `src/EChat.MAUI/version.txt`
-- `src/EChat.Web/version.txt`
+### Docker (EChat.Web)
 
-Формат: `0.1.167`. Инкрементируется автоматически сборочным скриптом (`.targets` файл или custom build step).
-
----
-
-## Docker / Web деплой
-
-```dockerfile
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS base
-# ... multi-stage build ...
-ENTRYPOINT ["dotnet", "EChat.Web.dll"]
-```
-
-`EChat.Web/Program.cs`:
+`Dockerfile` (multi-stage, Alpine):
+- Копирует `*.csproj` **и** `version.txt` каждого проекта перед `dotnet restore` (MSBuild читает `version.txt` при вычислении свойств проекта)
 - Data dir: `ECHAT_DATA_DIR` env var → `EChat:DataDir` config → `{ContentRoot}/data`
-- DB: `{dataDir}/echat.db`
-- При старте: `InitializeEChatDatabaseAsync()` → авто-загрузка активного аккаунта → `ReconnectAsync()`
 - SSL не используется — ожидается termination на nginx/Traefik
 
 ---
 
 ## Инварианты и ловушки
 
-1. **Никогда не используй `Environment.SpecialFolder.LocalApplicationData` для путей к файлам** — на Android это внутреннее хранилище, недоступное приложению. Используй `_fileLogger.AppDir`.
+1. **Никогда не используй `Environment.SpecialFolder.LocalApplicationData` для путей к файлам** — на Android это внутреннее хранилище. Используй `_fileLogger.AppDir` или `DatabasePathInfo.AttachmentsDir`.
 
-2. **DateTimeOffset в WHERE-условиях EF Core + SQLite** — не работает. Загружай строки, фильтруй в C#.
+2. **`DatabasePathInfo.ResolveFilePath()`** — всегда используй этот метод для получения абсолютного пути вложения. Обрабатывает как старые (абсолютные) пути, так и новые (относительные имена файлов).
 
-3. **`email.Attachments` (MimeKit) для зашифрованных писем** — возвращает пустой список. Вложения кодируются в `--echat-att--` блоки внутри шифрограммы.
+3. **DateTimeOffset в WHERE-условиях EF Core + SQLite** — не работает. Загружай строки, фильтруй в C#.
 
-4. **`OnBackPressed()` override в Android 13+** — не срабатывает при жестовой навигации. Использовать только `OnBackPressedDispatcher.AddCallback()`.
+4. **`email.Attachments` (MimeKit) для зашифрованных писем** — возвращает пустой список. Вложения кодируются в `--echat-att--` блоки внутри шифрограммы.
 
-5. **CSS inline `<style>` в компонентах** — инжектируется только при рендере компонента. Если компонент не рендерится (пустой чат), стили не загружаются. Общие стили — только в `app.css`.
+5. **`OnBackPressed()` override в Android 13+** — не срабатывает при жестовой навигации. Использовать только `OnBackPressedDispatcher.AddCallback()`.
 
-6. **`MessageId` для дедупликации** — глобально уникален (UUID@localhost). Проверяется в `IncomingMessageService` перед сохранением. IMAP-папка eChat как вторичный источник дедупликации.
+6. **CSS inline `<style>` в компонентах** — инжектируется только при рендере компонента. Если компонент не рендерится (пустой чат), стили не загружаются. Общие стили — только в `app.css`.
 
-7. **UnreadCount** — инкрементируется только при `!isSentSync`. Не обновляй напрямую через EF-трекинг — используй `ExecuteUpdateAsync` для атомарности.
+7. **`MessageId` для дедупликации** — глобально уникален (UUID@localhost). Проверяется в `IncomingMessageService` перед сохранением.
 
-8. **Tombstone при удалении чата** — устанавливай `Deleted=true`, не удаляй строку `Chat`. Иначе при ресинке eChat-папки `group-create` пересоздаст чат.
+8. **UnreadCount** — инкрементируется только при `!isSentSync`. Не обновляй напрямую через EF-трекинг — используй `ExecuteUpdateAsync` для атомарности.
 
-9. **Шифрование группы** — при `group-create` приватный ключ группы отправляется каждому участнику персонально (зашифрован его публичным ключом). Последующие сообщения шифруются публичным ключом группы.
+9. **Tombstone при удалении чата** — устанавливай `Deleted=true`, не удаляй строку `Chat`. Иначе при ресинке eChat-папки `group-create` пересоздаст чат.
 
-10. **`BatchTier.Immediate`** — единственный тир, который точно отправляется без задержки. Все пользовательские сообщения из чата используют `Immediate`.
+10. **Шифрование группы** — при `group-create` приватный ключ группы отправляется каждому участнику персонально (зашифрован его публичным ключом). Последующие сообщения шифруются публичным ключом группы.
+
+11. **`BatchTier.Immediate`** — единственный тир без задержки. Все пользовательские сообщения используют `Immediate`.
+
+12. **Оптимистичный UI при отправке с вложением** — после записи файла на диск и до `StateHasChanged()` нужно добавить attachment entities в `_messageAttachments[msgId]`. Иначе картинка не появится до перезапуска (актуально для обоих путей: `ChatList.razor.cs` и `ChatView.razor`).
+
+13. **`version.txt` в Dockerfile** — должен копироваться вместе с `.csproj` перед `dotnet restore`. MSBuild вычисляет `<Version>` из `version.txt` при парсинге `.csproj`, а не при компиляции.
+
+14. **`TaskScheduler.UnobservedTaskException` на Android** — без `SetObserved()` необработанное исключение в `Task.Run` через некоторое время убивает процесс во время GC. Обязательно регистрируй в `MainApplication`.

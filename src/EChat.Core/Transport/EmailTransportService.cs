@@ -98,9 +98,9 @@ public class EmailTransportService
             var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
             var abandoned = await db.Messages
                 .Where(m => m.Status == MessageStatus.Sending &&
-                            m.Sender == senderEmail &&
-                            m.Timestamp < cutoff)
+                            m.Sender == senderEmail)
                 .ToListAsync();
+            abandoned = abandoned.Where(m => m.Timestamp < cutoff).ToList();
             if (abandoned.Count > 0)
             {
                 foreach (var msg in abandoned)
@@ -113,10 +113,10 @@ public class EmailTransportService
             // Only retry messages within the 24h window (older ones were just abandoned above)
             var stuck = await db.Messages
                 .Where(m => m.Status == MessageStatus.Sending &&
-                            m.Sender == senderEmail &&
-                            m.Timestamp >= cutoff)
-                .OrderBy(m => m.Timestamp)
+                            m.Sender == senderEmail)
                 .ToListAsync();
+            stuck = stuck.Where(m => m.Timestamp >= cutoff)
+                         .OrderBy(m => m.Timestamp).ToList();
 
             if (stuck.Count == 0)
             {
@@ -413,12 +413,34 @@ public class EmailTransportService
             knownIds = new HashSet<string>();
         }
 
+        // Load folder name from per-account settings; fall back to default.
+        string echatFolder = EchatFolder;
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            var folderSetting = await db.Settings.FindAsync($"acct_{account.AccountId}_folder_name");
+            if (folderSetting != null && !string.IsNullOrWhiteSpace(folderSetting.Value))
+                echatFolder = folderSetting.Value.Trim();
+        }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("WARN", "EmailTransportService", $"Could not load folder_name setting; using default '{EchatFolder}': {ex.Message}");
+        }
+        _fileLogger.Write("INFO", "EmailTransportService", $"Using eChat folder: '{echatFolder}' for account {account.Email}");
+
         // Retry messages that were stuck in Sending status (app was killed mid-send)
         await RetryStuckSendingAsync(account, ct);
 
         // Sync eChat folder before starting IDLE/polling
         _syncEngine.RecordWakeup();
-        await _imapService.SyncEchatFolderAsync(EchatFolder, knownIds, since.UtcDateTime, ct);
+        await _imapService.SyncEchatFolderAsync(echatFolder, knownIds, since.UtcDateTime, ct);
+
+        // Also scan INBOX for any unseen eChat messages that arrived before the current session.
+        // StartIdleAsync uses a subject-search approach that may return 0 results on some servers
+        // (e.g. Yandex IMAP ignores SubjectContains for existing INBOX messages), so we explicitly
+        // sweep INBOX with SearchQuery.NotSeen here to catch anything missed by the subject search.
+        await _imapService.SyncInboxAsync(InboxFolder, echatFolder, knownIds, since.UtcDateTime, ct);
 
         // Save current time as the new high-water mark
         await SaveSyncTimestampAsync(settingKey);
@@ -429,16 +451,16 @@ public class EmailTransportService
         if (strategy.UseIdle)
         {
             _fileLogger.Write("INFO", "EmailTransportService", $"Starting IMAP IDLE for {account.Email} (sync interval={strategy.PollingInterval.TotalMinutes}min)");
-            await _imapService.StartIdleAsync(InboxFolder, EchatFolder, ct, knownIds, strategy.PollingInterval);
+            await _imapService.StartIdleAsync(InboxFolder, echatFolder, ct, knownIds, strategy.PollingInterval);
         }
         else
         {
             _fileLogger.Write("INFO", "EmailTransportService", $"Starting polling loop for {account.Email} (interval={strategy.PollingInterval})");
-            await StartPollingLoopAsync(strategy.PollingInterval, since, ct);
+            await StartPollingLoopAsync(strategy.PollingInterval, since, ct, echatFolder);
         }
     }
 
-    private async Task StartPollingLoopAsync(TimeSpan interval, DateTimeOffset since, CancellationToken ct)
+    private async Task StartPollingLoopAsync(TimeSpan interval, DateTimeOffset since, CancellationToken ct, string? echatFolderOverride = null)
     {
         var lastSync = since;
 
@@ -469,9 +491,10 @@ public class EmailTransportService
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeoutCts.CancelAfter(interval);
 
+                var echatFolder = echatFolderOverride ?? EchatFolder;
                 _syncEngine.RecordWakeup();
-                await _imapService.SyncEchatFolderAsync(EchatFolder, knownIds, overlapSince.UtcDateTime, timeoutCts.Token);
-                await _imapService.SyncInboxAsync(InboxFolder, knownIds, timeoutCts.Token);
+                await _imapService.SyncEchatFolderAsync(echatFolder, knownIds, overlapSince.UtcDateTime, timeoutCts.Token);
+                await _imapService.SyncInboxAsync(InboxFolder, echatFolder, knownIds, overlapSince.UtcDateTime, timeoutCts.Token);
 
                 lastSync = DateTimeOffset.UtcNow;
 
@@ -583,8 +606,8 @@ public class EmailTransportService
             // Find messages saved locally but never confirmed sent (app killed mid-send)
             var stuck = await db.Messages
                 .Where(m => m.Status == MessageStatus.Sending && m.Sender == account.Email)
-                .OrderBy(m => m.Timestamp)
                 .ToListAsync(ct);
+            stuck = stuck.OrderBy(m => m.Timestamp).ToList();
 
             if (stuck.Count == 0) return;
 
@@ -668,6 +691,21 @@ public class EmailTransportService
                 catch (Exception ex)
                 {
                     _fileLogger.Write("WARN", "EmailTransportService", $"Failed to retry stuck message {msg.MessageId}: {ex.Message}");
+
+                    // Mark as Failed if encryption error is permanent (corrupted key, invalid format, etc.)
+                    if (IsPermanentEncryptionError(ex))
+                    {
+                        try
+                        {
+                            msg.Status = MessageStatus.Failed;
+                            await db.SaveChangesAsync(ct);
+                            _fileLogger.Write("INFO", "EmailTransportService", $"Marked message {msg.MessageId} as Failed (permanent encryption error)");
+                        }
+                        catch (Exception saveEx)
+                        {
+                            _fileLogger.Write("WARN", "EmailTransportService", $"Failed to update status for {msg.MessageId}: {saveEx.Message}");
+                        }
+                    }
                 }
             }
         }
@@ -680,30 +718,52 @@ public class EmailTransportService
 
     private async Task SendSingleAsync(OutgoingMessage message)
     {
-        var email = await _builder.BuildSingleAsync(message);
-
-        _fileLogger.Write("INFO", "SendSingle", $"SENDING email: msgId={message.MessageId}, systemType={message.SystemType}, " +
-            $"groupId={message.GroupId}, type={message.Type}, encrypt={message.Encrypt}, " +
-            $"recipientKey={message.RecipientPublicKey != null}, " +
-            $"recipients={string.Join(",", message.Recipients)}, " +
-            $"from={_accountConfig.Email}, subject={email.Subject}");
-
-        // Add self as a recipient so the message lands in our own IMAP inbox.
-        // Other devices (e.g. desktop) will pick it up and show it as a sent message.
-        // The sending device deduplicates it via the DB MessageId check in IncomingMessageService.
-        var selfEmail = _accountConfig.Email;
-        if (!string.IsNullOrEmpty(selfEmail) &&
-            !email.To.Mailboxes.Any(m => m.Address.Equals(selfEmail, StringComparison.OrdinalIgnoreCase)))
+        try
         {
-            email.To.Add(new MailboxAddress("", selfEmail));
-            _fileLogger.Write("DEBUG", "SendSingle", $"Added self-CC for {selfEmail}");
+            var email = await _builder.BuildSingleAsync(message);
+
+            _fileLogger.Write("INFO", "SendSingle", $"SENDING email: msgId={message.MessageId}, systemType={message.SystemType}, " +
+                $"groupId={message.GroupId}, type={message.Type}, encrypt={message.Encrypt}, " +
+                $"recipientKey={message.RecipientPublicKey != null}, " +
+                $"recipients={string.Join(",", message.Recipients)}, " +
+                $"from={_accountConfig.Email}, subject={email.Subject}");
+
+            // Add self as a recipient so the message lands in our own IMAP inbox.
+            // Other devices (e.g. desktop) will pick it up and show it as a sent message.
+            // The sending device deduplicates it via the DB MessageId check in IncomingMessageService.
+            var selfEmail = _accountConfig.Email;
+            if (!string.IsNullOrEmpty(selfEmail) &&
+                !email.To.Mailboxes.Any(m => m.Address.Equals(selfEmail, StringComparison.OrdinalIgnoreCase)))
+            {
+                email.To.Add(new MailboxAddress("", selfEmail));
+                _fileLogger.Write("DEBUG", "SendSingle", $"Added self-CC for {selfEmail}");
+            }
+
+            var result = await _smtpService.SendAsync(email);
+            _fileLogger.Write("INFO", "SendSingle", $"SMTP send result for {message.MessageId}: {result}");
+
+            if (result == SmtpSendResult.RateLimited) OnSmtpRateLimited();
+            await UpdateMessageStatusAsync(message.MessageId, result);
+
+            // Throw on permanent errors so callers (e.g., UI ContinueWith) can detect failure
+            if (result == SmtpSendResult.Permanent)
+                throw new InvalidOperationException($"SMTP send failed permanently for message {message.MessageId}");
         }
-
-        var result = await _smtpService.SendAsync(email);
-        _fileLogger.Write("INFO", "SendSingle", $"SMTP send result for {message.MessageId}: {result}");
-
-        if (result == SmtpSendResult.RateLimited) OnSmtpRateLimited();
-        await UpdateMessageStatusAsync(message.MessageId, result);
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Ensure status is updated to Failed on any error (encryption failure, SMTP error, etc.)
+            // so the message doesn't stay stuck in "Sending" forever
+            _fileLogger.Write("ERROR", "SendSingle", $"Send failed for {message.MessageId}: {ex.Message}");
+            try
+            {
+                await UpdateMessageStatusAsync(message.MessageId, SmtpSendResult.Permanent);
+            }
+            catch (Exception statusEx)
+            {
+                _fileLogger.Write("WARN", "SendSingle", $"Also failed to update status for {message.MessageId}: {statusEx.Message}");
+            }
+            throw;
+        }
     }
 
     private async Task UpdateMessageStatusAsync(string messageId, SmtpSendResult result)
@@ -730,6 +790,16 @@ public class EmailTransportService
         {
             _fileLogger.Write("WARN", "SendSingle", $"Failed to update message status for {messageId}: {ex.Message}");
         }
+    }
+
+    private static bool IsPermanentEncryptionError(Exception ex)
+    {
+        var msg = ex.Message.ToLowerInvariant();
+        return msg.Contains("invalid type token")
+            || msg.Contains("invalid key")
+            || msg.Contains("no public keys provided")
+            || msg.Contains("no valid public keys")
+            || msg.Contains("public key is empty");
     }
 
     private async Task SendBatchedAsync(List<OutgoingMessage> messages)
@@ -784,6 +854,18 @@ public class EmailTransportService
             var autocrypt = email.Headers["Autocrypt"];
             if (!string.IsNullOrEmpty(autocrypt))
                 await StoreAutocryptKeyAsync(email.From.Mailboxes.FirstOrDefault()?.Address, autocrypt);
+
+            // Skip regular (non-eChat) emails — they have no Chat-* headers.
+            // IMAP subject filter catches most; this guard handles any that slipped through.
+            bool isEChat = email.Headers["Chat-Message-ID"] != null
+                        || email.Headers["Chat-System-Type"] != null
+                        || email.Headers["Chat-Batch"] != null
+                        || email.Headers["Chat-Encryption"] != null;
+            if (!isEChat)
+            {
+                _fileLogger.Write("INFO", "OnMessageReceived", $"Skipping non-eChat email uid={imapUid} from={email.From.Mailboxes.FirstOrDefault()?.Address}: no Chat-* headers");
+                return;
+            }
 
             var messages = _parser.Parse(email);
             _fileLogger.Write("INFO", "OnMessageReceived", $"Parsed {messages.Count} message(s). Sender={messages.FirstOrDefault()?.Sender}, messageId={messages.FirstOrDefault()?.Headers?.MessageId}");

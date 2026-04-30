@@ -47,20 +47,34 @@ public partial class NewChatModal
                 c.Email.Contains(newChatEmail, StringComparison.OrdinalIgnoreCase) ||
                 (c.DisplayName ?? "").Contains(newChatEmail, StringComparison.OrdinalIgnoreCase));
 
+    private bool _wasVisible;
+
     protected override async Task OnParametersSetAsync()
     {
-        if (IsVisible)
+        if (IsVisible && !_wasVisible)
         {
+            // Modal just opened
+            _wasVisible = true;
+            await JS.InvokeVoidAsync("lockBodyScroll");
+
             // Load contacts fresh every time modal opens
             using var scope = ScopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
             allContacts = await db.Contacts.AsNoTracking().OrderBy(c => c.DisplayName).ToListAsync();
             BuildMyInvite();
         }
+        else if (!IsVisible && _wasVisible)
+        {
+            // Modal just closed from outside (parent set IsVisible=false)
+            _wasVisible = false;
+            await JS.InvokeVoidAsync("unlockBodyScroll");
+        }
     }
 
     private async Task HandleClose()
     {
+        _wasVisible = false;
+        await JS.InvokeVoidAsync("unlockBodyScroll");
         Reset();
         await OnClose.InvokeAsync();
     }
@@ -75,6 +89,12 @@ public partial class NewChatModal
         newChatError = string.Empty;
         copied = string.Empty;
         newChatTab = "invite";
+    }
+
+    private async Task OnOverlayKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+            await HandleClose();
     }
 
     private void SwitchTab(string tab)
@@ -97,7 +117,9 @@ public partial class NewChatModal
         {
             var qr = QrCode.EncodeText(myInviteLink, QrCode.Ecc.Medium);
             var svg = qr.ToSvgString(3);
-            svg = svg.Replace("<svg ", "<svg style=\"width:100%;height:100%;\" ");
+            // No inline style — CSS .invite-qr-box svg controls size.
+            // Inline styles have higher specificity than class selectors and would
+            // override our width/height rules, making the SVG stretch to 100% width.
             myInviteQr = new MarkupString(svg);
         }
         catch

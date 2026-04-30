@@ -26,11 +26,18 @@ public class EmailSyncService : Service
     {
         CreateNotificationChannel();
 
+        var launchIntent = PackageManager!.GetLaunchIntentForPackage(PackageName!);
+        launchIntent?.AddFlags(ActivityFlags.ClearTop | ActivityFlags.SingleTop);
+        var pendingIntent = PendingIntent.GetActivity(
+            this, 0, launchIntent,
+            PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
+
         var notification = new NotificationCompat.Builder(this, ChannelId)
             .SetContentTitle("EChat")
             .SetContentText("Running in background")
             .SetSmallIcon(Resource.Drawable.notification_icon)
             .SetOngoing(true)
+            .SetContentIntent(pendingIntent)
             .SetPriority(NotificationCompat.PriorityMin)        // collapsed into overflow; no heads-up
             .SetVisibility(NotificationCompat.VisibilitySecret) // hidden on lock screen
             .Build();
@@ -78,7 +85,7 @@ public class EmailSyncService : Service
                     _logger?.LogInformation("Transport already initialised by app startup");
                 }
             }
-            catch (OperationCanceledException) { /* service was stopped */ }
+            catch (System.OperationCanceledException) { /* service was stopped */ }
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Email sync service error");

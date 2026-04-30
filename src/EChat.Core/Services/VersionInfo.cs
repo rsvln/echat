@@ -27,7 +27,7 @@ public class VersionInfo
                 && DateTime.TryParseExact(raw, "yyyyMMddHHmm",
                     System.Globalization.CultureInfo.InvariantCulture,
                     System.Globalization.DateTimeStyles.None, out var dt))
-                return dt.ToString("yyyyMMdd HH:mm");
+                return dt.ToString("yyyyMMdd|HHmm");
             return raw; // fallback: return as-is
         }
     }
@@ -92,7 +92,7 @@ public class VersionInfo
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
                 "MailKit", "MimeKit", "PgpCore", "BouncyCastle.Cryptography",
-                "Net.Codecrete.QrCodeGenerator",
+                "QrCodeGenerator",
                 "EChat.Core", "EChat.UI"
             };
 

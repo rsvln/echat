@@ -5,6 +5,7 @@ namespace EChat.Web.Services;
 public class WebPlatformService : IPlatformService
 {
     public bool IsDesktop => true;
+    public bool IsMobile => false;
 
     // На Web файловые операции ведутся через JS/InputFile в компоненте
     public bool SupportsMauiFilePicker => false;

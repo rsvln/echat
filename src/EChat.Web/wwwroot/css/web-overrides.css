@@ -1,0 +1,13 @@
+/* Web-specific overrides (modal z-index, overscroll, touch-action) */
+
+.modal-overlay {
+    z-index: 2000;
+    overscroll-behavior: contain;
+    touch-action: none;
+}
+
+.nc-overlay {
+    z-index: 2000;
+    overscroll-behavior: contain;
+    touch-action: none;
+}

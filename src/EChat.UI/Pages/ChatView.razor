@@ -128,7 +128,7 @@
                         @(contactNames.GetValueOrDefault(replyingToMessage.Sender, replyingToMessage.Sender.Split('@')[0]))
                     </div>
                     <div style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px;">
-                        @(replyingToMessage.Content.Length > 60 ? replyingToMessage.Content[..60] + "…" : replyingToMessage.Content)
+                        @FormatContentWithLinks(replyingToMessage.Content.Length > 60 ? replyingToMessage.Content[..60] + "…" : replyingToMessage.Content)
                     </div>
                 </div>
                 <button style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;"
@@ -142,7 +142,7 @@
                 <div style="flex:1;border-left:3px solid #ffc107;padding-left:8px;font-size:12px;">
                     <div style="font-weight:600;color:#ffc107;">Editing message</div>
                     <div style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px;">
-                        @(editingMessage.Content.Length > 60 ? editingMessage.Content[..60] + "…" : editingMessage.Content)
+                        @FormatContentWithLinks(editingMessage.Content.Length > 60 ? editingMessage.Content[..60] + "…" : editingMessage.Content)
                     </div>
                 </div>
                 <button style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;"
@@ -156,7 +156,7 @@
                 @foreach (var att in pendingAttachments)
                 {
                     <div class="attachment-preview-item">
-                        @if (att.IsImage)
+                        @if (att.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
                         {
                             <img class="attachment-preview-img" src="@att.DataUrl" alt="@att.FileName" />
                         }
@@ -304,6 +304,7 @@
     private Dictionary<string, List<Attachment>> _messageAttachments = new();
     private Dictionary<string, List<MessageReaction>> _messageReactions = new();
     private List<PendingAttachment> pendingAttachments = new();
+    private bool _fileSelecting;
     private Dictionary<string, ChatMessage> messagesById = new(StringComparer.OrdinalIgnoreCase);
     private ChatMessage? replyingToMessage;
     private ChatMessage? editingMessage;
@@ -314,7 +315,7 @@
     private bool showAttachMenu = false;
     private string sendError = string.Empty;
     private ChatMessage? _selectedMessage;
-    private readonly string[] _quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
+    private readonly string[] _quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🔥", "👎", "😡", "🤮", "💩", "🤔", "😍", "🎉", "💯", "👀", "🙏", "🤡", "🤷"];
     private List<Chat>? chats;
     private Dictionary<string, string> contactNames = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> memberColors = new(StringComparer.OrdinalIgnoreCase);
@@ -367,6 +368,15 @@
         {
             try
             {
+                // Check if the chat was deleted
+                using var checkScope = ScopeFactory.CreateScope();
+                var checkDb = checkScope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                var chatStillExists = await checkDb.Chats.AnyAsync(c => c.ChatId == ChatId && !c.Deleted);
+                if (!chatStillExists)
+                {
+                    GoBack();
+                    return;
+                }
                 // Check if user is near the bottom before reloading messages
                 _wasNearBottom = await JS.InvokeAsync<bool>("eval",
                     "var el=document.querySelector('.mobile-messages-container');" +
@@ -457,7 +467,11 @@
             .AsNoTracking()
             .Where(a => msgIds.Contains(a.MessageId))
             .ToListAsync();
-        _messageAttachments = atts.GroupBy(a => a.MessageId)
+        var uniqueAtts = atts
+            .GroupBy(a => new { a.MessageId, a.FileName })
+            .Select(g => g.First())
+            .ToList();
+        _messageAttachments = uniqueAtts.GroupBy(a => a.MessageId)
             .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
     }
 
@@ -634,7 +648,6 @@
                 Size = att.Size,
                 FilePath = attFileName,
                 Caption = att.Caption,
-                IsImage = att.IsImage
             };
             newAttachments.Add(dbAtt);
             DbContext.Attachments.Add(dbAtt);
@@ -776,7 +789,7 @@
 
     private IEnumerable<Attachment> SelectedFileAttachments =>
         _selectedMessage != null && _messageAttachments.TryGetValue(_selectedMessage.MessageId, out var atts)
-            ? atts.Where(a => !a.IsImage)
+            ? atts.Where(a => !(a.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ?? false) && !(a.ContentType?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) ?? false))
             : Enumerable.Empty<Attachment>();
 
     private async Task OpenSelectedAtt()
@@ -943,42 +956,56 @@
 
     private async Task OnPhotoSelected(InputFileChangeEventArgs e)
     {
-        foreach (var file in e.GetMultipleFiles())
+        if (_fileSelecting) return;
+        _fileSelecting = true;
+        try
         {
-            using var stream = file.OpenReadStream(25 * 1024 * 1024);
-            using var ms = new MemoryStream();
-            await stream.CopyToAsync(ms);
-            pendingAttachments.Add(new PendingAttachment
+            foreach (var file in e.GetMultipleFiles())
             {
-                FileName = file.Name,
-                ContentType = file.ContentType,
-                Size = file.Size,
-                Data = ms.ToArray(),
-                DataUrl = $"data:{file.ContentType};base64,{Convert.ToBase64String(ms.ToArray())}",
-                IsImage = true
-            });
+                if (pendingAttachments.Any(a => a.FileName == file.Name && a.Size == file.Size))
+                    continue;
+                using var stream = file.OpenReadStream(25 * 1024 * 1024);
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                pendingAttachments.Add(new PendingAttachment
+                {
+                    FileName = file.Name,
+                    ContentType = file.ContentType,
+                    Size = file.Size,
+                    Data = ms.ToArray(),
+                    DataUrl = $"data:{file.ContentType};base64,{Convert.ToBase64String(ms.ToArray())}",
+                });
+            }
+            StateHasChanged();
         }
-        StateHasChanged();
+        finally { _fileSelecting = false; }
     }
 
     private async Task OnFileSelected(InputFileChangeEventArgs e)
     {
-        foreach (var file in e.GetMultipleFiles())
+        if (_fileSelecting) return;
+        _fileSelecting = true;
+        try
         {
-            using var stream = file.OpenReadStream(25 * 1024 * 1024);
-            using var ms = new MemoryStream();
-            await stream.CopyToAsync(ms);
-            pendingAttachments.Add(new PendingAttachment
+            foreach (var file in e.GetMultipleFiles())
             {
-                FileName = file.Name,
-                ContentType = file.ContentType,
-                Size = file.Size,
-                Data = ms.ToArray(),
-                DataUrl = "",
-                IsImage = false
-            });
+                if (pendingAttachments.Any(a => a.FileName == file.Name && a.Size == file.Size))
+                    continue;
+                using var stream = file.OpenReadStream(25 * 1024 * 1024);
+                using var ms = new MemoryStream();
+                await stream.CopyToAsync(ms);
+                pendingAttachments.Add(new PendingAttachment
+                {
+                    FileName = file.Name,
+                    ContentType = file.ContentType,
+                    Size = file.Size,
+                    Data = ms.ToArray(),
+                    DataUrl = "",
+                });
+            }
+            StateHasChanged();
         }
-        StateHasChanged();
+        finally { _fileSelecting = false; }
     }
 
     private void ShowChatInfo() => showChatInfo = true;
@@ -989,7 +1016,97 @@
     {
         var chat = await DbContext.Chats.FindAsync(chatId);
         if (chat == null) return;
+
+        if (chat.Type == ChatType.Group)
+        {
+            var myEmail = UserContext.UserEmail;
+            var effectiveGroupId = chat.GroupId ?? chatId;
+            var members = await DbContext.GroupMembers
+                .Where(m => m.GroupId == effectiveGroupId)
+                .Select(m => m.MemberEmail)
+                .ToListAsync();
+
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "group-delete",
+                group_id = effectiveGroupId,
+                deleted_by = myEmail
+            });
+
+            var allRecipients = members.ToList();
+            if (!allRecipients.Contains(myEmail, StringComparer.OrdinalIgnoreCase))
+                allRecipients.Add(myEmail);
+
+            foreach (var email in allRecipients)
+            {
+                var contact = await DbContext.Contacts.FindAsync(email);
+                var isSelf = email.Equals(myEmail, StringComparison.OrdinalIgnoreCase);
+                try
+                {
+                    await TransportService.SendMessageAsync(new EChat.Core.Protocol.OutgoingMessage
+                    {
+                        MessageId = Guid.NewGuid().ToString(),
+                        Content = payload,
+                        Recipients = new List<string> { email },
+                        RecipientPublicKey = isSelf ? null : contact?.PublicKey,
+                        Timestamp = DateTimeOffset.UtcNow,
+                        Type = EChat.Core.Protocol.MessageType.System,
+                        SystemType = "group-delete",
+                        GroupId = effectiveGroupId,
+                        Tier = EChat.Core.Models.BatchTier.Immediate,
+                        Encrypt = !isSelf && !string.IsNullOrEmpty(contact?.PublicKey)
+                    });
+                }
+                catch { /* non-fatal */ }
+            }
+
+            await DbContext.GroupMembers
+                .Where(m => m.GroupId == effectiveGroupId)
+                .ExecuteDeleteAsync();
+        }
+        else
+        {
+            var recipients = await GetRecipientsForChatAsync(chat);
+            if (recipients.Any())
+            {
+                var myEmail = UserContext.UserEmail;
+                var payload = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    type = "chat-delete",
+                    chat_id = chatId,
+                    deleted_by = myEmail
+                });
+
+                recipients.Add(myEmail);
+
+                foreach (var email in recipients.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    var contact = await DbContext.Contacts.FindAsync(email);
+                    var isSelf = email.Equals(myEmail, StringComparison.OrdinalIgnoreCase);
+                    try
+                    {
+                        await TransportService.SendMessageAsync(new EChat.Core.Protocol.OutgoingMessage
+                        {
+                            MessageId = Guid.NewGuid().ToString(),
+                            Content = payload,
+                            Recipients = new List<string> { email },
+                            RecipientPublicKey = isSelf ? null : contact?.PublicKey,
+                            Timestamp = DateTimeOffset.UtcNow,
+                            Type = EChat.Core.Protocol.MessageType.System,
+                            SystemType = "chat-delete",
+                            Tier = EChat.Core.Models.BatchTier.Immediate,
+                            Encrypt = !isSelf && !string.IsNullOrEmpty(contact?.PublicKey)
+                        });
+                    }
+                    catch { /* non-fatal */ }
+                }
+            }
+        }
+
         chat.Deleted = true;
+        // Permanent delete marker — prevents resurrection from stale group-create IMAP messages
+        if (chat.Type == ChatType.Group)
+            chat.TombstoneVersion = int.MaxValue;
         await DbContext.SaveChangesAsync();
         GoBack();
     }
@@ -998,6 +1115,45 @@
     {
         var chat = await DbContext.Chats.FindAsync(chatId);
         if (chat == null) return;
+
+        var groupId = chat.GroupId ?? chatId;
+        var myEmail = UserContext.UserEmail;
+        var members = await DbContext.GroupMembers
+            .Where(m => m.GroupId == groupId && m.MemberEmail != myEmail)
+            .Select(m => m.MemberEmail)
+            .ToListAsync();
+
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            type = "group-leave",
+            group_id = groupId,
+            leaving_email = myEmail
+        });
+
+        foreach (var email in members)
+        {
+            var contact = await DbContext.Contacts.FindAsync(email);
+            try
+            {
+                await TransportService.SendMessageAsync(new EChat.Core.Protocol.OutgoingMessage
+                {
+                    MessageId = Guid.NewGuid().ToString(),
+                    Content = payload,
+                    Recipients = new List<string> { email },
+                    RecipientPublicKey = contact?.PublicKey,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Type = EChat.Core.Protocol.MessageType.System,
+                    SystemType = "group-leave",
+                    GroupId = groupId,
+                    Tier = EChat.Core.Models.BatchTier.Immediate,
+                    Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
+                });
+            }
+            catch { }
+        }
+
+        var selfMember = await DbContext.GroupMembers.FindAsync(groupId, myEmail);
+        if (selfMember != null) DbContext.GroupMembers.Remove(selfMember);
         chat.Deleted = true;
         await DbContext.SaveChangesAsync();
         GoBack();
@@ -1025,6 +1181,25 @@
 
     private void GoBack() => Navigation.NavigateTo("/chats");
 
+    private static readonly System.Text.RegularExpressions.Regex _urlRegex = new(
+        @"(?<!href="")(?<!src="")((?:https?://|www\.)[^\s<>""]+)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private Microsoft.AspNetCore.Components.MarkupString FormatContentWithLinks(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return (Microsoft.AspNetCore.Components.MarkupString)"";
+
+        var result = _urlRegex.Replace(text, match =>
+        {
+            var url = match.Value;
+            var href = url.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? "https://" + url : url;
+            var display = url.Length > 50 ? url[..47] + "…" : url;
+            return $"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:inherit;text-decoration:underline;word-break:break-all;\">{display}</a>";
+        });
+
+        return (Microsoft.AspNetCore.Components.MarkupString)result;
+    }
+
     private string GetAvatarColorClass(string name)
     {
         var hash = 0;
@@ -1040,6 +1215,5 @@
         public byte[] Data { get; set; } = Array.Empty<byte>();
         public string DataUrl { get; set; } = "";
         public string Caption { get; set; } = "";
-        public bool IsImage { get; set; }
     }
 }

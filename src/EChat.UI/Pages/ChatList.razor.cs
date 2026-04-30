@@ -30,7 +30,7 @@ public partial class ChatList
 
     // Shared
     private List<Chat>? chats;
-    private Dictionary<string, (string Sender, string? Content, DateTimeOffset? Timestamp)> chatLastMessages = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, (string Sender, string? Content, DateTimeOffset? Timestamp, bool HasImage, bool HasFile)> chatLastMessages = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> contactDisplayNames = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, string> memberColors = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> encryptedContactEmails = new(StringComparer.OrdinalIgnoreCase);
@@ -264,6 +264,18 @@ public partial class ChatList
             await LoadChatsAsync();
             if (selectedChatId == chatId)
             {
+                // Check if the currently selected chat was deleted
+                var chatStillExists = chats?.Any(c => c.ChatId == chatId) == true;
+                if (!chatStillExists)
+                {
+                    selectedChatId = null;
+                    selectedChat = null;
+                    messages = null;
+                    recipients = null;
+                    await JS.InvokeVoidAsync("localStorage.removeItem", "echat_selected_chat");
+                    StateHasChanged();
+                    return;
+                }
                 await LoadMessagesAsync();
                 await ClearUnreadAsync(chatId);
                 _ = SendReadReceiptsAsync(chatId);
@@ -351,17 +363,26 @@ public partial class ChatList
         // then sort in C#. Wrapped in try-catch so preview failure never blanks the screen.
         try
         {
-            var newLastMessages = new Dictionary<string, (string Sender, string? Content, DateTimeOffset? Timestamp)>(StringComparer.OrdinalIgnoreCase);
+            var newLastMessages = new Dictionary<string, (string Sender, string? Content, DateTimeOffset? Timestamp, bool HasImage, bool HasFile)>(StringComparer.OrdinalIgnoreCase);
             foreach (var c in chats)
             {
                 var rows = await db.Messages
                     .AsNoTracking()
                     .Where(m => m.ChatId == c.ChatId)
-                    .Select(m => new { Sender = m.Sender ?? "", m.Content, m.Timestamp })
+                    .Select(m => new { Sender = m.Sender ?? "", m.Content, m.Timestamp, m.MessageId })
                     .ToListAsync();
                 var last = rows.OrderByDescending(m => m.Timestamp).FirstOrDefault();
                 if (last != null)
-                    newLastMessages[c.ChatId] = (last.Sender, last.Content, last.Timestamp);
+                {
+                    var atts = await db.Attachments
+                        .AsNoTracking()
+                        .Where(a => a.MessageId == last.MessageId)
+                        .Select(a => a.ContentType)
+                        .ToListAsync();
+                    newLastMessages[c.ChatId] = (last.Sender, last.Content, last.Timestamp,
+                        atts.Any(x => x.StartsWith("image/", StringComparison.OrdinalIgnoreCase)),
+                        atts.Any(x => !x.StartsWith("image/", StringComparison.OrdinalIgnoreCase)));
+                }
             }
             chatLastMessages = newLastMessages;
 
@@ -375,7 +396,7 @@ public partial class ChatList
         catch (Exception ex)
         {
             FileLogger.Write("WARN", "ChatList", $"Failed to load last messages: {ex.Message}");
-            chatLastMessages = new Dictionary<string, (string Sender, string? Content, DateTimeOffset? Timestamp)>(StringComparer.OrdinalIgnoreCase);
+            chatLastMessages = new Dictionary<string, (string Sender, string? Content, DateTimeOffset? Timestamp, bool HasImage, bool HasFile)>(StringComparer.OrdinalIgnoreCase);
         }
 
         await UpdateAccountUnreadCountsAsync();
@@ -385,20 +406,26 @@ public partial class ChatList
     {
         if (!chatLastMessages.TryGetValue(chat.ChatId, out var info))
             return string.Empty;
+
         var text = (info.Content ?? string.Empty)
             .Replace("\r", "").Replace("\n", " ").Trim();
         if (text.Length > 55) text = text[..52] + "…";
+
+        // If no text, show attachment placeholder
+        if (string.IsNullOrEmpty(text))
+        {
+            if (info.HasImage && info.HasFile)       text = "[Image] [File]";
+            else if (info.HasImage)                  text = "[Image]";
+            else if (info.HasFile)                   text = "[File]";
+        }
+
         var isMe = string.Equals(info.Sender, activeAccount?.Email, StringComparison.OrdinalIgnoreCase);
-        string senderLabel;
-        if (isMe)
-        {
-            senderLabel = "Вы";
-        }
-        else
-        {
-            var email = info.Sender ?? "";
-            senderLabel = contactDisplayNames.TryGetValue(email, out var name) ? name : email.Split('@')[0];
-        }
+        var senderLabel = isMe
+            ? "You"
+            : (contactDisplayNames.TryGetValue(info.Sender ?? "", out var name)
+                ? name
+                : (info.Sender ?? "").Split('@')[0]);
+
         return $"{senderLabel}: {text}";
     }
 
@@ -419,6 +446,11 @@ public partial class ChatList
             a => a.AccountId,
             a => unreadChats.Where(c => c.AccountId == a.AccountId).Sum(c => c.UnreadCount),
             StringComparer.OrdinalIgnoreCase);
+
+        // Sync taskbar/app-icon badge with the real DB state every time unread counts
+        // are recomputed. This fixes phantom badges that appear when the in-memory count
+        // diverges from the database (e.g. on startup or after a sync from another device).
+        PlatformService.UpdateBadge(accountUnreadCounts.Values.Sum());
     }
 
     private async Task OnChatArchived(string chatId)
@@ -465,9 +497,17 @@ public partial class ChatList
                 deleted_by = myEmail
             });
 
-            foreach (var email in members.Where(e => !e.Equals(myEmail, StringComparison.OrdinalIgnoreCase)))
+            // Include the admin's own email so other devices learn about the deletion
+            // via the CC copy. Without this, the admin's other devices never see the
+            // group-delete and the chat stays visible there indefinitely.
+            var allRecipients = members.ToList();
+            if (!allRecipients.Contains(myEmail, StringComparer.OrdinalIgnoreCase))
+                allRecipients.Add(myEmail);
+
+            foreach (var email in allRecipients)
             {
                 var contact = await DbContext.Contacts.FindAsync(email);
+                var isSelf = email.Equals(myEmail, StringComparison.OrdinalIgnoreCase);
                 try
                 {
                     await TransportService.SendMessageAsync(new OutgoingMessage
@@ -475,21 +515,31 @@ public partial class ChatList
                         MessageId = Guid.NewGuid().ToString(),
                         Content = payload,
                         Recipients = new List<string> { email },
-                        RecipientPublicKey = contact?.PublicKey,
+                        RecipientPublicKey = isSelf ? null : contact?.PublicKey,
                         Timestamp = DateTimeOffset.UtcNow,
                         Type = MessageType.System,
                         SystemType = "group-delete",
                         GroupId = effectiveGroupId,
                         Tier = BatchTier.Immediate,
-                        Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
+                        Encrypt = !isSelf && !string.IsNullOrEmpty(contact?.PublicKey)
                     });
                 }
-                    catch { /* non-fatal */ }
+                catch { /* non-fatal */ }
             }
+
+            // Mark deleted and clean up locally
+            await DbContext.GroupMembers
+                .Where(m => m.GroupId == effectiveGroupId)
+                .ExecuteDeleteAsync();
         }
+
         else
         {
             var recipients = await GetRecipientsForChatAsync(chat);
+            // Include own email so other devices learn about the deletion
+            if (!recipients.Contains(UserContext.UserEmail))
+                recipients.Add(UserContext.UserEmail);
+
             if (recipients.Any())
             {
                 var payload = System.Text.Json.JsonSerializer.Serialize(new
@@ -502,6 +552,7 @@ public partial class ChatList
                 foreach (var email in recipients)
                 {
                     var contact = await DbContext.Contacts.FindAsync(email);
+                    var isSelf = email.Equals(UserContext.UserEmail, StringComparison.OrdinalIgnoreCase);
                     try
                     {
                         await TransportService.SendMessageAsync(new OutgoingMessage
@@ -509,18 +560,24 @@ public partial class ChatList
                             MessageId = Guid.NewGuid().ToString(),
                             Content = payload,
                             Recipients = new List<string> { email },
-                            RecipientPublicKey = contact?.PublicKey,
+                            RecipientPublicKey = isSelf ? null : contact?.PublicKey,
                             Timestamp = DateTimeOffset.UtcNow,
                             Type = MessageType.System,
                             SystemType = "chat-delete",
                             Tier = BatchTier.Immediate,
-                            Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
+                            Encrypt = !isSelf && !string.IsNullOrEmpty(contact?.PublicKey)
                         });
                     }
                     catch { }
                 }
             }
         }
+
+        chat.Deleted = true;
+        // Permanent delete marker — prevents resurrection from stale group-create IMAP messages
+        if (chat.Type == ChatType.Group)
+            chat.TombstoneVersion = int.MaxValue;
+        await DbContext.SaveChangesAsync();
 
         await LoadChatsAsync();
         if (selectedChatId == chatId)
@@ -538,16 +595,17 @@ public partial class ChatList
         var chat = await DbContext.Chats.FindAsync(chatId);
         if (chat == null) return;
 
+        var groupId = chat.GroupId ?? chatId;
         var myEmail = UserContext.UserEmail;
         var members = await DbContext.GroupMembers
-            .Where(m => m.GroupId == chatId && m.MemberEmail != myEmail)
+            .Where(m => m.GroupId == groupId && m.MemberEmail != myEmail)
             .Select(m => m.MemberEmail)
             .ToListAsync();
 
         var payload = System.Text.Json.JsonSerializer.Serialize(new
         {
             type = "group-leave",
-            group_id = chatId,
+            group_id = groupId,
             leaving_email = myEmail
         });
 
@@ -565,13 +623,19 @@ public partial class ChatList
                     Timestamp = DateTimeOffset.UtcNow,
                     Type = MessageType.System,
                     SystemType = "group-leave",
-                    GroupId = chatId,
+                    GroupId = groupId,
                     Tier = BatchTier.Immediate,
                     Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
                 });
             }
             catch { }
         }
+
+        // Remove self from group members and mark chat as deleted locally
+        var selfMember = await DbContext.GroupMembers.FindAsync(groupId, myEmail);
+        if (selfMember != null) DbContext.GroupMembers.Remove(selfMember);
+        chat.Deleted = true;
+        await DbContext.SaveChangesAsync();
 
         await LoadChatsAsync();
         if (selectedChatId == chatId)
@@ -839,26 +903,33 @@ public partial class ChatList
         var myEmail = UserContext.UserEmail;
         if (string.IsNullOrEmpty(myEmail)) return;
 
+        // Only messages from others that haven't been confirmed read yet.
+        // Status == Read means the self-CC of our own receipt already arrived back,
+        // so the receipt was delivered — no need to resend on every session restart.
         var allReceived = await DbContext.Messages
             .AsNoTracking()
-            .Where(m => m.ChatId == chatId && m.Sender != myEmail)
+            .Where(m => m.ChatId == chatId
+                     && m.Sender != myEmail
+                     && m.Status != MessageStatus.Read)
             .Select(m => new { m.MessageId, m.Sender })
             .ToListAsync();
 
-        // Skip message IDs we've already receipted this session to avoid ping-pong email loops
+        // Also skip IDs we already sent a receipt for in this session (prevents concurrent double-send)
         var receivedIds = allReceived
             .Where(m => !_sentReceiptIds.Contains(m.MessageId))
             .ToList();
 
         if (receivedIds.Count == 0) return;
 
-        // Mark as receipted before sending (optimistic — avoids double-send on concurrent calls)
+        // Optimistically mark as in-flight to prevent concurrent duplicate sends.
+        // We'll remove any IDs that actually fail so they can be retried next time.
         foreach (var m in receivedIds)
             _sentReceiptIds.Add(m.MessageId);
 
         var bySender = receivedIds.GroupBy(m => m.Sender);
         foreach (var grp in bySender)
         {
+            var msgIds = grp.Select(m => m.MessageId).ToList();
             try
             {
                 var contact = await DbContext.Contacts.FindAsync(grp.Key);
@@ -870,12 +941,18 @@ public partial class ChatList
                     RecipientPublicKey = contact?.PublicKey,
                     Timestamp = DateTimeOffset.UtcNow,
                     Type = MessageType.ReadReceipt,
-                    ReadOf = grp.Select(m => m.MessageId).ToList(),
+                    ReadOf = msgIds,
                     Tier = BatchTier.System,
                     Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
                 });
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // Remove failed IDs so they can be retried on the next call
+                foreach (var id in msgIds)
+                    _sentReceiptIds.Remove(id);
+                FileLogger.Write("WARN", "SendReadReceipts", $"Failed to send read receipt to {grp.Key}: {ex.Message}");
+            }
         }
     }
 
@@ -917,7 +994,11 @@ public partial class ChatList
                 .AsNoTracking()
                 .Where(a => messages.Select(m => m.MessageId).Contains(a.MessageId))
                 .ToListAsync();
-            _messageAttachments = atts.GroupBy(a => a.MessageId)
+            var uniqueAtts = atts
+                .GroupBy(a => new { a.MessageId, a.FileName })
+                .Select(g => g.First())
+                .ToList();
+            _messageAttachments = uniqueAtts.GroupBy(a => a.MessageId)
                 .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
         }
         catch
@@ -1076,7 +1157,6 @@ public partial class ChatList
                 Size = att.Size,
                 FilePath = attFileName,
                 Caption = att.Caption,
-                IsImage = att.IsImage
             });
             attachmentsToSend.Add(new AttachmentInfo
             {
@@ -1119,17 +1199,20 @@ public partial class ChatList
         };
         _ = TransportService.SendMessageAsync(outgoing).ContinueWith(async t =>
         {
-            var newStatus = t.IsCompletedSuccessfully ? MessageStatus.Sent : MessageStatus.Sending;
+            // Only update status on success — failures are handled by SendSingleAsync
+            // which updates the DB before throwing, so we don't overwrite Failed with Sending
+            if (!t.IsCompletedSuccessfully) return;
+
             try
             {
                 await DbContext.Messages
                     .Where(m => m.MessageId == msgId)
-                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.Status, newStatus));
+                    .ExecuteUpdateAsync(s => s.SetProperty(m => m.Status, MessageStatus.Sent));
                 // Update in-memory status so UI reflects checkmark without full reload
                 await InvokeAsync(() =>
                 {
                     var msg = messages?.FirstOrDefault(m => m.MessageId == msgId);
-                    if (msg != null) { msg.Status = newStatus; StateHasChanged(); }
+                    if (msg != null) { msg.Status = MessageStatus.Sent; StateHasChanged(); }
                 });
             }
             catch (Exception ex)
@@ -1461,18 +1544,20 @@ public partial class ChatList
     {
         foreach (var file in e.GetMultipleFiles())
         {
+            if (pendingAttachments.Any(a => a.FileName == file.Name && a.Size == file.Size))
+                continue;
             using var stream = file.OpenReadStream(25 * 1024 * 1024);
             using var ms = new MemoryStream();
             await stream.CopyToAsync(ms);
             var dataUrl = $"data:{file.ContentType};base64,{Convert.ToBase64String(ms.ToArray())}";
+            var isImage = file.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
             pendingAttachments.Add(new PendingAttachment
             {
                 FileName = file.Name,
                 ContentType = file.ContentType,
                 Size = file.Size,
                 Data = ms.ToArray(),
-                DataUrl = dataUrl,
-                IsImage = true
+                DataUrl = isImage ? dataUrl : "",
             });
         }
         StateHasChanged();
@@ -1482,6 +1567,8 @@ public partial class ChatList
     {
         foreach (var file in e.GetMultipleFiles())
         {
+            if (pendingAttachments.Any(a => a.FileName == file.Name && a.Size == file.Size))
+                continue;
             using var stream = file.OpenReadStream(25 * 1024 * 1024);
             using var ms = new MemoryStream();
             await stream.CopyToAsync(ms);
@@ -1492,7 +1579,6 @@ public partial class ChatList
                 Size = file.Size,
                 Data = ms.ToArray(),
                 DataUrl = "",
-                IsImage = false
             });
         }
         StateHasChanged();
@@ -1513,6 +1599,25 @@ public partial class ChatList
         return local.ToString("MMM d");
     }
 
+    private static readonly System.Text.RegularExpressions.Regex _urlRegex = new(
+        @"(?<!href="")(?<!src="")((?:https?://|www\.)[^\s<>""]+)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private Microsoft.AspNetCore.Components.MarkupString FormatContentWithLinks(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return (Microsoft.AspNetCore.Components.MarkupString)"";
+
+        var result = _urlRegex.Replace(text, match =>
+        {
+            var url = match.Value;
+            var href = url.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? "https://" + url : url;
+            var display = url.Length > 50 ? url[..47] + "…" : url;
+            return $"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"color:inherit;text-decoration:underline;word-break:break-all;\">{display}</a>";
+        });
+
+        return (Microsoft.AspNetCore.Components.MarkupString)result;
+    }
+
     private class PendingAttachment
     {
         public string FileName { get; set; } = "";
@@ -1521,6 +1626,5 @@ public partial class ChatList
         public byte[] Data { get; set; } = Array.Empty<byte>();
         public string DataUrl { get; set; } = "";
         public string Caption { get; set; } = "";
-        public bool IsImage { get; set; }
     }
 }

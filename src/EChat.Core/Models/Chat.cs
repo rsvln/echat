@@ -13,6 +13,12 @@ public class Chat
     public bool Muted { get; set; }
     public bool Archived { get; set; }
     public bool Deleted { get; set; }
+    /// <summary>
+    /// The shared ChatGroup.Version at the moment this chat was tombstoned (Deleted=true).
+    /// Used to allow group-create resurrection only when the incoming version is strictly
+    /// greater than the version that triggered the deletion.  Null = never tombstoned.
+    /// </summary>
+    public int? TombstoneVersion { get; set; }
     public ChatPriority Priority { get; set; } = ChatPriority.Normal;
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? LastActivityAt { get; set; }

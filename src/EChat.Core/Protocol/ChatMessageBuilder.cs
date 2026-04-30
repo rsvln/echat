@@ -59,6 +59,12 @@ public class ChatMessageBuilder
         if (message.GroupId != null)
             email.Headers.Add("Chat-Group-ID", message.GroupId);
 
+        // Chat-System-Type must be in outer headers even for encrypted messages so that
+        // sync copies arriving at the sender's own device are correctly identified as system
+        // messages and not treated as regular chat messages (which would render as a PGP blob).
+        if (message.Type == MessageType.System && message.SystemType != null)
+            email.Headers.Add("Chat-System-Type", message.SystemType);
+
         if (message.RecipientPublicKey != null && message.Encrypt)
         {
             try
@@ -67,17 +73,15 @@ public class ChatMessageBuilder
                 var plainText = ExtractPlainText(BuildBody(message));
                 var innerContent = BuildInnerContent(message, plainText);
 
-                // For 1:1 messages, encrypt for BOTH the recipient AND ourselves,
-                // so self-copy can be decrypted by other devices of the same account.
-                // For group-create messages, encrypt for the sender too — the recipient's
-                // personal key is used (not the group key), so the sender's other devices
-                // need the sender's key to decrypt the self-CC.
-                // For regular group messages, only the group key is needed — all members
-                // already have the group private key.
+                // Always encrypt for self so sync copies arriving on other devices can be decrypted:
+                //   - 1:1 messages: no GroupId — always add self.
+                //   - System messages (group-create, group-member-add, group-member-remove, etc.):
+                //     sent individually with the recipient's personal key, so self must be added too.
+                //   - Regular group messages: GroupId set, not System — the group private key is shared
+                //     with all members (including sender), so self-CC is already decryptable; don't add self.
                 var pubKeys = new List<string> { message.RecipientPublicKey };
-                if (message.GroupId == null && !string.IsNullOrEmpty(_accountConfig.PublicKey))
-                    pubKeys.Add(_accountConfig.PublicKey);
-                else if (message.SystemType == "group-create" && !string.IsNullOrEmpty(_accountConfig.PublicKey))
+                bool isRegularGroupMessage = message.GroupId != null && message.Type != MessageType.System;
+                if (!isRegularGroupMessage && !string.IsNullOrEmpty(_accountConfig.PublicKey))
                     pubKeys.Add(_accountConfig.PublicKey);
 
                 _fileLogger.Write("DEBUG", "ChatMessageBuilder", $"Encrypting for {pubKeys.Count} key(s), recipientKey length={message.RecipientPublicKey?.Length ?? 0}, selfKey length={_accountConfig.PublicKey?.Length ?? 0}, groupId={message.GroupId}, type={message.Type}");

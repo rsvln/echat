@@ -32,8 +32,27 @@ public class FileLogger
     {
         var dbDir = Path.GetDirectoryName(dbPath) ?? ".";
         var appDir = Path.GetDirectoryName(dbDir) ?? dbDir;
+
+        // Fallback to LocalApplicationData if appDir is empty, ".", same as dbDir,
+        // or a system directory (Windows packaged app edge case)
+        var isSystemDir = appDir.StartsWith("C:\\Windows", StringComparison.OrdinalIgnoreCase)
+                          || appDir.StartsWith("C:\\Program Files", StringComparison.OrdinalIgnoreCase);
+
+        if (string.IsNullOrEmpty(appDir) || appDir == "." || appDir == dbDir || isSystemDir)
+            appDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "echat");
+
         _logDir = Path.Combine(appDir, "log");
-        Directory.CreateDirectory(_logDir);
+        try
+        {
+            Directory.CreateDirectory(_logDir);
+        }
+        catch
+        {
+            // Last resort: use temp directory
+            _logDir = Path.Combine(Path.GetTempPath(), "echat", "log");
+            Directory.CreateDirectory(_logDir);
+        }
+
         _logPath = Path.Combine(_logDir, $"echat_{DateTimeOffset.Now:yyyyMMdd_HHmmss}.log");
         CleanupOldFiles();
     }

@@ -107,9 +107,6 @@ namespace EChat.Core.Data.Migrations
                     b.Property<int?>("Height")
                         .HasColumnType("INTEGER");
 
-                    b.Property<bool>("IsImage")
-                        .HasColumnType("INTEGER");
-
                     b.Property<string>("MessageId")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -164,6 +161,9 @@ namespace EChat.Core.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Priority")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("TombstoneVersion")
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("Type")
@@ -252,6 +252,9 @@ namespace EChat.Core.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<bool>("IsEdited")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsSystem")
                         .HasColumnType("INTEGER");
 
                     b.Property<string>("MessageId")

@@ -68,6 +68,7 @@ public partial class App : Application
 
                 var transport = serviceProvider.GetRequiredService<EmailTransportService>();
                 var incomingMessages = serviceProvider.GetRequiredService<IncomingMessageService>();
+                var batchProcessor = serviceProvider.GetRequiredService<BatchSyncProcessor>();
                 var accountConfig = serviceProvider.GetRequiredService<AccountConfig>();
                 var multiImap = serviceProvider.GetRequiredService<MultiAccountImapManager>();
 
@@ -84,16 +85,20 @@ public partial class App : Application
 #elif WINDOWS
                     EChat.Maui.Platforms.Windows.Services.TaskbarFlashHelper.Flash();
                     EChat.Maui.Platforms.Windows.Services.TaskbarBadgeHelper.SetBadge(payload.TotalUnread);
+#elif IOS
+                    EChat.Maui.Platforms.iOS.Services.MessageNotificationHelper.Show(
+                        payload.ChatId, payload.ChatName, payload.Preview, payload.TotalUnread);
 #endif
                 };
 
                 // Active account — EmailTransportService handles IMAP + SMTP
+                // Batch messages to avoid UI jumping during initial sync
                 transport.MessagesReceived += async (messages) =>
-                    await incomingMessages.SaveAsync(accountConfig.AccountId, messages);
+                    batchProcessor.Queue(accountConfig.AccountId, messages);
 
                 // Background accounts — MultiAccountImapManager handles IMAP only
                 multiImap.MessagesReceived += async (accountId, messages) =>
-                    await incomingMessages.SaveAsync(accountId, messages);
+                    batchProcessor.Queue(accountId, messages);
 
                 try
                 {

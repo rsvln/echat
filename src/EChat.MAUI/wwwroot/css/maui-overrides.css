@@ -1,0 +1,177 @@
+/* MAUI-specific overrides (safe-area insets, mobile account switcher, touch highlights) */
+
+.app-container {
+    padding-top: env(safe-area-inset-top, 0px);
+}
+
+.mobile-chat-view {
+    padding-top: env(safe-area-inset-top, 0px);
+}
+
+.mobile-messages-container {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.mobile-chat-view .message-input-bar {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.settings-page {
+    padding-top: env(safe-area-inset-top, 0px);
+}
+
+.setup-page {
+    padding-top: env(safe-area-inset-top, 0px);
+}
+
+.header-icon,
+.mobile-back-btn,
+.mobile-info-btn,
+.back-btn {
+    -webkit-tap-highlight-color: transparent;
+    outline: none;
+}
+
+.mob-acc-trigger,
+.mob-acc-item {
+    -webkit-tap-highlight-color: transparent;
+}
+
+.mob-acc-trigger {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    color: white;
+    cursor: pointer;
+    padding: 6px 4px;
+    border-radius: 6px;
+    -webkit-tap-highlight-color: transparent;
+    outline: none;
+    overflow: hidden;
+}
+
+.mob-acc-trigger:hover {
+    background: rgba(255,255,255,0.12);
+}
+
+.mob-acc-trigger-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    color: white;
+    flex-shrink: 0;
+}
+
+.mob-acc-trigger-name {
+    font-size: 17px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mob-acc-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    background: rgba(0,0,0,0.3);
+}
+
+.mob-acc-dropdown {
+    position: absolute;
+    top: calc(56px + env(safe-area-inset-top, 0px));
+    left: 0;
+    right: 0;
+    background: var(--background);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+    z-index: 901;
+}
+
+.mob-acc-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.15s;
+}
+
+.mob-acc-item:hover,
+.mob-acc-item:active {
+    background: var(--surface-variant);
+}
+
+.mob-acc-item.active {
+    background: rgba(91,143,217,0.08);
+}
+
+.mob-acc-avatar {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 16px;
+    color: white;
+    flex-shrink: 0;
+}
+
+.mob-acc-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface);
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.mob-acc-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.mob-acc-name {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mob-acc-email {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+}
+
+.mob-acc-check {
+    color: var(--primary);
+    flex-shrink: 0;
+}
+
+.mob-acc-divider {
+    height: 1px;
+    background: var(--divider);
+    margin: 4px 0;
+}

@@ -5,6 +5,11 @@ public interface IPlatformService
     bool IsDesktop { get; }
 
     /// <summary>
+    /// true on Android/iOS — use file:// URLs for local media.
+    /// </summary>
+    bool IsMobile { get; }
+
+    /// <summary>
     /// true на MAUI (FileSaver + FilePicker доступны).
     /// false на Web (экспорт через JS download, импорт через &lt;InputFile&gt;).
     /// </summary>

@@ -1283,17 +1283,18 @@
         StateHasChanged();
     }
 
-    private void InsertBold() => InsertFormat("**", "**");
-    private void InsertItalic() => InsertFormat("*", "*");
-    private void InsertStrikethrough() => InsertFormat("~~", "~~");
-    private void InsertUnderline() => InsertFormat("__", "__");
-    private void InsertInlineCode() => InsertFormat("`", "`");
-    private void InsertSpoiler() => InsertFormat("||", "||");
+    private Task InsertBold() => InsertFormat("**", "**");
+    private Task InsertItalic() => InsertFormat("*", "*");
+    private Task InsertStrikethrough() => InsertFormat("~~", "~~");
+    private Task InsertUnderline() => InsertFormat("__", "__");
+    private Task InsertInlineCode() => InsertFormat("`", "`");
+    private Task InsertSpoiler() => InsertFormat("||", "||");
 
-    private void InsertFormat(string prefix, string suffix)
+    private async Task InsertFormat(string prefix, string suffix)
     {
-        // For now, just append to the end
-        messageText += prefix + suffix;
+        await JS.InvokeVoidAsync("wrapSelectedText", "messageInput", prefix, suffix);
+        // Update messageText from textarea
+        messageText = await JS.InvokeAsync<string>("eval", "document.getElementById('messageInput').value");
         StateHasChanged();
     }
 

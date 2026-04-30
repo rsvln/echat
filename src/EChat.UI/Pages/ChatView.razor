@@ -209,6 +209,32 @@
                     </div>
                 }
             </div>
+
+            <!-- Formatting Toolbar -->
+            <div class="formatting-toolbar" style="display:flex;gap:4px;margin-right:8px;">
+                <button class="format-btn" @onclick="InsertBold" title="Bold">
+                    <strong>B</strong>
+                </button>
+                <button class="format-btn" @onclick="InsertItalic" title="Italic">
+                    <em>I</em>
+                </button>
+                <button class="format-btn" @onclick="InsertStrikethrough" title="Strikethrough">
+                    <del>S</del>
+                </button>
+                <button class="format-btn" @onclick="InsertUnderline" title="Underline">
+                    <u>U</u>
+                </button>
+                <button class="format-btn" @onclick="InsertInlineCode" title="Inline Code">
+                    <code>&lt;/&gt;</code>
+                </button>
+                <button class="format-btn" @onclick="OpenCodeEditor" title="Code Block">
+                    <pre style="font-size:10px;">{ }</pre>
+                </button>
+                <button class="format-btn" @onclick="InsertSpoiler" title="Spoiler">
+                    <span style="background:black;color:black;padding:0 2px;">S</span>
+                </button>
+            </div>
+
             <textarea class="message-textarea"
                       id="messageInput"
                       placeholder="@(editingMessage != null ? "Edit message…" : "Write a message...")"
@@ -241,6 +267,36 @@
                     {
                         <button class="emoji-btn" @onclick="@(() => InsertEmoji(emoji))">@emoji</button>
                     }
+                </div>
+            </div>
+        }
+
+        @if (showCodeEditor)
+        {
+            <div class="modal-overlay visible" @onclick="() => showCodeEditor = false">
+                <div class="modal-content code-editor-modal">
+                    <div class="modal-header">
+                        <h2>Insert Code Block</h2>
+                        <button class="close-btn" @onclick="() => showCodeEditor = false">✕</button>
+                    </div>
+                    <div class="modal-body">
+                        <select @bind="selectedLanguage" class="code-lang-select">
+                            <option value="">Plain Text</option>
+                            <option value="csharp">C#</option>
+                            <option value="javascript">JavaScript</option>
+                            <option value="python">Python</option>
+                            <option value="java">Java</option>
+                            <option value="html">HTML</option>
+                            <option value="css">CSS</option>
+                            <option value="sql">SQL</option>
+                            <option value="json">JSON</option>
+                        </select>
+                        <textarea @bind="codeEditorText" class="code-editor-textarea" placeholder="Enter your code here..."></textarea>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn-secondary" @onclick="() => showCodeEditor = false">Cancel</button>
+                        <button class="btn-primary" @onclick="InsertCodeBlock">Insert</button>
+                    </div>
                 </div>
             </div>
         }
@@ -1205,6 +1261,40 @@
         var hash = 0;
         foreach (var c in name) hash = (hash * 31 + c) % 16;
         return $"avatar-color-{hash}";
+    }
+
+    private bool showCodeEditor = false;
+    private string selectedLanguage = "";
+    private string codeEditorText = "";
+
+    private void OpenCodeEditor()
+    {
+        showCodeEditor = true;
+        selectedLanguage = "";
+        codeEditorText = "";
+        StateHasChanged();
+    }
+
+    private void InsertCodeBlock()
+    {
+        var lang = string.IsNullOrEmpty(selectedLanguage) ? "" : selectedLanguage + "\n";
+        messageText += $"```\n{lang}{codeEditorText}\n```";
+        showCodeEditor = false;
+        StateHasChanged();
+    }
+
+    private void InsertBold() => InsertFormat("**", "**");
+    private void InsertItalic() => InsertFormat("*", "*");
+    private void InsertStrikethrough() => InsertFormat("~~", "~~");
+    private void InsertUnderline() => InsertFormat("__", "__");
+    private void InsertInlineCode() => InsertFormat("`", "`");
+    private void InsertSpoiler() => InsertFormat("||", "||");
+
+    private void InsertFormat(string prefix, string suffix)
+    {
+        // For now, just append to the end
+        messageText += prefix + suffix;
+        StateHasChanged();
     }
 
     private class PendingAttachment

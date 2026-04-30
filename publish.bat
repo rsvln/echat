@@ -99,7 +99,8 @@ if errorlevel 1 (
     echo   FAILED: Inno Setup
     set /a ERRORS+=1
 ) else (
-    echo   OK: pub\distr\EChat-Setup-0.1.0.exe
+    set /p MAUI_VER=<src\EChat.MAUI\version.txt
+    echo   OK: pub\distr\EChat-Setup-!MAUI_VER!.exe
 )
 
 :: -------------------------------------------
@@ -200,7 +201,11 @@ echo   OK: pub\distr\docker-compose.yml
 :: -------------------------------------------
 echo.
 echo Copying distr to e:\YandexDisk\share\echat\...
-if not exist "e:\YandexDisk\share\echat\" mkdir "e:\YandexDisk\share\echat\"
+if exist "e:\YandexDisk\share\echat\" (
+    echo   Cleaning old files...
+    rmdir /s /q "e:\YandexDisk\share\echat\"
+)
+mkdir "e:\YandexDisk\share\echat\"
 xcopy /y /q "%PUB%\distr\*" "e:\YandexDisk\share\echat\" >nul
 if errorlevel 1 (
     echo   FAILED: copy to share

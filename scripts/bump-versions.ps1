@@ -2,15 +2,15 @@
 # Smart version bumping for EChat projects.
 #
 # Rules:
-#   EChat.Core / EChat.UI  - bump only if source files changed since last publish
-#   EChat.Web  / EChat.MAUI - always bump
+#   All projects - bump only if own source files changed since last publish,
+#                  OR (for Web/MAUI) if EChat.Core or EChat.UI changed.
 #
 # Change detection: SHA256 per-file, stored in .src-hash per project.
 #
 # Usage:
-#   .\bump-versions.ps1              - Core+UI (if changed) + Web + MAUI
-#   .\bump-versions.ps1 -Mode win   - Core+UI (if changed) + MAUI  (no Web)
-#   .\bump-versions.ps1 -Mode web   - Core+UI (if changed) + Web   (no MAUI)
+#   .\bump-versions.ps1              - all projects (smart)
+#   .\bump-versions.ps1 -Mode win   - Core+UI+MAUI  (no Web)
+#   .\bump-versions.ps1 -Mode web   - Core+UI+Web   (no MAUI)
 #   .\bump-versions.ps1 -Diagnose   - show exactly which files changed, no version bumps
 
 param(
@@ -20,22 +20,25 @@ param(
 
 $projects = switch ($Mode) {
     "win" {
-        @{ Name = 'EChat.Core'; Always = $false }
-        @{ Name = 'EChat.UI';   Always = $false }
-        @{ Name = 'EChat.MAUI'; Always = $true  }
+        @{ Name = 'EChat.Core'; DependsOnShared = $false }
+        @{ Name = 'EChat.UI';   DependsOnShared = $false }
+        @{ Name = 'EChat.MAUI'; DependsOnShared = $true  }
     }
     "web" {
-        @{ Name = 'EChat.Core'; Always = $false }
-        @{ Name = 'EChat.UI';   Always = $false }
-        @{ Name = 'EChat.Web';  Always = $true  }
+        @{ Name = 'EChat.Core'; DependsOnShared = $false }
+        @{ Name = 'EChat.UI';   DependsOnShared = $false }
+        @{ Name = 'EChat.Web';  DependsOnShared = $true  }
     }
     default {
-        @{ Name = 'EChat.Core'; Always = $false }
-        @{ Name = 'EChat.UI';   Always = $false }
-        @{ Name = 'EChat.Web';  Always = $true  }
-        @{ Name = 'EChat.MAUI'; Always = $true  }
+        @{ Name = 'EChat.Core'; DependsOnShared = $false }
+        @{ Name = 'EChat.UI';   DependsOnShared = $false }
+        @{ Name = 'EChat.Web';  DependsOnShared = $true  }
+        @{ Name = 'EChat.MAUI'; DependsOnShared = $true  }
     }
 }
+
+# Tracks whether EChat.Core or EChat.UI changed — used to force-bump dependents
+$sharedChanged = $false
 
 $utf8NoBom = [Text.UTF8Encoding]::new($false)
 
@@ -52,7 +55,7 @@ function Get-SourceFileHashes([string]$projectDir) {
 
     $result = [ordered]@{}
     Get-ChildItem $projectDir -Recurse -File |
-        Where-Object { $_.Extension -in '.cs','.razor','.csproj' } |
+        Where-Object { $_.Extension -in '.cs','.razor','.csproj','.html','.css','.js' } |
         Sort-Object FullName |
         ForEach-Object {
             $rel = $_.FullName.Substring($absDir.Length).TrimStart('\','/')
@@ -93,42 +96,36 @@ foreach ($p in $projects) {
 
     $v = (Get-Content $vf).Trim()
 
-    if ($p.Always -and -not $Diagnose) {
-        # Always bump - no hash check needed
-        $pts = $v.Split('.')
-        $pts[2] = [int]$pts[2] + 1
-        $nv = $pts -join '.'
-        [IO.File]::WriteAllText((Resolve-Path $vf), $nv, $utf8NoBom)
-        Write-Host "  $($p.Name): $v -> $nv"
-        continue
-    }
-
     $current = Get-SourceFileHashes $dir
     $stored  = if (Test-Path $hashFile) { Deserialize-Hashes (Get-Content $hashFile -Raw) } else { @{} }
 
-    # Diff
-    $changed = @()
-    $added   = @()
-    $removed = @()
+    # Diff own files
+    $ownChanged = @()
+    $ownAdded   = @()
+    $ownRemoved = @()
     foreach ($f in $current.Keys) {
-        if (-not $stored.Contains($f))          { $added   += $f }
-        elseif ($stored[$f] -ne $current[$f])   { $changed += $f }
+        if (-not $stored.Contains($f))          { $ownAdded   += $f }
+        elseif ($stored[$f] -ne $current[$f])   { $ownChanged += $f }
     }
     foreach ($f in $stored.Keys) {
-        if (-not $current.Contains($f))         { $removed += $f }
+        if (-not $current.Contains($f))         { $ownRemoved += $f }
     }
 
-    $hasDiff = $added.Count -gt 0 -or $changed.Count -gt 0 -or $removed.Count -gt 0
+    $ownDiff  = $ownAdded.Count -gt 0 -or $ownChanged.Count -gt 0 -or $ownRemoved.Count -gt 0
+    $hasDiff  = $ownDiff -or ($p.DependsOnShared -and $sharedChanged)
 
     if ($Diagnose) {
         Write-Host ""
         Write-Host "=== $($p.Name) (v$v) ==="
-        if (-not $hasDiff) {
+        if (-not $ownDiff -and -not ($p.DependsOnShared -and $sharedChanged)) {
             Write-Host "  No changes."
         } else {
-            foreach ($f in $added)   { Write-Host "  + $f" }
-            foreach ($f in $changed) { Write-Host "  ~ $f" }
-            foreach ($f in $removed) { Write-Host "  - $f" }
+            foreach ($f in $ownAdded)   { Write-Host "  + $f" }
+            foreach ($f in $ownChanged) { Write-Host "  ~ $f" }
+            foreach ($f in $ownRemoved) { Write-Host "  - $f" }
+            if ($p.DependsOnShared -and $sharedChanged -and -not $ownDiff) {
+                Write-Host "  (bumped because EChat.Core or EChat.UI changed)"
+            }
         }
         continue
     }
@@ -138,8 +135,14 @@ foreach ($p in $projects) {
         $pts[2] = [int]$pts[2] + 1
         $nv = $pts -join '.'
         [IO.File]::WriteAllText((Resolve-Path $vf), $nv, $utf8NoBom)
-        [IO.File]::WriteAllText((Join-Path ([IO.Path]::GetFullPath($dir)) '.src-hash'), (Serialize-Hashes $current), $utf8NoBom)
-        Write-Host "  $($p.Name): $v -> $nv"
+        # Update hash only when own files changed (not when bumped solely due to shared)
+        if ($ownDiff) {
+            [IO.File]::WriteAllText((Join-Path ([IO.Path]::GetFullPath($dir)) '.src-hash'), (Serialize-Hashes $current), $utf8NoBom)
+        }
+        $reason = if ($ownDiff) { "" } else { " (Core/UI changed)" }
+        Write-Host "  $($p.Name): $v -> $nv$reason"
+        # Track that shared libs changed so dependents know
+        if (-not $p.DependsOnShared) { $sharedChanged = $true }
     } else {
         Write-Host "  $($p.Name): $v (no changes, skipped)"
     }

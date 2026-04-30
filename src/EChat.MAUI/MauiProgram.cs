@@ -66,7 +66,7 @@ public static class MauiProgram
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion;
         if (!string.IsNullOrEmpty(hostVersion))
-            VersionInfo.VersionOverride = hostVersion;
+            EChat.Core.Services.VersionInfo.VersionOverride = hostVersion;
 
         return builder.Build();
     }

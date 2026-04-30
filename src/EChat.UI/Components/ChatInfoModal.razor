@@ -1,10 +1,13 @@
 @using EChat.Core.Models
 @using EChat.Core.Data
+@using EChat.Core.Transport
+@using EChat.Core.Protocol
 @using EChat.UI.Services
 @using Microsoft.EntityFrameworkCore
 @using Microsoft.Extensions.DependencyInjection
+@inject IJSRuntime JS
 
-<div class="modal-overlay @(IsVisible ? "visible" : "")" @onclick="Close">
+<div class="modal-overlay @(IsVisible ? "visible" : "")" @onclick="Close" @onkeydown="OnOverlayKeyDown" tabindex="-1">
     <div class="modal-content" @onclick:stopPropagation="true">
         <div class="modal-header">
             <h2>Chat Info</h2>
@@ -38,20 +41,50 @@
 
                 @if (chat.Type == ChatType.Group && members != null)
                 {
+                    var isAdmin = members.Any(m => m.MemberEmail == UserContext.UserEmail && m.Role == GroupRole.Admin);
                     <div class="info-section">
                         <h3>Members (@members.Count)</h3>
                         @foreach (var member in members)
                         {
+                            var memberEmail = member.MemberEmail;
                             <div class="member-item">
-                                @member.MemberEmail
+                                <span class="member-name">@(memberNames.TryGetValue(memberEmail, out var n) ? n : memberEmail.Split('@')[0])</span>
                                 @if (member.Role == GroupRole.Admin)
                                 {
                                     <span class="admin-badge">Admin</span>
                                 }
+                                @if (isAdmin && memberEmail != UserContext.UserEmail && member.Role != GroupRole.Admin)
+                                {
+                                    <button class="member-remove-btn" @onclick="@(() => RemoveMemberFromGroupAsync(memberEmail))" title="Remove">✕</button>
+                                }
                             </div>
+                        }
+                        @if (isAdmin)
+                        {
+                            @if (contactsWithKeys.Any())
+                            {
+                                <div class="add-member-row">
+                                    <select @bind="addMemberEmail">
+                                        <option value="">— select contact —</option>
+                                        @foreach (var c in contactsWithKeys)
+                                        {
+                                            <option value="@c.Email">@c.DisplayName (@c.Email)</option>
+                                        }
+                                    </select>
+                                    <button class="new-chat-btn-primary" @onclick="AddMemberToGroupAsync" disabled="@(addMemberLoading || string.IsNullOrEmpty(addMemberEmail))">
+                                        @if (addMemberLoading) { <span>Adding...</span> } else { <span>Add</span> }
+                                    </button>
+                                </div>
+                            }
+                            @if (!string.IsNullOrEmpty(addMemberError))
+                            {
+                                <div class="new-chat-error">@addMemberError</div>
+                            }
                         }
                     </div>
                 }
+
+                <div class="chat-info-divider"></div>
 
                 <div class="new-chat-actions">
                     <button class="new-chat-btn-toggle @(chat.Muted ? "active" : "")"
@@ -80,6 +113,9 @@
                     }
                     <button class="new-chat-btn-danger" @onclick="ConfirmDelete">
                         Delete
+                    </button>
+                    <button class="new-chat-btn-toggle" @onclick="Close">
+                        Close
                     </button>
                 </div>
             </div>
@@ -165,13 +201,41 @@
     [Inject]
     public EChat.Core.Sync.SyncWarningService SyncWarnings { get; set; } = null!;
 
+    [Inject]
+    public EmailTransportService TransportService { get; set; } = null!;
+
+    [Inject]
+    public EChat.Core.Services.FileLogger FileLogger { get; set; } = null!;
+
+    [Inject]
+    public EChat.Core.Services.ChatEventService ChatEvents { get; set; } = null!;
+
     private Chat? chat;
     private int messageCount;
     private List<GroupMember>? members;
+    private Dictionary<string, string> memberNames = new();
+    private List<Contact> contactsWithKeys = new();
     private bool showDeleteConfirm;
+
+    private string addMemberEmail = string.Empty;
+    private string? addMemberError;
+    private bool addMemberLoading;
+
+    private bool _wasVisible;
 
     protected override async Task OnParametersSetAsync()
     {
+        if (IsVisible && !_wasVisible)
+        {
+            _wasVisible = true;
+            await JS.InvokeVoidAsync("lockBodyScroll");
+        }
+        else if (!IsVisible && _wasVisible)
+        {
+            _wasVisible = false;
+            await JS.InvokeVoidAsync("unlockBodyScroll");
+        }
+
         if (IsVisible && !string.IsNullOrEmpty(ChatId))
         {
             await LoadChatInfoAsync();
@@ -194,6 +258,17 @@
                 members = await db.GroupMembers.AsNoTracking()
                     .Where(m => m.GroupId == chat.GroupId)
                     .ToListAsync();
+
+                var emails = members.Select(m => m.MemberEmail).ToList();
+                memberNames = await db.Contacts.AsNoTracking()
+                    .Where(c => emails.Contains(c.Email) && c.DisplayName != null)
+                    .ToDictionaryAsync(c => c.Email, c => c.DisplayName!);
+
+                contactsWithKeys = await db.Contacts.AsNoTracking()
+                    .Where(c => c.PublicKey != null && c.PublicKey != "" && !emails.Contains(c.Email))
+                    .OrderBy(c => c.DisplayName)
+                    .ToListAsync();
+                addMemberEmail = string.Empty;
             }
         }
     }
@@ -252,9 +327,14 @@
     private async Task DeleteGroupAsAdmin()
     {
         if (chat == null) return;
-        await DbContext.Chats
-            .Where(c => c.ChatId == chat.ChatId)
-            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Deleted, true));
+        var c = await DbContext.Chats.FindAsync(chat.ChatId);
+        if (c != null)
+        {
+            c.Deleted = true;
+            // Permanent delete marker — prevents resurrection from stale group-create IMAP messages
+            c.TombstoneVersion = int.MaxValue;
+            await DbContext.SaveChangesAsync();
+        }
         showDeleteConfirm = false;
         await OnClose.InvokeAsync();
         await OnChatDeleted.InvokeAsync(chat.ChatId);
@@ -282,8 +362,260 @@
         await OnChatDeleted.InvokeAsync(chat.ChatId);
     }
 
+    private async Task AddMemberToGroupAsync()
+    {
+        addMemberError = null;
+        var email = addMemberEmail.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(email)) return;
+        if (chat == null || string.IsNullOrEmpty(chat.GroupId)) return;
+
+        var groupId = chat.GroupId;
+        var myEmail = UserContext.UserEmail;
+
+        if (email.Equals(myEmail, StringComparison.OrdinalIgnoreCase))
+        {
+            addMemberError = "You are already in the group.";
+            return;
+        }
+
+        if (members != null && members.Any(m => m.MemberEmail.Equals(email, StringComparison.OrdinalIgnoreCase)))
+        {
+            addMemberError = "Already a member.";
+            return;
+        }
+
+        addMemberLoading = true;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+            var contact = await db.Contacts.FindAsync(email);
+            if (contact == null || string.IsNullOrEmpty(contact.PublicKey))
+            {
+                addMemberError = "Contact not found or has no public key.";
+                return;
+            }
+
+            // Get group key pair
+            var keyPair = await db.GroupKeyPairs.FindAsync(groupId);
+            if (keyPair == null)
+            {
+                addMemberError = "Group key not found.";
+                return;
+            }
+
+            // Get current member emails
+            var currentMembers = await db.GroupMembers.AsNoTracking()
+                .Where(m => m.GroupId == groupId)
+                .Select(m => m.MemberEmail)
+                .ToListAsync();
+            var allMembers = currentMembers.Append(email).Distinct().ToList();
+
+            var groupInfo = await db.Groups.FirstOrDefaultAsync(g => g.GroupId == groupId);
+            var groupName = groupInfo?.Name ?? chat.Name;
+
+            // Increment group version so that stale group-create copies received later
+            // (e.g. by the new member's background IMAP worker) don't re-add removed members.
+            int newVersion = (groupInfo?.Version ?? 1) + 1;
+            if (groupInfo != null) groupInfo.Version = newVersion;
+
+            // Add to local DB
+            db.GroupMembers.Add(new GroupMember
+            {
+                GroupId = groupId,
+                MemberEmail = email,
+                Role = GroupRole.Member,
+                AddedAt = DateTimeOffset.UtcNow,
+                AddedBy = myEmail
+            });
+
+            db.Messages.Add(new ChatMessage
+            {
+                MessageId = Guid.NewGuid().ToString(),
+                ChatId = chat.ChatId,
+                Sender = myEmail ?? "",
+                Content = $"{contact.DisplayName ?? email.Split('@')[0]} was added to the group",
+                Timestamp = DateTimeOffset.UtcNow,
+                DisplayTimestamp = DateTimeOffset.UtcNow,
+                ReceivedAt = DateTimeOffset.UtcNow,
+                IsSystem = true,
+                Status = MessageStatus.Sent
+            });
+
+            await db.SaveChangesAsync();
+            ChatEvents.NotifyChatUpdated(chat.ChatId);
+
+            // Send group-create to the new member so they get the full group state
+            var groupCreatePayload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "group-create",
+                group_id = groupId,
+                group_name = groupName,
+                version = newVersion,
+                members = allMembers,
+                admins = (await db.GroupMembers.AsNoTracking()
+                    .Where(m => m.GroupId == groupId && m.Role == GroupRole.Admin)
+                    .Select(m => m.MemberEmail).ToListAsync()),
+                group_public_key = keyPair.PublicKey,
+                group_private_key = keyPair.PrivateKey
+            });
+
+            await TransportService.SendMessageAsync(new OutgoingMessage
+            {
+                MessageId = Guid.NewGuid().ToString(),
+                Content = groupCreatePayload,
+                Recipients = new List<string> { email },
+                RecipientPublicKey = contact.PublicKey,
+                Timestamp = DateTimeOffset.UtcNow,
+                Type = MessageType.System,
+                SystemType = "group-create",
+                GroupId = groupId,
+                Tier = BatchTier.Immediate,
+                Encrypt = true
+            });
+
+            // Notify existing members
+            var addPayload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "group-member-add",
+                group_id = groupId,
+                added_email = email,
+                added_by = myEmail
+            });
+
+            foreach (var memberEmail in currentMembers)
+            {
+                if (memberEmail.Equals(myEmail, StringComparison.OrdinalIgnoreCase)) continue;
+                var mc = await db.Contacts.FindAsync(memberEmail);
+                try
+                {
+                    await TransportService.SendMessageAsync(new OutgoingMessage
+                    {
+                        MessageId = Guid.NewGuid().ToString(),
+                        Content = addPayload,
+                        Recipients = new List<string> { memberEmail },
+                        RecipientPublicKey = mc?.PublicKey,
+                        Timestamp = DateTimeOffset.UtcNow,
+                        Type = MessageType.System,
+                        SystemType = "group-member-add",
+                        GroupId = groupId,
+                        Tier = BatchTier.Immediate,
+                        Encrypt = !string.IsNullOrEmpty(mc?.PublicKey)
+                    });
+                }
+                catch { }
+            }
+
+            addMemberEmail = string.Empty;
+            await LoadChatInfoAsync();
+        }
+        catch (Exception ex)
+        {
+            addMemberError = $"Error: {ex.Message}";
+            FileLogger.Write("ERROR", "ChatInfoModal", $"AddMember failed: {ex.Message}");
+        }
+        finally
+        {
+            addMemberLoading = false;
+        }
+    }
+
+    private async Task RemoveMemberFromGroupAsync(string targetEmail)
+    {
+        if (chat == null || string.IsNullOrEmpty(chat.GroupId)) return;
+        var groupId = chat.GroupId;
+        var myEmail = UserContext.UserEmail;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+            var member = await db.GroupMembers.FindAsync(groupId, targetEmail);
+            if (member != null) db.GroupMembers.Remove(member);
+
+            // Increment version so stale group-create copies can't re-add this member
+            var groupInfoR = await db.Groups.FindAsync(groupId);
+            if (groupInfoR != null) groupInfoR.Version++;
+
+            var targetContact = await db.Contacts.FindAsync(targetEmail);
+            var targetName = targetContact?.DisplayName ?? targetEmail.Split('@')[0];
+
+            var removeNotifyMsgId = Guid.NewGuid().ToString();
+
+            db.Messages.Add(new ChatMessage
+            {
+                MessageId = removeNotifyMsgId,
+                ChatId = chat.ChatId,
+                Sender = myEmail ?? "",
+                Content = $"{targetName} was removed from the group",
+                Timestamp = DateTimeOffset.UtcNow,
+                DisplayTimestamp = DateTimeOffset.UtcNow,
+                ReceivedAt = DateTimeOffset.UtcNow,
+                IsSystem = true,
+                Status = MessageStatus.Sent
+            });
+
+            await db.SaveChangesAsync();
+            ChatEvents.NotifyChatUpdated(chat.ChatId);
+
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "group-member-remove",
+                group_id = groupId,
+                removed_email = targetEmail,
+                removed_by = myEmail
+            });
+
+            // Notify all current members (including the removed one)
+            var allMembers = await db.GroupMembers.AsNoTracking()
+                .Where(m => m.GroupId == groupId)
+                .Select(m => m.MemberEmail)
+                .ToListAsync();
+            var recipients = allMembers.Append(targetEmail).Distinct()
+                .Where(e => !e.Equals(myEmail, StringComparison.OrdinalIgnoreCase));
+
+            foreach (var email in recipients)
+            {
+                var contact = await db.Contacts.FindAsync(email);
+                try
+                {
+                    await TransportService.SendMessageAsync(new OutgoingMessage
+                    {
+                        MessageId = Guid.NewGuid().ToString(),
+                        Content = payload,
+                        Recipients = new List<string> { email },
+                        RecipientPublicKey = contact?.PublicKey,
+                        Timestamp = DateTimeOffset.UtcNow,
+                        Type = MessageType.System,
+                        SystemType = "group-member-remove",
+                        GroupId = groupId,
+                        Tier = BatchTier.Immediate,
+                        Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
+                    });
+                }
+                catch { }
+            }
+
+            await LoadChatInfoAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ChatInfoModal", $"RemoveMember failed: {ex.Message}");
+        }
+    }
+
+    private async Task OnOverlayKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape")
+            await Close();
+    }
+
     private async Task Close()
     {
+        _wasVisible = false;
+        await JS.InvokeVoidAsync("unlockBodyScroll");
         await OnClose.InvokeAsync();
     }
 }

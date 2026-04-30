@@ -15,6 +15,12 @@ public class PlatformService : IPlatformService
         _safTcs?.TrySetResult(uri);
 #endif
 
+#if ANDROID || IOS
+    public bool IsMobile => true;
+#else
+    public bool IsMobile => false;
+#endif
+
 #if WINDOWS
     public bool IsDesktop => true;
 #else
@@ -104,6 +110,15 @@ public class PlatformService : IPlatformService
 #elif WINDOWS
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(filePath) { UseShellExecute = true });
         await Task.CompletedTask;
+#elif IOS
+        // iOS: copy to cache with correct name, then share sheet (Open With + AirDrop + Save etc.)
+        var cachePath = Path.Combine(FileSystem.CacheDirectory, fileName);
+        File.Copy(filePath, cachePath, overwrite: true);
+        await Share.Default.RequestAsync(new ShareFileRequest
+        {
+            Title = fileName,
+            File  = new ShareFile(cachePath, mimeType)
+        });
 #else
         await Task.CompletedTask;
 #endif
@@ -114,29 +129,86 @@ public class PlatformService : IPlatformService
 #if ANDROID
         try
         {
-            var downloadsDir = Android.OS.Environment.GetExternalStoragePublicDirectory(
-                Android.OS.Environment.DirectoryDownloads)!.AbsolutePath;
-            var destPath = Path.Combine(downloadsDir, fileName);
-            // Avoid overwriting: append number if file exists
-            if (File.Exists(destPath))
+            var context = Android.App.Application.Context;
+            if ((int)Android.OS.Build.VERSION.SdkInt >= 29)
             {
-                var name = Path.GetFileNameWithoutExtension(fileName);
-                var ext  = Path.GetExtension(fileName);
-                var i = 1;
-                while (File.Exists(destPath))
-                    destPath = Path.Combine(downloadsDir, $"{name} ({i++}){ext}");
+                var values = new Android.Content.ContentValues();
+                values.Put(Android.Provider.MediaStore.IMediaColumns.DisplayName, fileName);
+                values.Put(Android.Provider.MediaStore.IMediaColumns.MimeType, mimeType);
+                values.Put(Android.Provider.MediaStore.IMediaColumns.RelativePath, "Download/");
+
+                var uri = context.ContentResolver!.Insert(
+                    Android.Provider.MediaStore.Downloads.ExternalContentUri, values);
+
+                if (uri == null)
+                {
+                    // Fallback: use share sheet
+                    var tempPath = Path.Combine(FileSystem.CacheDirectory, fileName);
+                    await File.WriteAllBytesAsync(tempPath, content);
+                    await Share.Default.RequestAsync(new ShareFileRequest
+                    {
+                        Title = fileName,
+                        File = new ShareFile(tempPath, mimeType)
+                    });
+                    return true;
+                }
+
+                using var stream = context.ContentResolver.OpenOutputStream(uri);
+                if (stream == null) return false;
+
+                await stream.WriteAsync(content);
+                await stream.FlushAsync();
+                stream.Close();
+                return true;
             }
-            await File.WriteAllBytesAsync(destPath, content);
-            // Notify media scanner so file appears in Files app
-            Android.Media.MediaScannerConnection.ScanFile(
-                Android.App.Application.Context,
-                [destPath], [mimeType], null);
-            return true;
+            else
+            {
+                var downloadsDir = Android.OS.Environment.GetExternalStoragePublicDirectory(
+                    Android.OS.Environment.DirectoryDownloads)!.AbsolutePath;
+                var destPath = Path.Combine(downloadsDir, fileName);
+                if (File.Exists(destPath))
+                {
+                    var name = Path.GetFileNameWithoutExtension(fileName);
+                    var ext  = Path.GetExtension(fileName);
+                    var i = 1;
+                    while (File.Exists(destPath))
+                        destPath = Path.Combine(downloadsDir, $"{name} ({i++}){ext}");
+                }
+                await File.WriteAllBytesAsync(destPath, content);
+                Android.Media.MediaScannerConnection.ScanFile(
+                    context, [destPath], [mimeType], null);
+                return true;
+            }
         }
-        catch { return false; }
+        catch
+        {
+            try
+            {
+                var tempPath = Path.Combine(FileSystem.CacheDirectory, fileName);
+                await File.WriteAllBytesAsync(tempPath, content);
+                await Share.Default.RequestAsync(new ShareFileRequest
+                {
+                    Title = fileName,
+                    File = new ShareFile(tempPath, mimeType)
+                });
+                return true;
+            }
+            catch { return false; }
+        }
 #elif WINDOWS
         // On Windows use the existing SaveFileAsync dialog
         await SaveFileAsync(fileName, content, mimeType: mimeType);
+        return true;
+#elif IOS
+        // iOS has no user-accessible Downloads folder — use the share sheet instead
+        // so the user can save to Files app, iCloud Drive, AirDrop etc.
+        var tempPath = Path.Combine(FileSystem.CacheDirectory, fileName);
+        await File.WriteAllBytesAsync(tempPath, content);
+        await Share.Default.RequestAsync(new ShareFileRequest
+        {
+            Title = fileName,
+            File  = new ShareFile(tempPath, mimeType)
+        });
         return true;
 #else
         await Task.CompletedTask;
@@ -184,6 +256,8 @@ public class PlatformService : IPlatformService
     {
 #if WINDOWS
         EChat.Maui.Platforms.Windows.Services.TaskbarBadgeHelper.SetBadge(totalUnread);
+#elif IOS
+        EChat.Maui.Platforms.iOS.Services.MessageNotificationHelper.UpdateBadge(totalUnread);
 #endif
         // Android: could update app-icon badge in future; no-op for now
     }
@@ -242,6 +316,9 @@ public class PlatformService : IPlatformService
         var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
         if (exe != null) System.Diagnostics.Process.Start(exe);
         Microsoft.Maui.Controls.Application.Current?.Quit();
+#elif IOS
+        // iOS policy prohibits programmatic app restart — no-op.
+        // Users restart the app manually via the app switcher.
 #endif
     }
 }

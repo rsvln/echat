@@ -7,135 +7,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>εChat</title>
     <base href="/" />
-    <link rel="stylesheet" href="css/app.css" />
-    <link rel="stylesheet" href="_content/EChat.UI/css/app.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/variables.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/dark-theme.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/desktop.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/mobile.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/message-bubble.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/modal.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/new-chat.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/invite.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/settings.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/input.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/attachments.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/video.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/lightbox.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/scrollbar.css" />
+    <link rel="stylesheet" href="_content/EChat.UI/css/sync-setup.css" />
+    <link rel="stylesheet" href="css/web-overrides.css" />
 </head>
 
 <body>
     <Routes @rendermode="InteractiveServer" />
     <script src="_framework/blazor.web.js"></script>
-    <script>
-        window.getSelectedText = function () { return window.getSelection()?.toString() ?? ''; };
-        window.positionMenu = function (id, x, y) {
-            var el = document.getElementById(id);
-            if (!el) return;
-            var vw = window.innerWidth, vh = window.innerHeight;
-            var w = el.offsetWidth || 220, h = el.offsetHeight || 100;
-            var left = x + w + 8 > vw ? vw - w - 8 : x;
-            var top  = y + h + 8 > vh ? vh - h - 8 : y;
-            if (left < 8) left = 8;
-            if (top  < 8) top  = 8;
-            el.style.left = left + 'px';
-            el.style.top  = top  + 'px';
-            el.style.visibility = 'visible';
-        };
-        (function () {
-            if (localStorage.getItem('darkMode') === 'true')
-                document.documentElement.setAttribute('data-theme', 'dark');
-        })();
-        window.applyDarkThemeFromBlazor = function (isDark) {
-            if (isDark) {
-                document.documentElement.setAttribute('data-theme', 'dark');
-                localStorage.setItem('darkMode', 'true');
-            } else {
-                document.documentElement.removeAttribute('data-theme');
-                localStorage.setItem('darkMode', 'false');
-            }
-        };
-        window._textareaSetup = false;
-        window.setupTextareaResize = function () {
-            if (window._textareaSetup) return;
-            var t = document.getElementById('messageInput');
-            if (!t) return;
-            window._textareaSetup = true;
-            t.addEventListener('input', function () {
-                this.style.height = '1px';
-                void this.offsetHeight;
-                var sh = this.scrollHeight;
-                var maxH = 12 * 21;
-                var newH = Math.max(44, Math.min(sh, maxH));
-                this.style.height = newH + 'px';
-                this.style.overflowY = sh > maxH ? 'auto' : 'hidden';
-            });
-        };
-        window.autoResizeTextarea = function () {
-            window.setupTextareaResize();
-            var t = document.getElementById('messageInput');
-            if (t) {
-                t.style.height = '1px';
-                void t.offsetHeight;
-                var sh = t.scrollHeight;
-                var maxH = 12 * 21;
-                var newH = Math.max(44, Math.min(sh, maxH));
-                t.style.height = newH + 'px';
-                t.style.overflowY = sh > maxH ? 'auto' : 'hidden';
-            }
-        };
-        window.requestNotificationPermission = async function () {
-            if (!('Notification' in window)) return 'unsupported';
-            return await Notification.requestPermission();
-        };
-        window.getNotificationPermission = function () {
-            if (!('Notification' in window)) return 'unsupported';
-            return Notification.permission;
-        };
-        window.showWebNotification = function (title, body) {
-            if (!('Notification' in window) || Notification.permission !== 'granted') return;
-            // Don't interrupt if the tab is actively focused
-            if (document.visibilityState === 'visible') return;
-            var n = new Notification(title, { body: body, icon: '/favicon.ico', tag: 'echat-msg' });
-            n.onclick = function () { window.focus(); n.close(); };
-            setTimeout(function () { n.close(); }, 8000);
-        };
-        window.copyToClipboard = function (text) { return navigator.clipboard.writeText(text); };
-        window.getChatScrollTop = function () {
-            var el = document.querySelector('.messages-container');
-            return el ? el.scrollTop : 0;
-        };
-        window.setChatScrollTop = function (pos) {
-            requestAnimationFrame(function () {
-                var el = document.querySelector('.messages-container');
-                if (el) el.scrollTop = pos;
-            });
-        };
-        window.scrollChatToBottom = function () {
-            requestAnimationFrame(function () {
-                var el = document.querySelector('.messages-container');
-                if (el) el.scrollTop = el.scrollHeight;
-            });
-        };
-        window.isChatAtBottom = function () {
-            var el = document.querySelector('.messages-container');
-            if (!el) return true;
-            return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-        };
-        window.resetTextareaHeight = function () {
-            var el = document.querySelector('.message-input');
-            if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; }
-        };
-        window.handleMessageInputKey = function (event, sendOnEnter) {
-            if (event.key === 'Enter') {
-                if (event.shiftKey || (!sendOnEnter && !event.ctrlKey) || (sendOnEnter && event.ctrlKey)) {
-                    return null;
-                }
-                event.preventDefault();
-                var textarea = document.querySelector('.message-input textarea');
-                var text = textarea ? textarea.value : '';
-                if (textarea) { textarea.value = ''; textarea.style.height = 'auto'; }
-                return text;
-            }
-            return null;
-        };
-        window.downloadBytes = function (filename, bytes) {
-            var blob = new Blob([new Uint8Array(bytes)], { type: 'application/zip' });
-            var url  = URL.createObjectURL(blob);
-            var a    = document.createElement('a');
-            a.href = url; a.download = filename;
-            document.body.appendChild(a); a.click();
-            document.body.removeChild(a);
-            setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-        };
-    </script>
+    <script src="_content/EChat.UI/js/ui-helpers.js"></script>
+    <script src="_content/EChat.UI/js/textarea.js"></script>
+    <script src="_content/EChat.UI/js/scroll.js"></script>
 </body>
 
 </html>

@@ -56,6 +56,7 @@ public static class ServiceCollectionExtensions
         // Event bus & app-level services
         services.AddSingleton<ChatEventService>();
         services.AddSingleton<IncomingMessageService>();
+        services.AddSingleton<BatchSyncProcessor>();
         services.AddSingleton<MultiAccountImapManager>();
 
         // File logger — created after dbPath is known
@@ -195,6 +196,28 @@ public static class ServiceCollectionExtensions
                 cmd.CommandText = "ALTER TABLE Chats ADD COLUMN GroupId TEXT";
                 await cmd.ExecuteNonQueryAsync();
             }
+            if (!cols.Contains("TombstoneVersion"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Chats ADD COLUMN TombstoneVersion INTEGER";
+                await cmd.ExecuteNonQueryAsync();
+            }
+
+            // Discover existing Messages columns
+            var msgCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT name FROM pragma_table_info('Messages')";
+                using var rdr = await cmd.ExecuteReaderAsync();
+                while (await rdr.ReadAsync()) msgCols.Add(rdr.GetString(0));
+            }
+
+            if (!msgCols.Contains("IsSystem"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Messages ADD COLUMN IsSystem INTEGER NOT NULL DEFAULT 0";
+                await cmd.ExecuteNonQueryAsync();
+            }
 
             // Backfill: group chats → GroupId = ChatId; 1:1 chats → ContactEmail from Contacts
             using (var cmd = conn.CreateCommand())
@@ -224,18 +247,49 @@ public static class ServiceCollectionExtensions
                 await cmd.ExecuteNonQueryAsync();
             }
 
-            // Mark migration as applied so it is never retried
+            // Discover existing Attachments columns
+            var attCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             using (var cmd = conn.CreateCommand())
             {
+                cmd.CommandText = "SELECT name FROM pragma_table_info('Attachments')";
+                using var rdr = await cmd.ExecuteReaderAsync();
+                while (await rdr.ReadAsync()) attCols.Add(rdr.GetString(0));
+            }
+
+            if (attCols.Contains("IsImage"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Attachments DROP COLUMN IsImage";
+                await cmd.ExecuteNonQueryAsync();
+            }
+            if (attCols.Contains("IsVideo"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Attachments DROP COLUMN IsVideo";
+                await cmd.ExecuteNonQueryAsync();
+            }
+
+            // Mark migrations as applied so they are never retried
+            foreach (var migId in new[]
+            {
+                "20260411204537_ReplacePartnerEmailWithContactEmailAndGroupId",
+                "20260412120000_BackfillContactEmailAndGroupId",
+                "20260425120000_AddIsSystemToMessages",
+                "20260426160000_AddChatTombstoneVersion",
+                "20260427221822_RemoveIsImageIsVideoFromAttachments",
+            })
+            {
+                using var cmd = conn.CreateCommand();
                 cmd.CommandText =
                     "INSERT OR IGNORE INTO __EFMigrationsHistory (MigrationId, ProductVersion) " +
-                    "VALUES ('20260411204537_ReplacePartnerEmailWithContactEmailAndGroupId', '9.0.4')";
+                    $"VALUES ('{migId}', '9.0.4')";
                 await cmd.ExecuteNonQueryAsync();
             }
         } // raw connection disposed
 
         // ── Step 3c: post-migration setup ──
         SqliteConnection.ClearAllPools();
+
         using (var scope = serviceProvider.CreateScope())
         {
             var ctx = scope.ServiceProvider.GetRequiredService<ChatDbContext>();

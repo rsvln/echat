@@ -75,6 +75,10 @@ public class IncomingMessageService
 
         _fileLogger.Write("INFO", "SaveAsync", $"accountEmail={accountEmail}, accountId={accountId}");
 
+        // Short tag used as a prefix in every log message so interleaved multi-account
+        // logs are immediately readable: "yarustam", "avchatmail", etc.
+        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+
         var updatedChats = new HashSet<string>();
         // chatId → (chatName, senderName, preview) for incoming non-self, non-muted messages
         var notificationEntries = new Dictionary<string, (string chatName, string senderName, string preview)>(StringComparer.OrdinalIgnoreCase);
@@ -93,13 +97,17 @@ public class IncomingMessageService
             .ToListAsync();
         var accountChatIdSet = new HashSet<string>(accountChatIds, StringComparer.OrdinalIgnoreCase);
 
-        _fileLogger.Write("INFO", "SaveAsync", $"accountChatIds count={accountChatIds.Count}");
+        _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] accountChatIds count={accountChatIds.Count}");
         if (accountChatIds.Count > 0)
         {
-            _fileLogger.Write("DEBUG", "SaveAsync", $"First few chatIds: {string.Join(", ", accountChatIds.Take(5))}");
+            _fileLogger.Write("DEBUG", "SaveAsync", $"[{logAcct}] First few chatIds: {string.Join(", ", accountChatIds.Take(5))}");
         }
 
         // ── Handle read receipts (Chat-Read-Of) ─────────────────────────────
+        // ExecuteUpdateAsync commits directly to SQLite without going through SaveChangesAsync,
+        // so we fire NotifyChatUpdated immediately after — UI refresh is NOT gated on the
+        // SaveChangesAsync at the bottom which may fail for unrelated reasons (e.g. duplicate
+        // regular message arriving in the same batch).
         foreach (var pm in parsed.Where(m => m.Headers.ReadOf != null && m.Headers.ReadOf.Count > 0))
         {
             var ids = pm.Headers.ReadOf!;
@@ -109,14 +117,24 @@ public class IncomingMessageService
                 .ExecuteUpdateAsync(s => s.SetProperty(m => m.Status, MessageStatus.Read));
             if (affected > 0)
             {
-                // Fire chat-updated for each affected chat so UI refreshes
                 var affectedChats = await db.Messages
                     .Where(m => ids.Contains(m.MessageId) && accountChatIds.Contains(m.ChatId))
                     .Select(m => m.ChatId)
                     .Distinct()
                     .ToListAsync();
                 foreach (var cid in affectedChats)
+                {
                     updatedChats.Add(cid);
+                    // Notify immediately — status is already committed by ExecuteUpdateAsync.
+                    // This ensures the UI updates even if SaveChangesAsync later fails for
+                    // other items in this batch (e.g. a regular message with a duplicate key).
+                    _chatEvents.NotifyChatUpdated(cid);
+                }
+                _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] Read receipt processed: {affected} message(s) marked Read, chats=[{string.Join(",", affectedChats)}]");
+            }
+            else
+            {
+                _fileLogger.Write("WARN", "SaveAsync", $"[{logAcct}] Read receipt arrived but found 0 matching messages in DB. ReadOf=[{string.Join(",", ids)}], accountChatIds.Count={accountChatIds.Count}");
             }
         }
 
@@ -169,33 +187,97 @@ public class IncomingMessageService
         {
             // Dedup: system messages are stored with their original Chat-Message-ID.
             // If it's already in DB, the message was processed in a previous session — skip.
-            if (pm.Headers.MessageId != null &&
-                await db.Messages.AnyAsync(m => m.MessageId == pm.Headers.MessageId))
+            // Exception: group-delete must be re-processed if the chat is currently not deleted,
+            // to handle cases where a stale group-create resurrected the chat after the delete.
+            bool isDuplicate = pm.Headers.MessageId != null &&
+                await db.Messages.AnyAsync(m => m.MessageId == pm.Headers.MessageId);
+
+            if (isDuplicate && pm.Headers.SystemType != "group-delete" && pm.Headers.SystemType != "group-create")
             {
-                _fileLogger.Write("INFO", "SaveAsync", $"System message {pm.Headers.SystemType} msgId={pm.Headers.MessageId} already in DB, skipping");
+                _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] System message {pm.Headers.SystemType} msgId={pm.Headers.MessageId} already in DB, skipping");
                 continue;
             }
 
-            _fileLogger.Write("INFO", "SaveAsync", $"Processing system message: type={pm.Headers.SystemType}, msgId={pm.Headers.MessageId}, sender={pm.Sender}, groupId={pm.Headers.GroupId}");
+            // For group-delete, check if the target chat is currently deleted.
+            // If it's not deleted, re-apply the delete to fix resurrection by stale emails.
+            if (isDuplicate && pm.Headers.SystemType == "group-delete")
+            {
+                var deleteGroupId = pm.Headers.GroupId;
+                if (string.IsNullOrEmpty(deleteGroupId) && !string.IsNullOrEmpty(pm.Content))
+                {
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(pm.Content);
+                        deleteGroupId = doc.RootElement.GetProperty("group_id").GetString();
+                    }
+                    catch { }
+                }
+
+                if (!string.IsNullOrEmpty(deleteGroupId))
+                {
+                    var targetChat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == deleteGroupId && c.AccountId == accountId);
+                    if (targetChat != null && targetChat.Deleted)
+                    {
+                        _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] System message group-delete msgId={pm.Headers.MessageId} already in DB and chat is deleted, skipping");
+                        continue;
+                    }
+                    _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] System message group-delete msgId={pm.Headers.MessageId} already in DB but chat is NOT deleted, re-applying delete");
+                }
+            }
+
+            // For group-create, if it's a duplicate but the chat name is still the fallback "Group Chat",
+            // re-process it to update the metadata (name, members, etc.).
+            if (isDuplicate && pm.Headers.SystemType == "group-create")
+            {
+                var createGroupId = pm.Headers.GroupId;
+                if (string.IsNullOrEmpty(createGroupId) && !string.IsNullOrEmpty(pm.Content))
+                {
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(pm.Content);
+                        createGroupId = doc.RootElement.GetProperty("group_id").GetString();
+                    }
+                    catch { }
+                }
+
+                if (!string.IsNullOrEmpty(createGroupId))
+                {
+                    var targetChat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == createGroupId && c.AccountId == accountId);
+                    if (targetChat != null && targetChat.Name != "Group Chat" && !string.IsNullOrEmpty(targetChat.Name))
+                    {
+                        _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] System message group-create msgId={pm.Headers.MessageId} already in DB and chat name is set, skipping");
+                        continue;
+                    }
+                    _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] System message group-create msgId={pm.Headers.MessageId} already in DB but chat name is missing/fallback, re-applying create");
+                }
+            }
+
+            _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] Processing system message: type={pm.Headers.SystemType}, msgId={pm.Headers.MessageId}, sender={pm.Sender}, groupId={pm.Headers.GroupId}");
 
             switch (pm.Headers.SystemType)
             {
                 case "group-create":
-                    await HandleGroupCreateAsync(db, pm, accountId, updatedChats, accountChatIdSet, accountChatIds);
+                    await HandleGroupCreateAsync(db, pm, accountId, accountEmail, updatedChats, accountChatIdSet, accountChatIds);
                     break;
                 case "group-delete":
-                    await HandleGroupDeleteAsync(db, pm, accountId, updatedChats, accountChatIdSet, accountChatIds);
+                    await HandleGroupDeleteAsync(db, pm, accountId, accountEmail, updatedChats, accountChatIdSet, accountChatIds);
                     break;
                 case "group-leave":
-                    await HandleGroupLeaveAsync(db, pm, accountId, updatedChats, accountChatIdSet, accountChatIds);
+                    await HandleGroupLeaveAsync(db, pm, accountId, accountEmail, updatedChats, accountChatIdSet, accountChatIds);
                     break;
                 case "chat-delete":
-                    await HandleChatDeleteAsync(db, pm, accountId, updatedChats, accountChatIdSet, accountChatIds);
+                    await HandleChatDeleteAsync(db, pm, accountId, accountEmail, updatedChats, accountChatIdSet, accountChatIds);
+                    break;
+                case "group-member-add":
+                    await HandleGroupMemberAddAsync(db, pm, accountId, accountEmail, updatedChats);
+                    break;
+                case "group-member-remove":
+                    await HandleGroupMemberRemoveAsync(db, pm, accountId, accountEmail, updatedChats);
                     break;
             }
         }
 
-        _fileLogger.Write("DEBUG", "SaveAsync", $"After system messages: updatedChats=[{string.Join(",", updatedChats)}]");
+        _fileLogger.Write("DEBUG", "SaveAsync", $"[{logAcct}] After system messages: updatedChats=[{string.Join(",", updatedChats)}]");
 
         // ── Handle regular new messages (exclude reactions, edits, deletes, read receipts, system, sync) ──
         foreach (var pm in parsed.Where(m =>
@@ -220,11 +302,11 @@ public class IncomingMessageService
                     !r.Equals(accountEmail, StringComparison.OrdinalIgnoreCase))
                 : pm.Sender;
 
-            _fileLogger.Write("DEBUG", "SaveAsync", $"Msg ROUTING: id={pm.Headers.MessageId}, sender={pm.Sender}, accountEmail={accountEmail}, isSentSync={isSentSync}, chatPartner={chatPartner}, recipients={string.Join(",", pm.Recipients)}");
+            _fileLogger.Write("DEBUG", "SaveAsync", $"[{logAcct}] Msg ROUTING: id={pm.Headers.MessageId}, sender={pm.Sender}, accountEmail={accountEmail}, isSentSync={isSentSync}, chatPartner={chatPartner}, recipients={string.Join(",", pm.Recipients)}");
 
             if (string.IsNullOrEmpty(pm.Headers.GroupId) && string.IsNullOrEmpty(chatPartner))
             {
-                _fileLogger.Write("WARN", "SaveAsync", $"Skipping msg {pm.Headers.MessageId}: no groupId and no chatPartner");
+                _fileLogger.Write("WARN", "SaveAsync", $"[{logAcct}] Skipping msg {pm.Headers.MessageId}: no groupId and no chatPartner");
                 continue; // can't route — skip
             }
 
@@ -241,7 +323,7 @@ public class IncomingMessageService
 
             if (inMemoryDuplicate || alreadyInDb)
             {
-                _fileLogger.Write("INFO", "SaveAsync", $"Duplicate msg {pm.Headers.MessageId}, inMemory={inMemoryDuplicate}, inDb={alreadyInDb}");
+                _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] Duplicate msg {pm.Headers.MessageId}, inMemory={inMemoryDuplicate}, inDb={alreadyInDb}");
                 continue;
             }
 
@@ -255,6 +337,23 @@ public class IncomingMessageService
                         .FirstOrDefaultAsync(c => c.GroupId == pm.Headers.GroupId &&
                                                   c.AccountId == accountId &&
                                                   !c.Deleted);
+
+                    // Check for any deleted tombstone before creating a new chat from a regular message.
+                    // This prevents stale IMAP messages from resurrecting a deleted group.
+                    // Only HandleGroupCreateAsync with a higher version can resurrect the chat.
+                    if (groupChat == null)
+                    {
+                        var tombstone = await db.Chats
+                            .FirstOrDefaultAsync(c => c.GroupId == pm.Headers.GroupId &&
+                                                      c.AccountId == accountId &&
+                                                      c.Deleted);
+                        if (tombstone != null)
+                        {
+                            _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] Deleted tombstone exists for groupId={pm.Headers.GroupId} (version={tombstone.TombstoneVersion}), skipping chat creation for regular message");
+                            continue; // Skip this message entirely — group is deleted
+                        }
+                    }
+
                     if (groupChat == null)
                     {
                         // Group name is only in Chat-Group-Name header (sent on group creation/rename).
@@ -377,7 +476,7 @@ public class IncomingMessageService
                 }
             }
 
-            _fileLogger.Write("INFO", "SaveAsync", $"ADDING msg to chat: id={pm.Headers.MessageId}, chatId={chatId}, sender={pm.Sender}, isSentSync={isSentSync}");
+            _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] ADDING msg to chat: id={pm.Headers.MessageId}, chatId={chatId}, sender={pm.Sender}, isSentSync={isSentSync}");
 
             db.Messages.Add(new ChatMessage
             {
@@ -396,11 +495,11 @@ public class IncomingMessageService
             });
 
             // Save attachments from the received email to disk + DB
-            _fileLogger.Write("DEBUG", "SaveAsync", $"Msg {pm.Headers.MessageId}: attachments={pm.Attachments?.Count ?? 0}");
+            _fileLogger.Write("DEBUG", "SaveAsync", $"[{logAcct}] Msg {pm.Headers.MessageId}: attachments={pm.Attachments?.Count ?? 0}");
             if (pm.Attachments != null && pm.Attachments.Count > 0)
             {
                 var attDir = Path.Combine(_fileLogger.AppDir, "attachments");
-                _fileLogger.Write("DEBUG", "SaveAsync", $"Saving {pm.Attachments.Count} attachment(s) to {attDir}");
+                _fileLogger.Write("DEBUG", "SaveAsync", $"[{logAcct}] Saving {pm.Attachments.Count} attachment(s) to {attDir}");
                 Directory.CreateDirectory(attDir);
                 foreach (var att in pm.Attachments)
                 {
@@ -409,7 +508,6 @@ public class IncomingMessageService
                         var safe = Path.GetFileName(att.FileName); // strip any path component
                         var attPath = Path.Combine(attDir, $"{pm.Headers.MessageId}_{safe}");
                         await File.WriteAllBytesAsync(attPath, att.Data);
-                        var isImage = att.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
                         db.Attachments.Add(new Attachment
                         {
                             Id = Guid.NewGuid().ToString(),
@@ -418,12 +516,11 @@ public class IncomingMessageService
                             ContentType = att.ContentType,
                             Size = att.Size,
                             FilePath = Path.GetFileName(attPath),
-                            IsImage = isImage
                         });
                     }
                     catch (Exception ex)
                     {
-                        _fileLogger.Write("WARN", "SaveAsync", $"Failed to save attachment {att.FileName} for msg {pm.Headers.MessageId}: {ex.Message}");
+                        _fileLogger.Write("WARN", "SaveAsync", $"[{logAcct}] Failed to save attachment {att.FileName} for msg {pm.Headers.MessageId}: {ex.Message}");
                     }
                 }
             }
@@ -467,7 +564,7 @@ public class IncomingMessageService
                 try
                 {
                     await db.SaveChangesAsync();
-                    _fileLogger.Write("INFO", "SaveAsync", $"Saved {updatedChats.Count} chats successfully");
+                    _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] Saved {updatedChats.Count} chats successfully");
                     foreach (var chatId in updatedChats)
                         _chatEvents.NotifyChatUpdated(chatId);
 
@@ -487,14 +584,14 @@ public class IncomingMessageService
                     // UNIQUE constraint means a concurrent call already saved this — no point retrying.
                     if (ex.InnerException is Microsoft.Data.Sqlite.SqliteException { SqliteErrorCode: 19 })
                     {
-                        _fileLogger.Write("INFO", "SaveAsync", "UNIQUE constraint on early attempt — already saved by concurrent call. Treating as success.");
+                        _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] UNIQUE constraint on early attempt — already saved by concurrent call. Treating as success.");
                         db.ChangeTracker.Clear();
                         uniqueConstraintHandled = true;
                         break;
                     }
                     lastEx = ex;
                     var innerMsg = ex.InnerException != null ? $" Inner: {ex.InnerException.Message}" : "";
-                    _fileLogger.Write("WARN", "SaveAsync", $"Save attempt {attempt} failed: {ex.Message}{innerMsg}. Retrying...");
+                    _fileLogger.Write("WARN", "SaveAsync", $"[{logAcct}] Save attempt {attempt} failed: {ex.Message}{innerMsg}. Retrying...");
                     await Task.Delay(100 * attempt);
                     db.ChangeTracker.Clear();
                 }
@@ -509,21 +606,21 @@ public class IncomingMessageService
                         sqliteCode = sqliteEx.SqliteErrorCode;
                         sqlMsg = $" SQLite: {sqliteCode} - {sqliteEx.Message}";
                     }
-                    _fileLogger.Write("ERROR", "SaveAsync", $"Save failed after {attempt} attempts: {ex.Message}{innerMsg}{sqlMsg}");
-                    
+                    _fileLogger.Write("ERROR", "SaveAsync", $"[{logAcct}] Save failed after {attempt} attempts: {ex.Message}{innerMsg}{sqlMsg}");
+
                     if (sqliteCode == 19)
                     {
-                        _fileLogger.Write("INFO", "SaveAsync", "UNIQUE constraint - message likely already saved by another device. Treating as success.");
+                        _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] UNIQUE constraint - message likely already saved by another device. Treating as success.");
                         uniqueConstraintHandled = true;
                         db.ChangeTracker.Clear();
                         break;
                     }
-                    
-                    _fileLogger.Write("ERROR", "IncomingMessageService", $"Failed to save incoming messages batch: {ex.Message}");
+
+                    _fileLogger.Write("ERROR", "IncomingMessageService", $"[{logAcct}] Failed to save incoming messages batch: {ex.Message}");
                     db.ChangeTracker.Clear();
                 }
             }
-            
+
             if (uniqueConstraintHandled)
             {
                 foreach (var chatId in updatedChats)
@@ -548,7 +645,7 @@ public class IncomingMessageService
         }
         else
         {
-            _fileLogger.Write("INFO", "SaveAsync", "No chats to update");
+            _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] No chats to update");
         }
     }
 
@@ -556,13 +653,15 @@ public class IncomingMessageService
         ChatDbContext db,
         ParsedMessage pm,
         string accountId,
+        string? accountEmail,
         HashSet<string> updatedChats,
         HashSet<string> accountChatIdSet,
         List<string> accountChatIds)
     {
+        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
-            _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"ENTERING: accountId={accountId}, sender={pm.Sender}, msgId={pm.Headers.MessageId}, groupId={pm.Headers.GroupId}, contentLength={pm.Content?.Length}");
+            _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] ENTERING: accountId={accountId}, sender={pm.Sender}, msgId={pm.Headers.MessageId}, groupId={pm.Headers.GroupId}, contentLength={pm.Content?.Length}");
 
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
             var root = payload.RootElement;
@@ -580,30 +679,60 @@ public class IncomingMessageService
                 ? aEl.EnumerateArray().Select(e => e.GetString()!).ToList()
                 : new List<string>();
 
-            _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"Parsed: groupId={groupId}, groupName={groupName}, version={version}, " +
+            _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] Parsed: groupId={groupId}, groupName={groupName}, version={version}, " +
                 $"members=[{string.Join(",", members)}], admins=[{string.Join(",", admins)}], " +
                 $"hasPubKey={!string.IsNullOrEmpty(groupPublicKey)}, sender={pm.Sender}");
 
             if (string.IsNullOrEmpty(groupId))
             {
-                _fileLogger.Write("WARN", "HandleGroupCreateAsync", "groupId is empty, returning");
+                _fileLogger.Write("WARN", "HandleGroupCreateAsync", $"[{logAcct}] groupId is empty, returning");
                 return;
             }
 
-            // Check if group chat already exists — skip if deleted (tombstone)
-            var existingChat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == groupId);
-            _fileLogger.Write("DEBUG", "HandleGroupCreateAsync", $"existingChat check: groupId={groupId}, existingChat={(existingChat != null ? "FOUND" : "NULL")}, deleted={existingChat?.Deleted}");
+            // Check if group chat already exists — may be a deleted tombstone
+            var existingChat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == groupId && c.AccountId == accountId);
+            _fileLogger.Write("DEBUG", "HandleGroupCreateAsync", $"[{logAcct}] existingChat check: groupId={groupId}, existingChat={(existingChat != null ? "FOUND" : "NULL")}, deleted={existingChat?.Deleted}");
+
             if (existingChat != null && existingChat.Deleted)
             {
-                _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"Chat is deleted tombstone, returning early for groupId={groupId}");
-                return;
+                // group-delete sets TombstoneVersion to int.MaxValue as a permanent-delete
+                // marker.  No amount of re-invites or higher versions should ever resurrect
+                // a chat that was explicitly deleted for everyone.
+                if (existingChat.TombstoneVersion == int.MaxValue)
+                {
+                    _fileLogger.Write("INFO", "HandleGroupCreateAsync",
+                        $"[{logAcct}] Chat is permanently deleted (group-delete tombstone), refusing resurrection for groupId={groupId}");
+                    return;
+                }
+
+                // Determine the version threshold: only resurrect if the incoming group-create
+                // is STRICTLY NEWER than the event that tombstoned this chat.  This prevents
+                // stale group-create emails (from before the user was removed) from resurrecting
+                // the chat during IMAP sync, while still allowing legitimate re-invites which
+                // carry a higher version.
+                var existingGroupForVersionCheck = await db.Groups.FindAsync(groupId);
+                int currentDbVersion = existingGroupForVersionCheck?.Version ?? 0;
+                int compareAgainst = existingChat.TombstoneVersion ?? currentDbVersion;
+
+                bool imInMembers = !string.IsNullOrEmpty(accountEmail) &&
+                    members.Contains(accountEmail, StringComparer.OrdinalIgnoreCase);
+
+                if (version <= compareAgainst)
+                {
+                    _fileLogger.Write("INFO", "HandleGroupCreateAsync",
+                        $"[{logAcct}] Chat is deleted tombstone and incoming version {version} <= tombstoneVersion {compareAgainst}, skipping resurrection (imInMembers={imInMembers})");
+                    return;
+                }
+
+                _fileLogger.Write("INFO", "HandleGroupCreateAsync",
+                    $"[{logAcct}] Restoring deleted tombstone for groupId={groupId}: incoming version {version} > tombstoneVersion {compareAgainst}, imInMembers={imInMembers}");
             }
 
             // Create chat if it doesn't exist yet (may have been auto-created
             // by a regular message before the group-create system message arrived)
             if (existingChat == null)
             {
-                _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"Creating new Chat for groupId={groupId}");
+                _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] Creating new Chat for groupId={groupId}");
                 var newGroupChat = new Chat
                 {
                     ChatId = Guid.NewGuid().ToString(),
@@ -619,7 +748,7 @@ public class IncomingMessageService
             }
             else
             {
-                _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"Chat exists, updating metadata for groupId={groupId}");
+                _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] Chat exists, updating metadata for groupId={groupId}");
                 // Chat row exists but may be incomplete — ensure metadata is correct
                 if (existingChat.Type != ChatType.Group)
                     existingChat.Type = ChatType.Group;
@@ -629,8 +758,12 @@ public class IncomingMessageService
                 existingChat.LastActivityAt = pm.Headers.Timestamp;
             }
 
-            // Create group state if not already present
+            // Create/update group state.
+            // Use version to guard against stale group-create copies re-adding removed members:
+            // only update the member list when the received version is >= the current DB version.
             var existingGroup = await db.Groups.FindAsync(groupId);
+            bool shouldUpdateMembers = existingGroup == null || version >= existingGroup.Version;
+
             if (existingGroup == null)
             {
                 db.Groups.Add(new ChatGroup
@@ -640,6 +773,10 @@ public class IncomingMessageService
                     Version = version,
                     CreatedAt = DateTimeOffset.UtcNow
                 });
+            }
+            else if (version > existingGroup.Version)
+            {
+                existingGroup.Version = version;
             }
 
             // Store group key pair if provided and not already stored
@@ -664,26 +801,34 @@ public class IncomingMessageService
                 }
             }
 
-            // Add members that aren't already in the group
-            foreach (var email in members)
+            // Add members that aren't already in the group — only if version is current.
+            // A stale group-create (older version) must NOT re-add members that were removed after.
+            if (shouldUpdateMembers)
             {
-                if (string.IsNullOrEmpty(email)) continue;
-                var existingMember = await db.GroupMembers.FindAsync(groupId, email);
-                if (existingMember != null) continue;
-
-                var role = admins.Contains(email, StringComparer.OrdinalIgnoreCase)
-                    ? GroupRole.Admin
-                    : GroupRole.Member;
-
-                db.GroupMembers.Add(new GroupMember
+                foreach (var email in members)
                 {
-                    GroupId = groupId,
-                    MemberEmail = email,
-                    Role = role,
-                    AddedAt = pm.Headers.Timestamp,
-                    AddedBy = pm.Sender,
-                    NameColor = GroupPalette.PickColor(email)
-                });
+                    if (string.IsNullOrEmpty(email)) continue;
+                    var existingMember = await db.GroupMembers.FindAsync(groupId, email);
+                    if (existingMember != null) continue;
+
+                    var role = admins.Contains(email, StringComparer.OrdinalIgnoreCase)
+                        ? GroupRole.Admin
+                        : GroupRole.Member;
+
+                    db.GroupMembers.Add(new GroupMember
+                    {
+                        GroupId = groupId,
+                        MemberEmail = email,
+                        Role = role,
+                        AddedAt = pm.Headers.Timestamp,
+                        AddedBy = pm.Sender,
+                        NameColor = GroupPalette.PickColor(email)
+                    });
+                }
+            }
+            else
+            {
+                _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] Skipping member update: received version {version} < current DB version {existingGroup!.Version}");
             }
 
             // Add system message — use stable ID based on groupId so that multiple group-create
@@ -697,10 +842,11 @@ public class IncomingMessageService
                     MessageId = stableSystemMsgId,
                     ChatId = existingChat.ChatId,
                     Sender = pm.Sender,
-                    Content = $"Группа \"{groupName}\" создана",
+                    Content = $"Group \"{groupName}\" created",
                     Timestamp = pm.Headers.Timestamp,
                     DisplayTimestamp = pm.Headers.Timestamp,
                     ReceivedAt = DateTimeOffset.UtcNow,
+                    IsSystem = true,
                     Status = MessageStatus.Sent
                 });
             }
@@ -709,14 +855,13 @@ public class IncomingMessageService
             accountChatIds.Add(existingChat.ChatId);
             updatedChats.Add(existingChat.ChatId);
 
-            _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"SUCCESS: groupId={groupId} added to updatedChats. " +
+            _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] SUCCESS: groupId={groupId} added to updatedChats. " +
                 $"updatedChats now contains [{string.Join(",", updatedChats)}]");
-            _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"SUCCESS: group {groupId} ({groupName}) created");
+            _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] SUCCESS: group {groupId} ({groupName}) created");
         }
         catch (Exception ex)
         {
-            _fileLogger.Write("ERROR", "HandleGroupCreateAsync", $"EXCEPTION: {ex.Message}\n{ex.StackTrace}");
-            _fileLogger.Write("ERROR", "HandleGroupCreateAsync", $"EXCEPTION: {ex.Message}\n{ex.StackTrace}");
+            _fileLogger.Write("ERROR", "HandleGroupCreateAsync", $"[{logAcct}] EXCEPTION: {ex.Message}\n{ex.StackTrace}");
         }
     }
 
@@ -724,10 +869,12 @@ public class IncomingMessageService
         ChatDbContext db,
         ParsedMessage pm,
         string accountId,
+        string? accountEmail,
         HashSet<string> updatedChats,
         HashSet<string> accountChatIdSet,
         List<string> accountChatIds)
     {
+        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
@@ -737,39 +884,68 @@ public class IncomingMessageService
 
             if (string.IsNullOrEmpty(groupId)) return;
 
-            var chat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == groupId);
-            if (chat == null) return;
+            var chat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == groupId && c.AccountId == accountId);
+            if (chat == null)
+            {
+                // group-delete arrived before group-create (IMAP ordering race).
+                // Create a permanent tombstone so future group-create messages are refused.
+                chat = new Chat
+                {
+                    ChatId = Guid.NewGuid().ToString(),
+                    Type = ChatType.Group,
+                    GroupId = groupId,
+                    Name = "Deleted Group",
+                    AccountId = accountId,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    LastActivityAt = pm.Headers.Timestamp,
+                    Deleted = true,
+                    TombstoneVersion = int.MaxValue
+                };
+                db.Chats.Add(chat);
+                _fileLogger.Write("INFO", "HandleGroupDeleteAsync", $"[{logAcct}] Chat not found for group-delete, created permanent tombstone for groupId={groupId}");
+                return;
+            }
 
             if (!chat.Deleted)
             {
                 chat.Deleted = true;
+                // Mark as permanently deleted — no future group-create (regardless of version)
+                // should ever resurrect this chat.  int.MaxValue acts as an unbreachable ceiling.
+                chat.TombstoneVersion = int.MaxValue;
                 chat.LastActivityAt = pm.Headers.Timestamp;
                 updatedChats.Add(chat.ChatId);
             }
+
+            // Clean up group membership on receiver's side
+            var membersToRemove = await db.GroupMembers
+                .Where(m => m.GroupId == groupId)
+                .ToListAsync();
+            db.GroupMembers.RemoveRange(membersToRemove);
 
             // Always store the system message so the dedup check works on subsequent syncs,
             // even if the chat was already marked deleted (e.g. by the local UI action).
             if (pm.Headers.MessageId != null &&
                 !await db.Messages.AnyAsync(m => m.MessageId == pm.Headers.MessageId))
             {
-            db.Messages.Add(new ChatMessage
+                db.Messages.Add(new ChatMessage
                 {
                     MessageId = pm.Headers.MessageId,
                     ChatId = chat.ChatId,
                     Sender = deletedBy ?? pm.Sender,
-                    Content = $"Группа \"{chat.Name}\" удалена администратором",
+                    Content = $"Group \"{chat.Name}\" deleted by admin",
                     Timestamp = pm.Headers.Timestamp,
                     DisplayTimestamp = pm.Headers.Timestamp,
                     ReceivedAt = DateTimeOffset.UtcNow,
+                    IsSystem = true,
                     Status = MessageStatus.Sent
                 });
             }
 
-            _fileLogger.Write("INFO", "IncomingMessageService", $"Group {groupId} deleted by {deletedBy}");
+            _fileLogger.Write("INFO", "HandleGroupDeleteAsync", $"[{logAcct}] Group {groupId} deleted by {deletedBy}");
         }
         catch (Exception ex)
         {
-            _fileLogger.Write("ERROR", "IncomingMessageService", $"Failed to handle group-delete: {ex.Message}");
+            _fileLogger.Write("ERROR", "HandleGroupDeleteAsync", $"[{logAcct}] Failed to handle group-delete: {ex.Message}");
         }
     }
 
@@ -777,10 +953,12 @@ public class IncomingMessageService
         ChatDbContext db,
         ParsedMessage pm,
         string accountId,
+        string? accountEmail,
         HashSet<string> updatedChats,
         HashSet<string> accountChatIdSet,
         List<string> accountChatIds)
     {
+        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
@@ -800,24 +978,192 @@ public class IncomingMessageService
                 db.GroupMembers.Remove(member);
             }
 
+            var leavingContact = leavingEmail != null ? await db.Contacts.FindAsync(leavingEmail) : null;
+            var leavingName = leavingContact?.DisplayName ?? leavingEmail?.Split('@')[0] ?? "Member";
+
             db.Messages.Add(new ChatMessage
             {
                 MessageId = pm.Headers.MessageId ?? Guid.NewGuid().ToString(),
                 ChatId = chat.ChatId,
                 Sender = leavingEmail ?? pm.Sender,
-                Content = $"{leavingEmail?.Split('@')[0] ?? "Участник"} покинул(а) группу",
+                Content = $"{leavingName} left the group",
                 Timestamp = pm.Headers.Timestamp,
                 DisplayTimestamp = pm.Headers.Timestamp,
                 ReceivedAt = DateTimeOffset.UtcNow,
+                IsSystem = true,
                 Status = MessageStatus.Sent
             });
 
             updatedChats.Add(chat.ChatId);
-            _fileLogger.Write("INFO", "IncomingMessageService", $"Member {leavingEmail} left group {groupId}");
+            _fileLogger.Write("INFO", "HandleGroupLeaveAsync", $"[{logAcct}] Member {leavingEmail} left group {groupId}");
         }
         catch (Exception ex)
         {
-            _fileLogger.Write("ERROR", "IncomingMessageService", $"Failed to handle group-leave: {ex.Message}");
+            _fileLogger.Write("ERROR", "HandleGroupLeaveAsync", $"[{logAcct}] Failed to handle group-leave: {ex.Message}");
+        }
+    }
+
+    private async Task HandleGroupMemberAddAsync(
+        ChatDbContext db,
+        ParsedMessage pm,
+        string accountId,
+        string? accountEmail,
+        HashSet<string> updatedChats)
+    {
+        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        try
+        {
+            var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
+            var root = payload.RootElement;
+            var groupId = root.GetProperty("group_id").GetString() ?? pm.Headers.GroupId;
+            var addedEmail = root.TryGetProperty("added_email", out var aEl) ? aEl.GetString() : null;
+            var addedBy = root.TryGetProperty("added_by", out var bEl) ? bEl.GetString() : pm.Sender;
+
+            if (string.IsNullOrEmpty(groupId) || string.IsNullOrEmpty(addedEmail)) return;
+
+            var chat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == groupId && c.AccountId == accountId);
+            if (chat == null) return;
+
+            // If the added member is the current user and the chat was previously deleted
+            // (tombstoned after a group-member-remove), resurrect it — they've been re-invited.
+            // BUT never resurrect a permanently deleted chat (group-delete → TombstoneVersion=int.MaxValue).
+            if (chat.Deleted && addedEmail.Equals(accountEmail, StringComparison.OrdinalIgnoreCase))
+            {
+                if (chat.TombstoneVersion == int.MaxValue)
+                {
+                    _fileLogger.Write("INFO", "HandleGroupMemberAddAsync",
+                        $"[{logAcct}] Refusing resurrection: groupId={groupId} is permanently deleted (group-delete)");
+                    return;
+                }
+                chat.Deleted = false;
+                chat.TombstoneVersion = null;
+                chat.LastActivityAt = pm.Headers.Timestamp;
+                _fileLogger.Write("INFO", "HandleGroupMemberAddAsync",
+                    $"[{logAcct}] Resurrected tombstoned chat for groupId={groupId} — current user re-added");
+            }
+
+            if (chat.Deleted) return;
+
+            var existing = await db.GroupMembers.FindAsync(groupId, addedEmail);
+            if (existing == null)
+            {
+                db.GroupMembers.Add(new GroupMember
+                {
+                    GroupId = groupId,
+                    MemberEmail = addedEmail,
+                    Role = GroupRole.Member,
+                    AddedAt = pm.Headers.Timestamp,
+                    AddedBy = addedBy
+                });
+            }
+
+            // If I'm the one who added this member, ChatInfoModal already created a local system
+            // message. Skip creating a duplicate here — this is just the self-CC copy arriving back.
+            bool iSentThis = !string.IsNullOrEmpty(accountEmail) &&
+                addedBy?.Equals(accountEmail, StringComparison.OrdinalIgnoreCase) == true;
+
+            if (!iSentThis)
+            {
+                var addedContact = await db.Contacts.FindAsync(addedEmail);
+                var addedName = addedContact?.DisplayName ?? addedEmail.Split('@')[0];
+                var addedByContact = addedBy != null ? await db.Contacts.FindAsync(addedBy) : null;
+                var addedByName = addedByContact?.DisplayName ?? addedBy?.Split('@')[0] ?? "Admin";
+
+                db.Messages.Add(new ChatMessage
+                {
+                    MessageId = pm.Headers.MessageId ?? Guid.NewGuid().ToString(),
+                    ChatId = chat.ChatId,
+                    Sender = addedBy ?? pm.Sender,
+                    Content = $"{addedName} was added to the group by {addedByName}",
+                    Timestamp = pm.Headers.Timestamp,
+                    DisplayTimestamp = pm.Headers.Timestamp,
+                    ReceivedAt = DateTimeOffset.UtcNow,
+                    IsSystem = true,
+                    Status = MessageStatus.Sent
+                });
+            }
+
+            updatedChats.Add(chat.ChatId);
+            _fileLogger.Write("INFO", "HandleGroupMemberAddAsync", $"[{logAcct}] Member {addedEmail} added to group {groupId} by {addedBy} (iSentThis={iSentThis})");
+        }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("ERROR", "HandleGroupMemberAddAsync", $"[{logAcct}] Failed to handle group-member-add: {ex.Message}");
+        }
+    }
+
+    private async Task HandleGroupMemberRemoveAsync(
+        ChatDbContext db,
+        ParsedMessage pm,
+        string accountId,
+        string? accountEmail,
+        HashSet<string> updatedChats)
+    {
+        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        try
+        {
+            var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
+            var root = payload.RootElement;
+            var groupId = root.GetProperty("group_id").GetString() ?? pm.Headers.GroupId;
+            var removedEmail = root.TryGetProperty("removed_email", out var rEl) ? rEl.GetString() : null;
+            var removedBy = root.TryGetProperty("removed_by", out var bEl) ? bEl.GetString() : pm.Sender;
+
+            if (string.IsNullOrEmpty(groupId) || string.IsNullOrEmpty(removedEmail)) return;
+
+            var chat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == groupId && c.AccountId == accountId && !c.Deleted);
+            if (chat == null) return;
+
+            // If I'm the removed member — mark chat as deleted
+            if (removedEmail.Equals(accountEmail, StringComparison.OrdinalIgnoreCase))
+            {
+                chat.Deleted = true;
+                // Record the shared ChatGroup.Version at the moment of tombstoning so that
+                // HandleGroupCreateAsync can compare incoming version > TombstoneVersion (not
+                // against the current DB version, which keeps incrementing with each admin op).
+                var groupForVersion = await db.Groups.FindAsync(groupId);
+                chat.TombstoneVersion = groupForVersion?.Version ?? 0;
+                _fileLogger.Write("INFO", "HandleGroupMemberRemoveAsync",
+                    $"[{logAcct}] I was removed from group {groupId}; tombstoneVersion={chat.TombstoneVersion}");
+                var selfMember = await db.GroupMembers.FindAsync(groupId, removedEmail);
+                if (selfMember != null) db.GroupMembers.Remove(selfMember);
+                updatedChats.Add(chat.ChatId);
+                return;
+            }
+
+            // Otherwise remove that member from my local list
+            var member = await db.GroupMembers.FindAsync(groupId, removedEmail);
+            if (member != null) db.GroupMembers.Remove(member);
+
+            // If I'm the one who removed the member, ChatInfoModal already created a local system
+            // message. Skip creating a duplicate here — this is just the self-CC copy arriving back.
+            bool iSentThis = !string.IsNullOrEmpty(accountEmail) &&
+                removedBy?.Equals(accountEmail, StringComparison.OrdinalIgnoreCase) == true;
+
+            if (!iSentThis)
+            {
+                var removedContact = await db.Contacts.FindAsync(removedEmail);
+                var removedName = removedContact?.DisplayName ?? removedEmail.Split('@')[0];
+
+                db.Messages.Add(new ChatMessage
+                {
+                    MessageId = pm.Headers.MessageId ?? Guid.NewGuid().ToString(),
+                    ChatId = chat.ChatId,
+                    Sender = removedBy ?? pm.Sender,
+                    Content = $"{removedName} was removed from the group",
+                    Timestamp = pm.Headers.Timestamp,
+                    DisplayTimestamp = pm.Headers.Timestamp,
+                    ReceivedAt = DateTimeOffset.UtcNow,
+                    IsSystem = true,
+                    Status = MessageStatus.Sent
+                });
+            }
+
+            updatedChats.Add(chat.ChatId);
+            _fileLogger.Write("INFO", "HandleGroupMemberRemoveAsync", $"[{logAcct}] Member {removedEmail} removed from group {groupId} by {removedBy} (iSentThis={iSentThis})");
+        }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("ERROR", "HandleGroupMemberRemoveAsync", $"[{logAcct}] Failed to handle group-member-remove: {ex.Message}");
         }
     }
 
@@ -825,10 +1171,12 @@ public class IncomingMessageService
         ChatDbContext db,
         ParsedMessage pm,
         string accountId,
+        string? accountEmail,
         HashSet<string> updatedChats,
         HashSet<string> accountChatIdSet,
         List<string> accountChatIds)
     {
+        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
@@ -836,10 +1184,15 @@ public class IncomingMessageService
             var chatId = root.GetProperty("chat_id").GetString() ?? pm.Headers.GroupId;
             var deletedBy = root.TryGetProperty("deleted_by", out var dEl) ? dEl.GetString() : pm.Sender;
 
-            if (string.IsNullOrEmpty(chatId)) return;
-
-            var chat = await db.Chats.FindAsync(chatId);
-            if (chat == null || chat.Deleted) return;
+            // chat_id in the payload is the sender's local ChatId — useless on the receiver's
+            // device. Find the 1:1 chat by the sender's email instead.
+            var senderEmail = deletedBy ?? pm.Sender;
+            var chat = await db.Chats.FirstOrDefaultAsync(c =>
+                c.AccountId == accountId &&
+                c.Type == ChatType.OneToOne &&
+                c.ContactEmail == senderEmail &&
+                !c.Deleted);
+            if (chat == null) return;
 
             chat.Deleted = true;
             chat.LastActivityAt = pm.Headers.Timestamp;
@@ -847,21 +1200,22 @@ public class IncomingMessageService
             db.Messages.Add(new ChatMessage
             {
                 MessageId = pm.Headers.MessageId ?? Guid.NewGuid().ToString(),
-                ChatId = chatId,
-                Sender = deletedBy ?? pm.Sender,
-                Content = "Чат удалён",
+                ChatId = chat.ChatId,
+                Sender = senderEmail,
+                Content = "Chat deleted by the other side",
                 Timestamp = pm.Headers.Timestamp,
                 DisplayTimestamp = pm.Headers.Timestamp,
                 ReceivedAt = DateTimeOffset.UtcNow,
+                IsSystem = true,
                 Status = MessageStatus.Sent
             });
 
-            updatedChats.Add(chatId);
-            _fileLogger.Write("INFO", "IncomingMessageService", $"Chat {chatId} deleted by {deletedBy}");
+            updatedChats.Add(chat.ChatId);
+            _fileLogger.Write("INFO", "HandleChatDeleteAsync", $"[{logAcct}] Chat {chatId} deleted by {deletedBy}");
         }
         catch (Exception ex)
         {
-            _fileLogger.Write("ERROR", "IncomingMessageService", $"Failed to handle chat-delete: {ex.Message}");
+            _fileLogger.Write("ERROR", "HandleChatDeleteAsync", $"[{logAcct}] Failed to handle chat-delete: {ex.Message}");
         }
     }
 }

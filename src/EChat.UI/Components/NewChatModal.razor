@@ -19,8 +19,8 @@
 
 @if (IsVisible)
 {
-    <div class="nc-overlay" @onclick="HandleClose">
-        <div class="new-chat-modal" @onclick:stopPropagation>
+    <div class="nc-overlay" @onclick="HandleClose" @onkeydown="OnOverlayKeyDown" tabindex="-1">
+        <div class="new-chat-modal" @onclick:stopPropagation @onkeydown:stopPropagation="false">
 
             <!-- Tabs -->
             <div class="new-chat-modal-header">
@@ -58,10 +58,6 @@
                             @(copied == "link" ? "✓ Copied!" : "Copy invite link")
                         </button>
                     </div>
-
-                    <p class="invite-note">
-                        Scan the QR code or share the link — it includes your public key so your contact can write to you with encryption from the first message.
-                    </p>
                 </div>
             }
 

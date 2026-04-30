@@ -1,0 +1,24 @@
+/* ═══ dark-theme.css ═══ Dark theme overrides via [data-theme="dark"] */
+
+[data-theme="dark"] {
+    --primary: #60a5fa;
+    --primary-dark: #3b82f6;
+    --accent: #93c5fd;
+    --background: #111827;
+    --surface: #0f172a;
+    --text-primary: #e5e7eb;
+    --text-secondary: #9ca3af;
+    --text-muted: #6b7280;
+    --divider: #1f2937;
+    --border: #374151;
+    --success: #34d399;
+    --warning: #fbbf24;
+    --error: #f87171;
+    --surface-variant: #1e293b;
+    --message-sent: #1e3a5f;
+    --message-received: #1f2937;
+    --left-panel-bg: #0f172a;
+    --left-header-bg: #1e3a5f;
+    --right-header-bg: #0f172a;
+    --shadow: rgba(0, 0, 0, 0.4);
+}

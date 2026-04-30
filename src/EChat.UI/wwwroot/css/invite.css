@@ -1,0 +1,137 @@
+/* ═══ invite.css ═══ Invite UI elements: QR code, invite code/link, add contact */
+
+/* ══════════════════════════════════════════════════════════════
+   Invite UI elements
+   ══════════════════════════════════════════════════════════════ */
+
+/* QR code box */
+.invite-qr-box {
+    display: flex;
+    justify-content: center;
+    padding: 4px 0;
+}
+
+.invite-qr-box svg {
+    width: 180px;
+    height: 180px;
+    border-radius: 4px;
+    border: 6px solid white;
+    box-shadow: 0 2px 8px var(--shadow);
+    display: block;
+}
+
+/* Invite code row */
+.invite-code-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--divider);
+    border-radius: 4px;
+    padding: 10px 14px;
+}
+
+.invite-code-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.invite-code {
+    flex: 1;
+    font-family: "Courier New", Consolas, monospace;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--text-primary);
+    text-align: center;
+}
+
+/* Invite link row */
+.invite-link-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--divider);
+    border-radius: 4px;
+    padding: 8px 12px;
+}
+
+.invite-link-text {
+    flex: 1;
+    font-size: 11px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: "Courier New", Consolas, monospace;
+}
+
+.invite-copy-btn {
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s;
+    white-space: nowrap;
+}
+
+.invite-copy-btn:hover {
+    background: var(--primary-dark);
+}
+
+.invite-copy-primary {
+    width: 100%;
+    padding: 10px 0;
+    font-size: 15px;
+    border-radius: 4px;
+    justify-content: center;
+}
+
+.invite-link-row {
+    margin: 8px 0;
+}
+
+.invite-note {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* Add Contact tab elements */
+.invite-field-hint {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin: 2px 0 0;
+}
+
+.invite-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.invite-divider::before,
+.invite-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--divider);
+}
+
+.contact-verified {
+    font-size: 11px;
+    color: var(--primary);
+    
+}

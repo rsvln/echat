@@ -86,15 +86,21 @@ _ = Task.Run(async () =>
     await syncEngine.LoadSettingsAsync(account.AccountId);
 
     var transport = app.Services.GetRequiredService<EmailTransportService>();
-    var incomingMessages = app.Services.GetRequiredService<IncomingMessageService>();
+    var batchProcessor = app.Services.GetRequiredService<BatchSyncProcessor>();
     var accountConfig = app.Services.GetRequiredService<AccountConfig>();
     var multiImap = app.Services.GetRequiredService<MultiAccountImapManager>();
 
-    transport.MessagesReceived += async messages =>
-        await incomingMessages.SaveAsync(accountConfig.AccountId, messages);
+    transport.MessagesReceived += messages =>
+    {
+        batchProcessor.Queue(accountConfig.AccountId, messages);
+        return Task.CompletedTask;
+    };
 
-    multiImap.MessagesReceived += async (accountId, messages) =>
-        await incomingMessages.SaveAsync(accountId, messages);
+    multiImap.MessagesReceived += (accountId, messages) =>
+    {
+        batchProcessor.Queue(accountId, messages);
+        return Task.CompletedTask;
+    };
 
     try { await transport.ReconnectAsync(account, resolvedDeviceId); }
     catch (Exception ex)

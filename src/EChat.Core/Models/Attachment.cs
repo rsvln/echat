@@ -12,7 +12,6 @@ public class Attachment
     public long Size { get; set; }
     public string? FilePath { get; set; }
     public string? Caption { get; set; }
-    public bool IsImage { get; set; }
     public int? Width { get; set; }
     public int? Height { get; set; }
 }

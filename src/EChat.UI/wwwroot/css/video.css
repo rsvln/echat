@@ -1,0 +1,57 @@
+/* ── Video attachments ── */
+
+.message-attachment-video {
+    display: block;
+    max-width: 320px;
+    width: 100%;
+    height: auto;
+    background: #000;
+    border-radius: 8px;
+}
+
+.message-attachment-video-fallback {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px;
+    background: var(--surface-variant);
+    color: var(--text-secondary);
+}
+
+.message-attachment-video-fallback svg {
+    opacity: 0.5;
+}
+
+.message-attachment-video-fallback span {
+    font-size: 12px;
+    text-align: center;
+    word-break: break-all;
+}
+
+.message-attachment-video-actions {
+    display: flex;
+    gap: 4px;
+    padding: 6px 8px;
+    background: var(--surface);
+    border-top: 1px solid var(--divider);
+}
+
+.attachment-action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: var(--surface-variant);
+    color: var(--text-primary);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.attachment-action-btn:hover {
+    background: var(--surface-hover, rgba(128,128,128,0.15));
+}

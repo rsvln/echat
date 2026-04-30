@@ -24,6 +24,7 @@ public class ChatMessage
     public bool IsEdited { get; set; }
     public int EditVersion { get; set; }
     public bool ClockSkewDetected { get; set; }
+    public bool IsSystem { get; set; }
     public MessageStatus Status { get; set; } = MessageStatus.Sent;
 
     /// <summary>IMAP UID of the source email — used to delete the email from the server when the chat is deleted.</summary>

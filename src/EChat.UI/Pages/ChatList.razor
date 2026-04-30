@@ -245,7 +245,7 @@
                                 @(contactNames.GetValueOrDefault(replyingToMessage.Sender, replyingToMessage.Sender.Split('@')[0]))
                             </div>
                             <div style="color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:400px;">
-                                @(replyingToMessage.Content.Length > 60 ? replyingToMessage.Content[..60] + "…" : replyingToMessage.Content)
+                                @FormatContentWithLinks(replyingToMessage.Content.Length > 60 ? replyingToMessage.Content[..60] + "…" : replyingToMessage.Content)
                             </div>
                         </div>
                         <button style="background:none;border:none;cursor:pointer;font-size:16px;color:#888;"
@@ -305,7 +305,7 @@
                         @foreach (var att in pendingAttachments)
                         {
                             <div class="attachment-preview-item">
-                                @if (att.IsImage)
+                                @if (att.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
                                 {
                                     <img class="attachment-preview-img" src="@att.DataUrl" alt="@att.FileName" />
                                 }

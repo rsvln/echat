@@ -57,7 +57,11 @@ public class PgpService
         {
             try
             {
-                streams.Add(new MemoryStream(Convert.FromBase64String(k)));
+                var keyBytes = Convert.FromBase64String(k);
+                if (keyBytes.Length == 0)
+                    throw new FormatException("Empty key data");
+                _fileLogger.Write("DEBUG", "PgpService", $"Key loaded: length={keyBytes.Length}, firstByte=0x{keyBytes[0]:X2}");
+                streams.Add(new MemoryStream(keyBytes));
             }
             catch (FormatException ex)
             {
@@ -68,6 +72,7 @@ public class PgpService
         if (streams.Count == 0)
             throw new ArgumentException("No valid public keys after filtering", nameof(publicKeyBase64s));
 
+        _fileLogger.Write("DEBUG", "PgpService", $"Creating EncryptionKeys with {streams.Count} stream(s)");
         var encryptionKeys = new EncryptionKeys(streams);
         using var pgp = new PGP(encryptionKeys);
 

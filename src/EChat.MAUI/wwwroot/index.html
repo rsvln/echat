@@ -6,257 +6,28 @@
     <title>εChat</title>
     <base href="/" />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-    <link href="css/app.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/variables.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/dark-theme.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/desktop.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/mobile.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/message-bubble.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/modal.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/new-chat.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/invite.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/settings.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/input.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/attachments.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/video.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/lightbox.css" rel="stylesheet" />
+    <link href="_content/EChat.UI/css/scrollbar.css" rel="stylesheet" />
+    <link href="css/maui-overrides.css" rel="stylesheet" />
 </head>
 <body>
     <div id="app">Loading...</div>
-    <script>
-        // MAUI .NET 10 Android: window.external.receiveMessage может быть
-        // не готов в момент загрузки страницы (race condition в ConnectHandler).
-        // Ждём готовности бриджа перед загрузкой blazor.webview.js,
-        // чтобы избежать двойного старта ("Blazor has already started").
-        (function () {
-            var loaded = false;
-            function loadBlazor() {
-                if (loaded) return;
-                loaded = true;
-                var s = document.createElement('script');
-                s.src = '_framework/blazor.webview.js';
-                document.head.appendChild(s);
-            }
-            function waitForBridge(attempt) {
-                if (window.external && typeof window.external.receiveMessage === 'function') {
-                    loadBlazor();
-                } else if (attempt < 200) { // max 10s
-                    setTimeout(function () { waitForBridge(attempt + 1); }, 50);
-                } else {
-                    loadBlazor(); // fallback: грузим как есть
-                }
-            }
-            waitForBridge(0);
-        })();
-    </script>
-    <script>
-        // @ts-nocheck
-        window.getSelectedText = function() { return window.getSelection()?.toString() ?? ''; };
-        window.positionMenu = function(id, x, y) {
-            var el = document.getElementById(id);
-            if (!el) return;
-            var vw = window.innerWidth, vh = window.innerHeight;
-            var w = el.offsetWidth || 220, h = el.offsetHeight || 100;
-            var left = x + w + 8 > vw ? vw - w - 8 : x;
-            var top  = y + h + 8 > vh ? vh - h - 8 : y;
-            if (left < 8) left = 8;
-            if (top  < 8) top  = 8;
-            el.style.left = left + 'px';
-            el.style.top  = top  + 'px';
-            el.style.visibility = 'visible';
-        };
-        window.copyToClipboard = function(text) { navigator.clipboard.writeText(text); };
-        (function() {
-            var isDark = localStorage.getItem('darkMode') === 'true';
-            if (isDark) {
-                document.documentElement.setAttribute('data-theme', 'dark');
-            }
-        })();
-        window.applyDarkThemeFromBlazor = function(isDark) {
-            if (isDark) {
-                document.documentElement.setAttribute('data-theme', 'dark');
-                localStorage.setItem('darkMode', 'true');
-            } else {
-                document.documentElement.removeAttribute('data-theme');
-                localStorage.setItem('darkMode', 'false');
-            }
-        };
-        window._textareaSetup = false;
-        window.setupTextareaResize = function() {
-            if (window._textareaSetup) return;
-            var t = document.getElementById('messageInput');
-            if (!t) return;
-            window._textareaSetup = true;
-            // Native input listener - fires on every keystroke including Enter
-            t.addEventListener('input', function() {
-                this.style.height = '1px';
-                void this.offsetHeight; // force reflow
-                var sh = this.scrollHeight;
-                var maxH = 12 * 21;
-                var newH = Math.max(44, Math.min(sh, maxH));
-                this.style.height = newH + 'px';
-                this.style.overflowY = sh > maxH ? 'auto' : 'hidden';
-            });
-        };
-        window.autoResizeTextarea = function() {
-            window.setupTextareaResize();
-            var t = document.getElementById('messageInput');
-            if (t) {
-                t.style.height = '1px';
-                void t.offsetHeight;
-                var sh = t.scrollHeight;
-                var maxH = 12 * 21;
-                var newH = Math.max(44, Math.min(sh, maxH));
-                t.style.height = newH + 'px';
-                t.style.overflowY = sh > maxH ? 'auto' : 'hidden';
-            }
-        };
-        window.resetTextareaHeight = function() {
-            var t = document.getElementById('messageInput');
-            if (t) {
-                t.style.height = '44px';
-                t.style.overflowY = 'hidden';
-            }
-        };
-        // Uncontrolled textarea helpers — Blazor does NOT own the textarea value;
-        // these functions let C# read/write it without going through value="@binding".
-        window.getMessageInputValue = function() {
-            var t = document.getElementById('messageInput');
-            return t ? t.value : '';
-        };
-        window.clearMessageInput = function() {
-            var t = document.getElementById('messageInput');
-            if (!t) return;
-            t.value = '';
-            t.style.height = '44px';
-            t.style.overflowY = 'hidden';
-        };
-        window.setMessageInputValue = function(text) {
-            var t = document.getElementById('messageInput');
-            if (!t) return;
-            t.value = text;
-            t.style.height = 'auto';
-            var sh = t.scrollHeight;
-            var maxH = 12 * 21;
-            t.style.height = Math.max(44, Math.min(sh, maxH)) + 'px';
-            t.style.overflowY = sh > maxH ? 'auto' : 'hidden';
-        };
-        window.handleMessageInputKey = function(sendOnEnter) {
-            var event = window.event || arguments.callee.caller.arguments[0];
-            if (event.key === 'Enter') {
-                if (event.shiftKey || (!sendOnEnter && !event.ctrlKey) || (sendOnEnter && event.ctrlKey)) {
-                    return null;
-                }
-                event.preventDefault();
-                var t = document.getElementById('messageInput');
-                var text = t ? t.value : '';
-                if (t) { t.value = ''; t.style.height = '44px'; t.style.overflowY = 'hidden'; }
-                return text;
-            }
-            return null;
-        };
-        window.getChatScrollTop = function() {
-            var el = document.querySelector('.messages-container');
-            return el ? el.scrollTop : 0;
-        };
-        window.setChatScrollTop = function(pos) {
-            requestAnimationFrame(function() {
-                var el = document.querySelector('.messages-container');
-                if (el) el.scrollTop = pos;
-            });
-        };
-        window.scrollChatToBottom = function() {
-            requestAnimationFrame(function() {
-                var el = document.querySelector('.messages-container');
-                if (el) el.scrollTop = el.scrollHeight;
-            });
-        };
-        window.isChatAtBottom = function() {
-            var el = document.querySelector('.messages-container');
-            if (!el) return true;
-            return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-        };
-        // ── Lightbox pinch-zoom + pan ──────────────────────────────────
-        window.initLightboxZoom = function() {
-            var img = document.getElementById('echat-lightbox-img');
-            if (!img || img._lbInit) return;
-            img._lbInit = true;
-            var scale = 1, panX = 0, panY = 0;
-            var lastDist = 0, startPanX = 0, startPanY = 0, startTouchX = 0, startTouchY = 0;
-            var lastTap = 0;
-            function dist(t) {
-                var dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
-                return Math.sqrt(dx*dx + dy*dy);
-            }
-            function apply() {
-                img.style.transform = 'translate('+panX+'px,'+panY+'px) scale('+scale+')';
-                img.style.maxWidth  = scale > 1 ? 'none' : '';
-                img.style.maxHeight = scale > 1 ? 'none' : '';
-                img.style.cursor    = scale > 1 ? 'grab' : 'default';
-            }
-            img.addEventListener('touchstart', function(e) {
-                if (e.touches.length === 2) {
-                    lastDist = dist(e.touches);
-                } else if (e.touches.length === 1) {
-                    var now = Date.now();
-                    if (now - lastTap < 300) {
-                        // double-tap: toggle zoom
-                        if (scale > 1) { scale = 1; panX = 0; panY = 0; }
-                        else { scale = 2.5; panX = 0; panY = 0; }
-                        apply();
-                        lastTap = 0;
-                        return;
-                    }
-                    lastTap = now;
-                    if (scale > 1) {
-                        startTouchX = e.touches[0].clientX; startTouchY = e.touches[0].clientY;
-                        startPanX = panX; startPanY = panY;
-                    }
-                }
-            }, { passive: true });
-            img.addEventListener('touchmove', function(e) {
-                e.stopPropagation();
-                if (e.touches.length === 2) {
-                    e.preventDefault();
-                    var d = dist(e.touches);
-                    scale = Math.min(Math.max(scale * (d / lastDist), 1), 6);
-                    lastDist = d;
-                    apply();
-                } else if (e.touches.length === 1 && scale > 1) {
-                    e.preventDefault();
-                    panX = startPanX + (e.touches[0].clientX - startTouchX);
-                    panY = startPanY + (e.touches[0].clientY - startTouchY);
-                    apply();
-                }
-            }, { passive: false });
-            img.addEventListener('touchend', function(e) {
-                if (e.touches.length === 0 && scale < 1.05) {
-                    scale = 1; panX = 0; panY = 0; apply();
-                }
-            }, { passive: true });
-            img._lbReset = function() {
-                scale = 1; panX = 0; panY = 0; img._lbInit = false; apply();
-            };
-        };
-        window.resetLightboxZoom = function() {
-            var img = document.getElementById('echat-lightbox-img');
-            if (img && img._lbReset) { img._lbReset(); return true; }
-            return false;
-        };
-        window.isLightboxZoomed = function() {
-            var img = document.getElementById('echat-lightbox-img');
-            if (!img || !img._lbInit) return false;
-            var t = img.style.transform;
-            return t && t !== '' && t !== 'translate(0px,0px) scale(1)';
-        };
-    </script>
-<script>
-        window.closeAttachMenu = function() {
-            // Will be overridden by Blazor
-        };
-        window.closeEmojiPicker = function() {
-            // Will be overridden by Blazor
-        };
-        document.addEventListener('click', function(e) {
-            var attachWrap = document.querySelector('.attach-wrap');
-            if (attachWrap && !attachWrap.contains(e.target)) {
-                if (window.closeAttachMenu) window.closeAttachMenu();
-            }
-            var emojiPopup = document.querySelector('.emoji-picker-popup');
-            if (emojiPopup && !emojiPopup.contains(e.target)) {
-                var emojiBtn = document.querySelector('.emoji-btn') || document.querySelector('.message-input-bar .input-btn:last-of-type');
-                if (emojiBtn && !emojiBtn.contains(e.target) && !emojiPopup.contains(e.target)) {
-                    if (window.closeEmojiPicker) window.closeEmojiPicker();
-                }
-            }
-        });
-    </script>
+    <script src="js/blazor-loader.js"></script>
+    <script src="_content/EChat.UI/js/ui-helpers.js"></script>
+    <script src="_content/EChat.UI/js/textarea.js"></script>
+    <script src="_content/EChat.UI/js/scroll.js"></script>
+    <script src="_content/EChat.UI/js/lightbox.js"></script>
 </body>
 </html>

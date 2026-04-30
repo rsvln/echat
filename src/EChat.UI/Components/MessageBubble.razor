@@ -48,13 +48,48 @@
         {
             @foreach (var att in Attachments)
             {
-                @if (att.IsImage)
+                @if (IsImageAttachment(att))
                 {
                     <div class="message-attachment">
                         <img class="message-attachment-img"
                              src="@GetAttachmentUrl(att)"
                              alt="@att.FileName"
                              @onclick="@(() => OpenImage(att))" />
+                        @if (!string.IsNullOrEmpty(att.Caption))
+                        {
+                            <div class="message-attachment-caption">@att.Caption</div>
+                        }
+                    </div>
+                }
+                else if (IsVideoAttachment(att))
+                {
+                    var videoUrl = GetVideoUrl(att);
+
+                    <div class="message-attachment">
+                        @if (!string.IsNullOrEmpty(videoUrl))
+                        {
+                            <video class="message-attachment-video"
+                                   controls
+                                   preload="metadata"
+                                   playsinline>
+                                <source src="@videoUrl" type="@att.ContentType" />
+                            </video>
+                        }
+                        else
+                        {
+                            <div class="message-attachment-video-fallback">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                                <span>@att.FileName (@FormatSize(att.Size))</span>
+                            </div>
+                            <div class="message-attachment-video-actions">
+                                <button class="attachment-action-btn" @onclick="@(() => OnAttachmentClick(att))" title="Open">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                </button>
+                                <button class="attachment-action-btn" @onclick="@(() => ContextSaveAtt(att))" title="Save">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                </button>
+                            </div>
+                        }
                         @if (!string.IsNullOrEmpty(att.Caption))
                         {
                             <div class="message-attachment-caption">@att.Caption</div>
@@ -148,17 +183,16 @@
 @* ── Fullscreen image viewer ─────────────────────────────────────── *@
 @if (_lightboxUrl != null)
 {
-    <div style="position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;"
-         @onclick="CloseLightboxSafe">
+    <div class="lightbox-overlay" @onclick="CloseLightboxSafe">
         <img id="echat-lightbox-img"
              src="@_lightboxUrl"
-             style="max-width:95vw;max-height:92vh;object-fit:contain;border-radius:4px;box-shadow:0 8px 40px rgba(0,0,0,0.6);touch-action:none;user-select:none;-webkit-user-select:none;"
+             @onload="OnLightboxImageLoaded"
              @onclick:stopPropagation="true" />
-        <button style="position:absolute;top:16px;right:16px;background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:24px;width:44px;height:44px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;"
+        <button class="lightbox-close-btn"
                 @onclick="CloseLightbox">✕</button>
         @if (_attActionTarget != null)
         {
-            <button style="position:absolute;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.18);border:none;color:#fff;font-size:15px;padding:10px 24px;border-radius:24px;cursor:pointer;display:flex;align-items:center;gap:8px;"
+            <button class="lightbox-save-btn"
                     @onclick:stopPropagation="true"
                     @onclick="SaveLightboxImage"
                     disabled="@_attSaving">
@@ -171,8 +205,8 @@
 @* ── Context menu (desktop only; mobile uses header action bar) ──── *@
 @if (_showMenu && !MobileMode)
 {
-    <div style="position:fixed;inset:0;z-index:999;" @onclick="CloseMenu" @onclick:stopPropagation="true"></div>
-    <div class="ctx-menu" id="ctx-menu-@Message.MessageId" style="left:@(_menuX)px;top:@(_menuY)px;visibility:hidden;">
+    <div style="position:fixed;inset:0;z-index:2147483647;" @onclick="CloseMenu" @onclick:stopPropagation="true"></div>
+    <div class="ctx-menu" id="ctx-menu-@Message.MessageId" style="left:@(_menuX)px;top:@(_menuY)px;z-index:2147483647;visibility:hidden;">
 
         @* ── Reaction strip (Telegram-style) ────────────────────────── *@
         <div class="ctx-reaction-strip">
@@ -240,104 +274,6 @@
     </div>
 }
 
-<style>
-    .ctx-menu {
-        position: fixed;
-        background: var(--surface, #fff);
-        border: 1px solid var(--border, #e8e8e8);
-        border-radius: 8px;
-        padding: 4px 0;
-        z-index: 1000;
-        box-shadow: 0 8px 24px rgba(0,0,0,.15);
-        min-width: 210px;
-    }
-    .ctx-reaction-strip {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        padding: 6px 8px;
-    }
-    .ctx-reaction-btn {
-        width: 36px;
-        height: 36px;
-        border: none;
-        background: none;
-        cursor: pointer;
-        font-size: 22px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.1s, transform 0.1s;
-        line-height: 1;
-    }
-    .ctx-reaction-btn:hover {
-        background: var(--surface-variant, #f0f0f0);
-        transform: scale(1.2);
-    }
-    .ctx-reaction-btn.active {
-        background: rgba(91, 166, 66, 0.18);
-    }
-    .ctx-divider {
-        border-top: 1px solid var(--border, #f0f0f0);
-        margin: 4px 0;
-    }
-    .ctx-item {
-        padding: 6px 14px;
-        cursor: pointer;
-        font-size: 13px;
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        color: var(--text-primary, #222);
-        user-select: none;
-        white-space: nowrap;
-    }
-    .ctx-item:hover { background: var(--surface-variant, #f5f5f5); }
-    .ctx-icon { font-size: 14px; width: 18px; text-align: center; }
-    .ctx-danger { color: var(--error, #e53935); }
-    .ctx-danger .ctx-icon { color: var(--error, #e53935); }
-
-    .message-reactions-inline {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 4px;
-        flex: 1;
-    }
-    .reaction-badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 3px;
-        padding: 2px 8px;
-        border: 1px solid var(--divider);
-        border-radius: 12px;
-        background: var(--surface-variant);
-        color: var(--text-primary);
-        cursor: pointer;
-        font-size: 13px;
-        line-height: 1.3;
-        transition: all 0.15s;
-    }
-    .reaction-badge:hover {
-        background: var(--surface);
-    }
-    .reaction-badge.active {
-        border-color: #5BA642;
-        background: rgba(91, 166, 66, 0.2);
-    }
-    .reaction-count {
-        font-size: 11px;
-        opacity: 0.75;
-        min-width: 8px;
-        text-align: center;
-    }
-    .mob-msg-selected {
-        background: rgba(91, 143, 217, 0.18);
-        border-radius: 6px;
-    }
-</style>
-
 @code {
     [Parameter] public ChatMessage Message { get; set; } = null!;
     [Parameter] public bool IsOwn { get; set; }
@@ -367,7 +303,7 @@
     private Attachment? _attActionTarget;
     private bool _attSaving;
 
-    private readonly string[] _quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
+    private readonly string[] _quickReactions = ["👍", "❤️", "😂", "😮", "😢", "🔥", "👎", "😡", "🤮", "💩", "🤔", "😍", "🎉", "💯", "👀", "🙏", "🤡", "🤷"];
 
     private async Task ShowContextMenu(MouseEventArgs e)
     {
@@ -467,6 +403,15 @@
         }
     }
 
+    private async Task OnLightboxImageLoaded()
+    {
+        if (!_lightboxJsInit)
+        {
+            _lightboxJsInit = true;
+            await JS.InvokeVoidAsync("initLightboxZoom");
+        }
+    }
+
     private void CloseLightbox()
     {
         _lightboxUrl = null;
@@ -476,21 +421,45 @@
 
     private async Task CloseLightboxSafe()
     {
-        // If zoomed in — reset zoom first; second tap closes
-        var zoomed = await JS.InvokeAsync<bool>("isLightboxZoomed");
-        if (zoomed)
+        try
         {
-            await JS.InvokeVoidAsync("resetLightboxZoom");
-            _lightboxJsInit = false; // allow re-init on next render
+            var zoomed = await JS.InvokeAsync<bool>("isLightboxZoomed");
+            if (zoomed)
+            {
+                await JS.InvokeVoidAsync("resetLightboxZoom");
+                _lightboxJsInit = false;
+                return;
+            }
         }
-        else
-        {
-            CloseLightbox();
-        }
+        catch { }
+        CloseLightbox();
     }
 
     private IEnumerable<Attachment> FileAttachments =>
-        Attachments?.Where(a => !a.IsImage) ?? Enumerable.Empty<Attachment>();
+        Attachments?.Where(a => !IsImageAttachment(a) && !IsVideoAttachment(a)) ?? Enumerable.Empty<Attachment>();
+
+    private static bool IsImageAttachment(Attachment a) =>
+        a.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ?? false;
+
+    private static bool IsVideoAttachment(Attachment a) =>
+        a.ContentType?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) ?? false;
+
+    private string GetVideoUrl(Attachment att)
+    {
+        var absPath = DbPathInfo.ResolveFilePath(att.FilePath);
+        if (string.IsNullOrEmpty(absPath) || !System.IO.File.Exists(absPath))
+            return "";
+        if (PlatformService.IsMobile)
+        {
+            try
+            {
+                var bytes = System.IO.File.ReadAllBytes(absPath);
+                return $"data:{att.ContentType};base64,{Convert.ToBase64String(bytes)}";
+            }
+            catch { return ""; }
+        }
+        return $"https://local-assets.com/{att.FilePath}";
+    }
 
     private void OnAttachmentClick(Attachment att)
     {

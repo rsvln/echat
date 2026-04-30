@@ -210,37 +210,14 @@
                 }
             </div>
 
-            <!-- Formatting Toolbar -->
-            <div class="formatting-toolbar" style="display:flex;gap:4px;margin-right:8px;">
-                <button class="format-btn" @onclick="InsertBold" title="Bold">
-                    <strong>B</strong>
-                </button>
-                <button class="format-btn" @onclick="InsertItalic" title="Italic">
-                    <em>I</em>
-                </button>
-                <button class="format-btn" @onclick="InsertStrikethrough" title="Strikethrough">
-                    <del>S</del>
-                </button>
-                <button class="format-btn" @onclick="InsertUnderline" title="Underline">
-                    <u>U</u>
-                </button>
-                <button class="format-btn" @onclick="InsertInlineCode" title="Inline Code">
-                    <code>&lt;/&gt;</code>
-                </button>
-                <button class="format-btn" @onclick="OpenCodeEditor" title="Code Block">
-                    <pre style="font-size:10px;">{ }</pre>
-                </button>
-                <button class="format-btn" @onclick="InsertSpoiler" title="Spoiler">
-                    <span style="background:black;color:black;padding:0 2px;">S</span>
-                </button>
-            </div>
-
             <textarea class="message-textarea"
                       id="messageInput"
                       placeholder="@(editingMessage != null ? "Edit message…" : "Write a message...")"
                       @oninput="OnMessageTextInput"
                       @onkeydown="OnMessageKeyDown"
                       @onfocus="ClosePopups"
+                      @oncontextmenu="OnTextareaContextMenu"
+                      @oncontextmenu:preventDefault="true"
                       rows="1"></textarea>
             <button class="input-btn" @onclick="ToggleEmojiPicker" title="Emoji">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
@@ -268,6 +245,19 @@
                         <button class="emoji-btn" @onclick="@(() => InsertEmoji(emoji))">@emoji</button>
                     }
                 </div>
+            </div>
+        }
+
+        @if (showFormatMenu)
+        {
+            <div class="format-menu" style="left:@(formatMenuX)px;top:@(formatMenuY)px;">
+                <button class="format-menu-btn" @onclick="InsertBold" title="Bold (жирный)"><strong>B</strong></button>
+                <button class="format-menu-btn" @onclick="InsertItalic" title="Italic (курсив)"><em>I</em></button>
+                <button class="format-menu-btn" @onclick="InsertStrikethrough" title="Strikethrough (зачеркнутый)"><del>S</del></button>
+                <button class="format-menu-btn" @onclick="InsertUnderline" title="Underline (подчеркнутый)"><u>U</u></button>
+                <button class="format-menu-btn" @onclick="InsertInlineCode" title="Inline Code (код)"><code>&lt;/&gt;</code></button>
+                <button class="format-menu-btn" @onclick="OpenCodeEditor" title="Code Block (блок кода)"><span style="font-size:9px;">{ }</span></button>
+                <button class="format-menu-btn" @onclick="InsertSpoiler" title="Spoiler (скрытый)"><span style="background:black;color:white;padding:0 2px;font-size:10px;">S</span></button>
             </div>
         }
 
@@ -1005,7 +995,7 @@
         StateHasChanged();
     }
     private void ShowAttachMenu() { showAttachMenu = !showAttachMenu; showEmojiPicker = false; }
-    private void ClosePopups() { showAttachMenu = false; showEmojiPicker = false; StateHasChanged(); }
+    private void ClosePopups() { showAttachMenu = false; showEmojiPicker = false; showFormatMenu = false; StateHasChanged(); }
 
     private async Task SelectPhoto() { showAttachMenu = false; await Task.Delay(50); await JS.InvokeVoidAsync("eval", "document.getElementById('photoInput').click();"); }
     private async Task SelectFile() { showAttachMenu = false; await Task.Delay(50); await JS.InvokeVoidAsync("eval", "document.getElementById('fileInput').click();"); }
@@ -1266,6 +1256,28 @@
     private bool showCodeEditor = false;
     private string selectedLanguage = "";
     private string codeEditorText = "";
+    private bool showFormatMenu = false;
+    private double formatMenuX;
+    private double formatMenuY;
+    private string selectedText = "";
+
+    private async Task OnTextareaContextMenu()
+    {
+        selectedText = await JS.InvokeAsync<string>("getSelectedText");
+        if (!string.IsNullOrEmpty(selectedText))
+        {
+            var (x, y) = await JS.InvokeAsync<(double, double)>("getCursorPosition", "messageInput");
+            formatMenuX = Math.Max(10, x - 60);
+            formatMenuY = y - 50;
+            showFormatMenu = true;
+        }
+    }
+
+    private void CloseFormatMenu()
+    {
+        showFormatMenu = false;
+        selectedText = "";
+    }
 
     private void OpenCodeEditor()
     {
@@ -1286,7 +1298,7 @@
     private Task InsertBold() => InsertFormat("**", "**");
     private Task InsertItalic() => InsertFormat("*", "*");
     private Task InsertStrikethrough() => InsertFormat("~~", "~~");
-    private Task InsertUnderline() => InsertFormat("__", "__");
+    private Task InsertUnderline() => InsertFormat("--", "--");
     private Task InsertInlineCode() => InsertFormat("`", "`");
     private Task InsertSpoiler() => InsertFormat("||", "||");
 

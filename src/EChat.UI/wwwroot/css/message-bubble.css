@@ -160,6 +160,42 @@
     font-size: 0.9em;
 }
 
+.message-content pre.code-block {
+    background-color: #272822;
+    padding: 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9em;
+    line-height: 1.4;
+    margin: 8px 0;
+    border: 1px solid var(--divider, #e0e0e0);
+}
+
+.message-content pre.code-block code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    color: #f8f8f2;
+}
+
+.message-content blockquote {
+    border-left: 4px solid var(--primary, #5b8fd9);
+    padding-left: 12px;
+    margin: 8px 0;
+    color: var(--text-secondary, #666);
+    font-style: italic;
+}
+
+.message-content a {
+    color: var(--link, #5b8fd9);
+    text-decoration: underline;
+}
+
+.message-content a:hover {
+    text-decoration: none;
+}
+
 .message-content pre {
     background-color: #272822;
     padding: 12px;

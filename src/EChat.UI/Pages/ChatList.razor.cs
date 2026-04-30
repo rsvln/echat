@@ -103,6 +103,17 @@ public partial class ChatList
     // Send on Enter mode (true = Enter sends, false = Ctrl+Enter sends)
     private bool sendOnEnter = true;
 
+    // Format context menu
+    private bool showFormatMenu = false;
+    private double formatMenuX;
+    private double formatMenuY;
+    private string selectedText = "";
+
+    // Code block modal
+    private bool showCodeBlockModal = false;
+    private string codeBlockLanguage = "";
+    private string codeBlockText = "";
+
     // Emoji & attach
     private bool showEmojiPicker = false;
     private bool showAttachMenu = false;
@@ -203,6 +214,14 @@ public partial class ChatList
         if (firstRender)
         {
             await JS.InvokeVoidAsync("setupTextareaResize");
+
+            // Expose format menu function to JS - use direct eval approach
+            await JS.InvokeVoidAsync("eval", @"window._showFormatMenu = function(x, y, text) {
+                var input = document.getElementById('messageInput');
+                if (input && input._renderer && input._renderer.dispatchEvent) {
+                    // Can't call Blazor directly - just update UI state differently
+                }
+            };");
 
             // Restore previously selected chat (JS only available after first render)
             var savedChatId = await JS.InvokeAsync<string?>("localStorage.getItem", "echat_selected_chat");
@@ -1523,6 +1542,89 @@ public partial class ChatList
     {
         showAttachMenu = false;
         showEmojiPicker = false;
+        showFormatMenu = false;
+        StateHasChanged();
+    }
+
+    private async Task OnTextareaContextMenu()
+    {
+        selectedText = await JS.InvokeAsync<string>("getSelectedText");
+        Console.WriteLine("[OnTextareaContextMenu] Selected text:", selectedText, "len:", selectedText?.Length);
+        
+        if (!string.IsNullOrEmpty(selectedText))
+        {
+            var pos = await JS.InvokeAsync<PositionResult>("getLastContextMenuPosition");
+            Console.WriteLine("[OnTextareaContextMenu] Position:", pos.x, pos.y);
+            
+            formatMenuX = pos.x - 60;
+            formatMenuY = pos.y - 50;
+            showFormatMenu = true;
+            StateHasChanged();
+        }
+        else
+        {
+            await Task.Delay(50);
+            selectedText = await JS.InvokeAsync<string>("getSelectedText");
+            Console.WriteLine("[OnTextareaContextMenu] Delayed check - selected:", selectedText, "len:", selectedText?.Length);
+            
+            if (!string.IsNullOrEmpty(selectedText))
+            {
+                var pos = await JS.InvokeAsync<PositionResult>("getLastContextMenuPosition");
+                formatMenuX = pos.x - 60;
+                formatMenuY = pos.y - 50;
+                showFormatMenu = true;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private class PositionResult { public double x { get; set; } public double y { get; set; } }
+
+    public async Task ShowFormatMenuAt(string inputId, double clientX, double clientY, string text)
+    {
+        selectedText = text;
+        formatMenuX = clientX - 60;
+        formatMenuY = clientY - 50;
+        showFormatMenu = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void CloseFormatMenu()
+    {
+        showFormatMenu = false;
+        selectedText = "";
+    }
+
+    private async Task InsertFormat(string prefix, string suffix)
+    {
+        await JS.InvokeVoidAsync("wrapSelectedText", "messageInput", prefix, suffix);
+        var domText = await JS.InvokeAsync<string>("eval", "document.getElementById('messageInput').value");
+        messageText = domText;
+        showFormatMenu = false;
+        StateHasChanged();
+    }
+
+    private void OpenCodeBlockEditor()
+    {
+        showFormatMenu = false;
+        showCodeBlockModal = true;
+        codeBlockLanguage = "";
+        codeBlockText = "";
+    }
+
+    private void InsertCodeBlock()
+    {
+        var lang = string.IsNullOrEmpty(codeBlockLanguage) ? "" : codeBlockLanguage + "\n";
+        var block = "```" + lang + codeBlockText + "```";
+        
+        // Insert at cursor or append
+        messageText += "\n" + block + "\n";
+        
+        // Also update DOM directly
+        _ = JS.InvokeVoidAsync("eval", "var ta = document.getElementById('messageInput'); ta.value = ta.value + '\\n' + '" + block.Replace("'", "\\'") + "' + '\\n';");
+        
+        showCodeBlockModal = false;
+        showFormatMenu = false;
         StateHasChanged();
     }
 

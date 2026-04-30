@@ -18,14 +18,11 @@ public class MessageFormatter
         if (!ContainsFormattingTags(text))
         {
             // Plain text, escape HTML and replace newlines
-            var plain = System.Web.HttpUtility.HtmlEncode(text).Replace("\n", "<br>");
-            Console.WriteLine($"MessageFormatter: Plain text: {plain}");
-            return new MarkupString(plain);
+            return new MarkupString(System.Web.HttpUtility.HtmlEncode(text).Replace("\n", "<br>"));
         }
 
         // Parse as Markdown
         var html = Markdown.ToHtml(text, Pipeline);
-        Console.WriteLine($"MessageFormatter: Formatted HTML: {html}");
 
         // Additional processing for Telegram-style tags
         html = ProcessTelegramTags(html);
@@ -38,9 +35,30 @@ public class MessageFormatter
 
     private static string ProcessCodeBlocks(string html)
     {
-        // Replace <pre><code> with <pre><code class="language-*">
-        // Assuming the code block starts with ```language
-        // But since Markdig handles it, we can enhance
+        // Ensure code blocks have Prism-compatible class format: language-*
+        // Replace <code> without class with <code class="language-plaintext">
+        html = System.Text.RegularExpressions.Regex.Replace(
+            html,
+            @"<code>",
+            @"<code class=""language-plaintext"">"
+        );
+        
+        // Ensure language class format is correct for Prism: language-*
+        html = System.Text.RegularExpressions.Regex.Replace(
+            html,
+            @"<code class=""([^""]*)"">",
+            match =>
+            {
+                var className = match.Groups[1].Value;
+                if (!className.StartsWith("language-"))
+                {
+                    // If it's just the language name, add language- prefix
+                    return $@"<code class=""language-{className}"">";
+                }
+                return match.Value;
+            }
+        );
+        
         return html;
     }
 

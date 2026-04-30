@@ -1,5 +1,18 @@
 window.getSelectedText = function () { return window.getSelection()?.toString() ?? ''; };
 
+window.wrapSelectedText = function (textareaId, prefix, suffix) {
+    var textarea = document.getElementById(textareaId);
+    if (!textarea) return;
+    var start = textarea.selectionStart;
+    var end = textarea.selectionEnd;
+    var text = textarea.value;
+    var selected = text.substring(start, end);
+    var wrapped = prefix + selected + suffix;
+    textarea.value = text.substring(0, start) + wrapped + text.substring(end);
+    textarea.selectionStart = textarea.selectionEnd = start + wrapped.length;
+    textarea.focus();
+};
+
 window.positionMenu = function (id, x, y) {
     var el = document.getElementById(id);
     if (!el) return;

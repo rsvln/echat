@@ -18,11 +18,14 @@ public class MessageFormatter
         if (!ContainsFormattingTags(text))
         {
             // Plain text, escape HTML and replace newlines
-            return new MarkupString(System.Web.HttpUtility.HtmlEncode(text).Replace("\n", "<br>"));
+            var plain = System.Web.HttpUtility.HtmlEncode(text).Replace("\n", "<br>");
+            Console.WriteLine($"MessageFormatter: Plain text: {plain}");
+            return new MarkupString(plain);
         }
 
         // Parse as Markdown
         var html = Markdown.ToHtml(text, Pipeline);
+        Console.WriteLine($"MessageFormatter: Formatted HTML: {html}");
 
         // Additional processing for Telegram-style tags
         html = ProcessTelegramTags(html);

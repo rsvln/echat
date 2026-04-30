@@ -58,3 +58,34 @@ input[type="checkbox"] {
     cursor: pointer;
     accent-color: var(--primary);
 }
+
+/* ── Formatting Toolbar ────────────────────────────────────────────── */
+.formatting-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.format-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--divider);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-primary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    transition: background 0.1s, border-color 0.1s;
+}
+
+.format-btn:hover {
+    background: var(--surface-variant);
+    border-color: var(--primary);
+}
+
+.format-btn:active {
+    background: rgba(91, 143, 217, 0.1);
+}

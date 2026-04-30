@@ -21,12 +21,10 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<SupportedPlatform Include="browser" />
-	</ItemGroup>
-
-	<ItemGroup>
 		<PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="10.0.0" />
 		<PackageReference Include="Net.Codecrete.QrCodeGenerator" Version="2.1.0" />
+		<PackageReference Include="Markdig" Version="0.37.0" />
+		<PackageReference Include="BlazorMonaco" Version="3.1.0" />
 	</ItemGroup>
 
 	<ItemGroup>

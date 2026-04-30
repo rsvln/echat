@@ -1,82 +1,48 @@
-using Markdig;
 using Microsoft.AspNetCore.Components;
 
 namespace EChat.UI.Services;
 
 public class MessageFormatter
 {
-    private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
-        .UseAdvancedExtensions() // Для таблиц, ссылок и т.д.
-        .Build();
-
     public static MarkupString Format(string? text)
     {
         if (string.IsNullOrEmpty(text))
             return new MarkupString(string.Empty);
 
-        // Check if text contains formatting tags
-        if (!ContainsFormattingTags(text))
+        // Simple string replaces for speed
+        text = text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+        
+        // Code blocks ```lang\ncode```
+        while (text.Contains("```"))
         {
-            // Plain text, escape HTML and replace newlines
-            return new MarkupString(System.Web.HttpUtility.HtmlEncode(text).Replace("\n", "<br>"));
+            int start = text.IndexOf("```");
+            int end = text.IndexOf("```", start + 3);
+            if (end < 0) break;
+            
+            string block = text.Substring(start, end - start + 3);
+            string content = block.Substring(3).TrimStart('\n').TrimEnd('`');
+            
+            string lang = "";
+            int nl = content.IndexOf('\n');
+            if (nl > 0 && nl < 15)
+            {
+                string potential = content.Substring(0, nl).Trim();
+                bool isWord = true;
+                foreach (char c in potential) { if (!char.IsLetterOrDigit(c)) { isWord = false; break; } }
+                if (isWord && potential.Length > 0) { lang = potential; content = content.Substring(nl + 1); }
+            }
+            
+            string html = "<pre class='code-block'><code class='language-" + (lang.Length > 0 ? lang : "plaintext") + "'>" + content + "</code></pre>";
+            text = text.Replace(block, html);
         }
 
-        // Parse as Markdown
-        var html = Markdown.ToHtml(text, Pipeline);
+        // Simple replaces
+        text = text.Replace("**", "<strong>").Replace("**", "</strong>");
+        text = text.Replace("~~", "<del>").Replace("~~", "</del>");
+        text = text.Replace("||", "<span class='spoiler'>").Replace("||", "</span>");
+        text = text.Replace("`", "<code>").Replace("`", "</code>");
+        text = text.Replace("\n", "<br>");
 
-        // Additional processing for Telegram-style tags
-        html = ProcessTelegramTags(html);
-
-        // Process code blocks for Prism
-        html = ProcessCodeBlocks(html);
-
-        return new MarkupString(html);
-    }
-
-    private static string ProcessCodeBlocks(string html)
-    {
-        // Ensure code blocks have Prism-compatible class format: language-*
-        // Replace <code> without class with <code class="language-plaintext">
-        html = System.Text.RegularExpressions.Regex.Replace(
-            html,
-            @"<code>",
-            @"<code class=""language-plaintext"">"
-        );
-        
-        // Ensure language class format is correct for Prism: language-*
-        html = System.Text.RegularExpressions.Regex.Replace(
-            html,
-            @"<code class=""([^""]*)"">",
-            match =>
-            {
-                var className = match.Groups[1].Value;
-                if (!className.StartsWith("language-"))
-                {
-                    // If it's just the language name, add language- prefix
-                    return $@"<code class=""language-{className}"">";
-                }
-                return match.Value;
-            }
-        );
-        
-        return html;
-    }
-
-    private static bool ContainsFormattingTags(string text)
-    {
-        return text.Contains("**") || text.Contains("*") || text.Contains("~~") ||
-               text.Contains("__") || text.Contains("||") || text.Contains("`") ||
-               text.Contains("[") && text.Contains("](") && text.Contains(")");
-    }
-
-    private static string ProcessTelegramTags(string html)
-    {
-        // Обработка ||spoiler|| -> <span class="spoiler">
-        html = System.Text.RegularExpressions.Regex.Replace(html, @"\|{2}(.*?)\|{2}", @"<span class=""spoiler"">$1</span>");
-
-        // Обработка __underline__ -> <u>
-        html = System.Text.RegularExpressions.Regex.Replace(html, @"_{2}(.*?)_{2}", @"<u>$1</u>");
-
-        return html;
+        return new MarkupString(text);
     }
 }

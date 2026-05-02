@@ -65,16 +65,6 @@
                 <div class="info-row">
                     <strong>Messages:</strong> @messageCount
                 </div>
-                <div class="info-row">
-                    <strong>Priority:</strong>
-                    <select value="@chat.Priority" @onchange="@(e => UpdatePriority(Enum.Parse<ChatPriority>(e.Value!.ToString()!)))">
-                        <option value="@ChatPriority.High">High</option>
-                        <option value="@ChatPriority.Normal">Normal</option>
-                        <option value="@ChatPriority.Low">Low</option>
-                        <option value="@ChatPriority.Muted">Muted</option>
-                    </select>
-                </div>
-
                 @if (chat.Type == ChatType.Group && members != null)
                 {
                     var isAdmin = members.Any(m => m.MemberEmail == UserContext.UserEmail && m.Role == GroupRole.Admin);
@@ -312,16 +302,6 @@
                 addMemberEmail = string.Empty;
             }
         }
-    }
-
-    private async Task UpdatePriority(ChatPriority value)
-    {
-        if (chat == null) return;
-        await DbContext.Chats
-            .Where(c => c.ChatId == chat.ChatId)
-            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Priority, value));
-        chat.Priority = value;
-        SyncWarnings.ValidateChatPriority(value);
     }
 
     private async Task ToggleMuted()

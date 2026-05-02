@@ -160,9 +160,6 @@ namespace EChat.Core.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<int>("Priority")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int?>("TombstoneVersion")
                         .HasColumnType("INTEGER");
 

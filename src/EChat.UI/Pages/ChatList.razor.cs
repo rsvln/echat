@@ -307,10 +307,7 @@ public partial class ChatList
             UserContext.Initialize(activeAccount.AccountId, activeAccount.Email, deviceId);
         }
 
-        await LoadSubjectTemplateAsync();
     }
-
-    private Task LoadSubjectTemplateAsync() => Task.CompletedTask; // subject is always [eChat]
 
     private async Task LoadChatsAsync()
     {
@@ -775,7 +772,6 @@ public partial class ChatList
             catch { /* non-fatal */ }
         });
 
-        await LoadSubjectTemplateAsync();
         await LoadChatsAsync();
     }
 
@@ -1295,7 +1291,7 @@ public partial class ChatList
                 Type = MessageType.Reaction,
                 Reaction = data.Emoji,
                 ReactionTo = msgId,
-                Tier = BatchTier.Immediate
+                Tier = BatchTier.System
             };
             _ = TransportService.SendMessageAsync(outgoing)
                 .ContinueWith(t => FileLogger.Write("WARN", "HandleReaction",

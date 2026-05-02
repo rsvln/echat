@@ -124,18 +124,6 @@ public class SyncEngine
 
     public SyncSettings GetCurrentSettings() => _settings;
 
-    private Dictionary<string, ChatPriority> _chatPriorities = new();
-
-    public void SetChatPriority(string chatId, ChatPriority priority)
-    {
-        _chatPriorities[chatId] = priority;
-    }
-
-    public ChatPriority GetChatPriority(string chatId)
-    {
-        return _chatPriorities.GetValueOrDefault(chatId, ChatPriority.Normal);
-    }
-
     public void RecordActivity()
     {
         _lastActivityTime = DateTime.UtcNow;

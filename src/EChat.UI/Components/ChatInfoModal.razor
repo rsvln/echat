@@ -321,7 +321,6 @@
             .Where(c => c.ChatId == chat.ChatId)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Priority, value));
         chat.Priority = value;
-        SyncEngine.SetChatPriority(chat.ChatId, value);
         SyncWarnings.ValidateChatPriority(value);
     }
 

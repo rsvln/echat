@@ -10,7 +10,6 @@ public class ChatDbContext : DbContext
     public DbSet<Contact> Contacts => Set<Contact>();
     public DbSet<ChatGroup> Groups => Set<ChatGroup>();
     public DbSet<GroupMember> GroupMembers => Set<GroupMember>();
-    public DbSet<GroupOperation> GroupOperations => Set<GroupOperation>();
     public DbSet<Setting> Settings => Set<Setting>();
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<GroupKeyPair> GroupKeyPairs => Set<GroupKeyPair>();
@@ -90,17 +89,6 @@ public class ChatDbContext : DbContext
                   .WithMany(g => g.Members)
                   .HasForeignKey(e => e.GroupId);
             entity.HasIndex(e => e.MemberEmail);
-        });
-        
-        // GroupOperation
-        modelBuilder.Entity<GroupOperation>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.HasIndex(e => new { e.GroupId, e.Version });
-            entity.HasIndex(e => e.Applied);
-            entity.HasOne(e => e.Group)
-                  .WithMany()
-                  .HasForeignKey(e => e.GroupId);
         });
         
         // Setting

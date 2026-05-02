@@ -84,68 +84,6 @@ public class GroupStateManager
         return localState;
     }
     
-    public async Task<bool> ValidateOperationAsync(string groupId, string actor, GroupOperationType operation)
-    {
-        var group = await _dbContext.Groups
-            .Include(g => g.Members)
-            .FirstOrDefaultAsync(g => g.GroupId == groupId);
-        
-        if (group == null) return false;
-        
-        var actorMember = group.Members.FirstOrDefault(m => m.MemberEmail == actor);
-        if (actorMember == null) return false;
-        
-        var requiresAdmin = operation switch
-        {
-            GroupOperationType.MemberAdd => false,
-            GroupOperationType.MemberRemove => true,
-            GroupOperationType.PromoteAdmin => true,
-            GroupOperationType.DemoteAdmin => true,
-            GroupOperationType.NameChange => true,
-            GroupOperationType.AvatarChange => false,
-            _ => false
-        };
-        
-        if (requiresAdmin && actorMember.Role != GroupRole.Admin)
-        {
-            _fileLogger.Write("WARN", "GroupStateManager", $"Unauthorized operation {operation} by {actor} in group {groupId}");
-            return false;
-        }
-        
-        return true;
-    }
-    
-    public async Task<GroupOperation> RecordOperationAsync(
-        string groupId, 
-        GroupOperationType operation, 
-        string actor, 
-        string? target = null)
-    {
-        var group = await _dbContext.Groups.FirstOrDefaultAsync(g => g.GroupId == groupId);
-        if (group == null)
-        {
-            throw new InvalidOperationException($"Group {groupId} not found");
-        }
-        
-        var groupOp = new GroupOperation
-        {
-            GroupId = groupId,
-            Version = group.Version + 1,
-            Operation = operation,
-            Actor = actor,
-            Target = target,
-            Timestamp = NtpClock.UtcNow,
-            Applied = false
-        };
-        
-        _dbContext.GroupOperations.Add(groupOp);
-        group.Version = groupOp.Version;
-        
-        await _dbContext.SaveChangesAsync();
-        
-        return groupOp;
-    }
-    
     private async Task<GroupState> CreateGroupAsync(GroupState state, string creator)
     {
         var group = new ChatGroup

@@ -43,7 +43,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<NtpTimeService>();
         services.AddSingleton<SyncEngine>(); // loaded from DB at runtime
         services.AddSingleton<SyncWarningService>();
-        services.AddSingleton<DeviceSyncService>(); // takes AccountConfig via DI
 
         // Groups
         services.AddScoped<GroupStateManager>();

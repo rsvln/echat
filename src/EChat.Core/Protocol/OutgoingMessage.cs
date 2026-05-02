@@ -41,6 +41,5 @@ public enum MessageType
     Delete,
     ReadReceipt,
     DeliveryReceipt,
-    GroupOperation,
     System
 }

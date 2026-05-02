@@ -266,9 +266,78 @@
 .new-chat-actions {
     display: flex;
     justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 10px;
     padding-top: 12px;
     margin-top: 4px;
+}
+
+/* On narrow screens (mobile) wrap to 2 columns */
+@media (max-width: 480px) {
+    .new-chat-actions button {
+        flex: 1 1 calc(50% - 5px);
+        min-width: 0;
+    }
+}
+
+/* Name row with inline edit */
+.info-row-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.info-row-name strong {
+    flex-shrink: 0;
+}
+
+.info-row-name span {
+    flex: 1;
+}
+
+.rename-edit-btn {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px 6px;
+    cursor: pointer;
+    color: var(--text-muted, #888);
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.rename-edit-btn:hover {
+    color: var(--primary);
+    border-color: var(--primary);
+}
+
+.rename-input {
+    flex: 1;
+    background: var(--input-bg, #1e2a38);
+    border: 1px solid var(--primary);
+    border-radius: 4px;
+    color: var(--text-primary, #e0e0e0);
+    padding: 4px 8px;
+    font-size: 14px;
+    min-width: 0;
+}
+
+.rename-save-btn {
+    background: var(--primary);
+    border: none;
+    border-radius: 4px;
+    color: white;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.rename-save-btn:disabled {
+    background: var(--border);
+    cursor: not-allowed;
 }
 
 .new-chat-btn-primary {

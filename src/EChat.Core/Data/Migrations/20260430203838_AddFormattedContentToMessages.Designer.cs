@@ -3,6 +3,7 @@ using System;
 using EChat.Core.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace EChat.Core.Data.Migrations
 {
     [DbContext(typeof(ChatDbContext))]
-    partial class ChatDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260430203838_AddFormattedContentToMessages")]
+    partial class AddFormattedContentToMessages
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.4");
@@ -414,25 +417,6 @@ namespace EChat.Core.Data.Migrations
                     b.HasIndex("GroupId", "Version");
 
                     b.ToTable("GroupOperations");
-                });
-
-            modelBuilder.Entity("EChat.Core.Models.ImapFolderSyncState", b =>
-                {
-                    b.Property<string>("AccountId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("FolderName")
-                        .HasColumnType("TEXT");
-
-                    b.Property<uint>("LastSyncedUid")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<uint>("UidValidity")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("AccountId", "FolderName");
-
-                    b.ToTable("ImapFolderStates");
                 });
 
             modelBuilder.Entity("EChat.Core.Models.MessageReaction", b =>

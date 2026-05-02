@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using EChat.Core.Services;
@@ -7,46 +8,116 @@ namespace EChat.Core.Sync;
 public class NtpTimeService
 {
     private readonly FileLogger _fileLogger;
-    private TimeSpan _ntpOffset = TimeSpan.Zero;
-    private DateTime _lastNtpSync = DateTime.MinValue;
+    private long _offsetTicks = 0; // TimeSpan.Ticks, written via Interlocked.Exchange
     private readonly TimeSpan _resyncInterval = TimeSpan.FromHours(1);
-    
+    private readonly ConcurrentBag<string> _httpFallbackHosts = new();
+
+    public DateTimeOffset UtcNow => DateTimeOffset.UtcNow + TimeSpan.FromTicks(Interlocked.Read(ref _offsetTicks));
+
     public NtpTimeService(FileLogger fileLogger)
     {
         _fileLogger = fileLogger;
+        NtpClock.SetService(this);
+        // Fire-and-forget background sync: immediate first sync, then every hour.
+        _ = Task.Run(RunBackgroundSyncAsync);
     }
-    
-    public async Task<DateTimeOffset> GetAccurateTimeAsync()
+
+    /// <summary>
+    /// Called by transport services when an account connects.
+    /// Registers the mail domain as an HTTP fallback time source.
+    /// E.g. "imap.mail.ru" → adds "mail.ru" to the fallback pool.
+    /// </summary>
+    public void AddFallbackHost(string imapServer)
     {
-        if (DateTime.UtcNow - _lastNtpSync > _resyncInterval)
-        {
-            await SyncWithNtpAsync();
-        }
-        
-        return DateTimeOffset.UtcNow + _ntpOffset;
+        var domain = ExtractMailDomain(imapServer);
+        if (!_httpFallbackHosts.Contains(domain))
+            _httpFallbackHosts.Add(domain);
     }
-    
-    public async Task SyncWithNtpAsync(string server = "pool.ntp.org")
+
+    private static string ExtractMailDomain(string imapServer)
+    {
+        var parts = imapServer.Split('.');
+        if (parts.Length > 2)
+        {
+            var prefix = parts[0].ToLowerInvariant().TrimEnd("0123456789".ToCharArray());
+            if (prefix is "imap" or "smtp" or "pop" or "mail")
+                return string.Join(".", parts.Skip(1));
+        }
+        return imapServer;
+    }
+
+    private async Task RunBackgroundSyncAsync()
+    {
+        await SyncAsync();
+        using var timer = new PeriodicTimer(_resyncInterval);
+        while (await timer.WaitForNextTickAsync())
+            await SyncAsync();
+    }
+
+    private async Task SyncAsync()
+    {
+        // Try NTP first
+        if (await TrySyncNtpAsync("pool.ntp.org")) return;
+
+        // NTP failed — try HTTP HEAD against known mail domains
+        foreach (var host in _httpFallbackHosts)
+        {
+            if (await TrySyncHttpAsync(host)) return;
+        }
+
+        _fileLogger.Write("DEBUG", "NtpTimeService", "All time sync sources failed, using system clock");
+    }
+
+    private async Task<bool> TrySyncNtpAsync(string server)
     {
         try
         {
             var ntpTime = await GetNetworkTimeAsync(server);
-            _ntpOffset = ntpTime - DateTime.UtcNow;
-            _lastNtpSync = DateTime.UtcNow;
-            
-            if (Math.Abs(_ntpOffset.TotalSeconds) > 60)
-            {
-                _fileLogger.Write("WARN", "NtpTimeService", $"Significant clock skew detected: {_ntpOffset.TotalSeconds} seconds");
-            }
-            else
-            {
-                _fileLogger.Write("INFO", "NtpTimeService", $"NTP sync successful, offset: {_ntpOffset.TotalSeconds} seconds");
-            }
+            ApplyOffset(ntpTime - DateTime.UtcNow, $"NTP ({server})");
+            return true;
         }
-        catch (Exception ex)
+        catch
         {
-            _fileLogger.Write("DEBUG", "NtpTimeService", $"NTP sync failed, using system time: {ex.Message}");
+            return false;
         }
+    }
+
+    private async Task<bool> TrySyncHttpAsync(string host)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var request = new HttpRequestMessage(HttpMethod.Head, $"https://{host}/");
+            var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            var serverDate = response.Headers.Date;
+            if (serverDate == null) return false;
+            ApplyOffset(serverDate.Value.UtcDateTime - DateTime.UtcNow, $"HTTP ({host})");
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void ApplyOffset(TimeSpan offset, string source)
+    {
+        Interlocked.Exchange(ref _offsetTicks, offset.Ticks);
+        var sec = offset.TotalSeconds;
+        if (Math.Abs(sec) > 60)
+            _fileLogger.Write("WARN", "NtpTimeService", $"Clock skew {sec:F1}s via {source}");
+        else
+            _fileLogger.Write("INFO", "NtpTimeService", $"Time sync ok via {source}, offset: {sec:F3}s");
+    }
+
+    public async Task<DateTimeOffset> GetAccurateTimeAsync()
+    {
+        return await Task.FromResult(UtcNow);
+    }
+
+    public async Task SyncWithNtpAsync(string server = "pool.ntp.org")
+    {
+        await TrySyncNtpAsync(server);
     }
     
     private async Task<DateTime> GetNetworkTimeAsync(string ntpServer)
@@ -88,5 +159,5 @@ public class NtpTimeService
                ((x & 0xff000000) >> 24);
     }
     
-    public TimeSpan GetCurrentOffset() => _ntpOffset;
+    public TimeSpan GetCurrentOffset() => TimeSpan.FromTicks(Interlocked.Read(ref _offsetTicks));
 }

@@ -2,6 +2,7 @@ using EChat.Core.Data;
 using EChat.Core.Models;
 using EChat.Core.Protocol;
 using EChat.Core.Services;
+using EChat.Core.Sync;
 using Microsoft.EntityFrameworkCore;
 
 namespace EChat.Core.Groups;
@@ -41,7 +42,7 @@ public class GroupStateManager
             Members = group.Members.Select(m => m.MemberEmail).ToHashSet(),
             Admins = group.Members.Where(m => m.Role == GroupRole.Admin)
                                   .Select(m => m.MemberEmail).ToHashSet(),
-            Timestamp = DateTimeOffset.UtcNow
+            Timestamp = NtpClock.UtcNow
         };
     }
     
@@ -65,7 +66,7 @@ public class GroupStateManager
             Admins = localGroup.Members.Where(m => m.Role == GroupRole.Admin)
                                        .Select(m => m.MemberEmail).ToHashSet(),
             LastOperationActor = actor,
-            Timestamp = DateTimeOffset.UtcNow
+            Timestamp = NtpClock.UtcNow
         };
         
         if (localState.Version == remoteState.Version && !localState.Equals(remoteState))
@@ -133,7 +134,7 @@ public class GroupStateManager
             Operation = operation,
             Actor = actor,
             Target = target,
-            Timestamp = DateTimeOffset.UtcNow,
+            Timestamp = NtpClock.UtcNow,
             Applied = false
         };
         

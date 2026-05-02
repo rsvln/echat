@@ -144,8 +144,7 @@ public class IncomingMessageService
             var target = await db.Messages
                 .FirstOrDefaultAsync(m => m.MessageId == pm.Headers.EditOf && accountChatIds.Contains(m.ChatId));
             if (target == null) continue;
-            target.Content = pm.Content;
-            target.IsEdited = true;
+            target.Content = pm.Content; target.FormattedContent = HtmlFormatter.Format(pm.Content); target.IsEdited = true;
             target.EditVersion = (pm.Headers.EditVersion ?? target.EditVersion) + 1;
             updatedChats.Add(target.ChatId);
         }
@@ -273,6 +272,9 @@ public class IncomingMessageService
                     break;
                 case "group-member-remove":
                     await HandleGroupMemberRemoveAsync(db, pm, accountId, accountEmail, updatedChats);
+                    break;
+                case "group-rename":
+                    await HandleGroupRenameAsync(db, pm, accountId, accountEmail, updatedChats);
                     break;
             }
         }
@@ -484,6 +486,7 @@ public class IncomingMessageService
                 ChatId = chatId,
                 Sender = pm.Sender,
                 Content = pm.Content,
+                FormattedContent = HtmlFormatter.Format(pm.Content),
                 Timestamp = pm.Headers.Timestamp,
                 DisplayTimestamp = pm.Headers.Timestamp,
                 ReceivedAt = DateTimeOffset.UtcNow,
@@ -545,9 +548,11 @@ public class IncomingMessageService
                 if (batchContacts.TryGetValue(pm.Sender ?? "", out var sc) &&
                     !string.IsNullOrEmpty(sc.DisplayName))
                     senderName = sc.DisplayName;
-                var preview = string.IsNullOrWhiteSpace(pm.Content)
+                var rawPreview = string.IsNullOrWhiteSpace(pm.Content)
                     ? (pm.Attachments?.Count > 0 ? "📎 Attachment" : "New message")
-                    : pm.Content.Length > 80 ? pm.Content[..80] + "…" : pm.Content;
+                    : pm.Content;
+                var stripped = HtmlFormatter.StripFormatting(rawPreview);
+                var preview = stripped.Length > 80 ? stripped[..80] + "…" : stripped;
                 notificationEntries[chatId] = (chat.Name, senderName, preview);
             }
 
@@ -1164,6 +1169,66 @@ public class IncomingMessageService
         catch (Exception ex)
         {
             _fileLogger.Write("ERROR", "HandleGroupMemberRemoveAsync", $"[{logAcct}] Failed to handle group-member-remove: {ex.Message}");
+        }
+    }
+
+    private async Task HandleGroupRenameAsync(
+        ChatDbContext db,
+        ParsedMessage pm,
+        string accountId,
+        string? accountEmail,
+        HashSet<string> updatedChats)
+    {
+        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        try
+        {
+            var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
+            var root = payload.RootElement;
+            var groupId = root.GetProperty("group_id").GetString() ?? pm.Headers.GroupId;
+            var newName = root.TryGetProperty("new_name", out var nnEl) ? nnEl.GetString() : null;
+            var renamedBy = root.TryGetProperty("renamed_by", out var rbEl) ? rbEl.GetString() : pm.Sender;
+
+            if (string.IsNullOrEmpty(groupId) || string.IsNullOrEmpty(newName)) return;
+
+            var chat = await db.Chats.FirstOrDefaultAsync(c => c.GroupId == groupId && c.AccountId == accountId && !c.Deleted);
+            if (chat == null) return;
+
+            var oldName = chat.Name;
+            chat.Name = newName;
+
+            var group = await db.Groups.FindAsync(groupId);
+            if (group != null) group.Name = newName;
+
+            // Skip system message if I sent this rename (self-CC copy arriving back)
+            bool iSentThis = !string.IsNullOrEmpty(accountEmail) &&
+                renamedBy?.Equals(accountEmail, StringComparison.OrdinalIgnoreCase) == true;
+
+            if (!iSentThis)
+            {
+                var renamedByContact = await db.Contacts.FindAsync(renamedBy);
+                var actorName = renamedByContact?.DisplayName ?? renamedBy?.Split('@')[0] ?? "Someone";
+
+                db.Messages.Add(new ChatMessage
+                {
+                    MessageId = pm.Headers.MessageId ?? Guid.NewGuid().ToString(),
+                    ChatId = chat.ChatId,
+                    Sender = renamedBy ?? pm.Sender,
+                    Content = $"{actorName} renamed the group to \"{newName}\"",
+                    Timestamp = pm.Headers.Timestamp,
+                    DisplayTimestamp = pm.Headers.Timestamp,
+                    ReceivedAt = DateTimeOffset.UtcNow,
+                    IsSystem = true,
+                    Status = MessageStatus.Sent
+                });
+            }
+
+            updatedChats.Add(chat.ChatId);
+            _fileLogger.Write("INFO", "HandleGroupRenameAsync",
+                $"[{logAcct}] Group {groupId} renamed \"{oldName}\" → \"{newName}\" by {renamedBy} (iSentThis={iSentThis})");
+        }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("ERROR", "HandleGroupRenameAsync", $"[{logAcct}] Failed to handle group-rename: {ex.Message}");
         }
     }
 

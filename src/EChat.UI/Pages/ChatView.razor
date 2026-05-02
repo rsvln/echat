@@ -190,6 +190,19 @@
             </div>
         }
 
+        @if (showFormatMenu)
+        {
+            <div class="format-bar-mobile">
+                <button class="format-menu-btn" @onclick="InsertBold"><strong>B</strong></button>
+                <button class="format-menu-btn" @onclick="InsertItalic"><em>I</em></button>
+                <button class="format-menu-btn" @onclick="InsertStrikethrough"><del>S</del></button>
+                <button class="format-menu-btn" @onclick="InsertUnderline"><u>U</u></button>
+                <button class="format-menu-btn" @onclick="InsertInlineCode"><code>&lt;/&gt;</code></button>
+                <button class="format-menu-btn" @onclick="InsertCodeFence"><span style="font-size:9px;">{ }</span></button>
+                <button class="format-menu-btn" @onclick="InsertSpoiler"><span style="background:black;color:white;padding:0 2px;font-size:10px;">S</span></button>
+            </div>
+        }
+
         <div class="message-input-bar">
             <div class="attach-wrap">
                 <button class="input-btn" @onclick="ShowAttachMenu" @onclick:stopPropagation title="Attach">
@@ -216,8 +229,6 @@
                       @oninput="OnMessageTextInput"
                       @onkeydown="OnMessageKeyDown"
                       @onfocus="ClosePopups"
-                      @oncontextmenu="OnTextareaContextMenu"
-                      @oncontextmenu:preventDefault="true"
                       rows="1"></textarea>
             <button class="input-btn" @onclick="ToggleEmojiPicker" title="Emoji">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
@@ -248,48 +259,6 @@
             </div>
         }
 
-        @if (showFormatMenu)
-        {
-            <div class="format-menu" style="left:@(formatMenuX)px;top:@(formatMenuY)px;">
-                <button class="format-menu-btn" @onclick="InsertBold" title="Bold (жирный)"><strong>B</strong></button>
-                <button class="format-menu-btn" @onclick="InsertItalic" title="Italic (курсив)"><em>I</em></button>
-                <button class="format-menu-btn" @onclick="InsertStrikethrough" title="Strikethrough (зачеркнутый)"><del>S</del></button>
-                <button class="format-menu-btn" @onclick="InsertUnderline" title="Underline (подчеркнутый)"><u>U</u></button>
-                <button class="format-menu-btn" @onclick="InsertInlineCode" title="Inline Code (код)"><code>&lt;/&gt;</code></button>
-                <button class="format-menu-btn" @onclick="OpenCodeEditor" title="Code Block (блок кода)"><span style="font-size:9px;">{ }</span></button>
-                <button class="format-menu-btn" @onclick="InsertSpoiler" title="Spoiler (скрытый)"><span style="background:black;color:white;padding:0 2px;font-size:10px;">S</span></button>
-            </div>
-        }
-
-        @if (showCodeEditor)
-        {
-            <div class="modal-overlay visible" @onclick="() => showCodeEditor = false">
-                <div class="modal-content code-editor-modal">
-                    <div class="modal-header">
-                        <h2>Insert Code Block</h2>
-                        <button class="close-btn" @onclick="() => showCodeEditor = false">✕</button>
-                    </div>
-                    <div class="modal-body">
-                        <select @bind="selectedLanguage" class="code-lang-select">
-                            <option value="">Plain Text</option>
-                            <option value="csharp">C#</option>
-                            <option value="javascript">JavaScript</option>
-                            <option value="python">Python</option>
-                            <option value="java">Java</option>
-                            <option value="html">HTML</option>
-                            <option value="css">CSS</option>
-                            <option value="sql">SQL</option>
-                            <option value="json">JSON</option>
-                        </select>
-                        <textarea @bind="codeEditorText" class="code-editor-textarea" placeholder="Enter your code here..."></textarea>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn-secondary" @onclick="() => showCodeEditor = false">Cancel</button>
-                        <button class="btn-primary" @onclick="InsertCodeBlock">Insert</button>
-                    </div>
-                </div>
-            </div>
-        }
 
         @if (showForwardDialog)
         {
@@ -387,6 +356,7 @@
 
     protected override async Task OnInitializedAsync()
     {
+        _instance = this;
         AndroidBackHandler.Register(() => InvokeAsync(GoBack));
         sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
         using var scope = ScopeFactory.CreateScope();
@@ -472,6 +442,7 @@
         if (firstRender)
         {
             await JS.InvokeVoidAsync("setupTextareaResize");
+            await JS.InvokeVoidAsync("setupMobileFormatBar");
         }
         if (_scrollToBottom)
         {
@@ -963,11 +934,11 @@
         });
     }
 
-    private async Task OnMessageTextInput(ChangeEventArgs e)
+    private void OnMessageTextInput(ChangeEventArgs e)
     {
         var wasEmpty = string.IsNullOrWhiteSpace(messageText);
         messageText = e.Value?.ToString() ?? string.Empty;
-        await JS.InvokeVoidAsync("autoResizeTextarea");
+        // textarea resize is handled by the native JS input listener (setupTextareaResize)
 
         if (wasEmpty != string.IsNullOrWhiteSpace(messageText))
             StateHasChanged();
@@ -1253,47 +1224,9 @@
         return $"avatar-color-{hash}";
     }
 
-    private bool showCodeEditor = false;
-    private string selectedLanguage = "";
-    private string codeEditorText = "";
     private bool showFormatMenu = false;
-    private double formatMenuX;
-    private double formatMenuY;
-    private string selectedText = "";
 
-    private async Task OnTextareaContextMenu()
-    {
-        selectedText = await JS.InvokeAsync<string>("getSelectedText");
-        if (!string.IsNullOrEmpty(selectedText))
-        {
-            var (x, y) = await JS.InvokeAsync<(double, double)>("getCursorPosition", "messageInput");
-            formatMenuX = Math.Max(10, x - 60);
-            formatMenuY = y - 50;
-            showFormatMenu = true;
-        }
-    }
-
-    private void CloseFormatMenu()
-    {
-        showFormatMenu = false;
-        selectedText = "";
-    }
-
-    private void OpenCodeEditor()
-    {
-        showCodeEditor = true;
-        selectedLanguage = "";
-        codeEditorText = "";
-        StateHasChanged();
-    }
-
-    private void InsertCodeBlock()
-    {
-        var lang = string.IsNullOrEmpty(selectedLanguage) ? "" : selectedLanguage + "\n";
-        messageText += $"```\n{lang}{codeEditorText}\n```";
-        showCodeEditor = false;
-        StateHasChanged();
-    }
+    private Task InsertCodeFence() => InsertFormat("```\n", "\n```");
 
     private Task InsertBold() => InsertFormat("**", "**");
     private Task InsertItalic() => InsertFormat("*", "*");
@@ -1306,7 +1239,7 @@
     {
         await JS.InvokeVoidAsync("wrapSelectedText", "messageInput", prefix, suffix);
         // Update messageText from textarea
-        messageText = await JS.InvokeAsync<string>("eval", "document.getElementById('messageInput').value");
+        messageText = await JS.InvokeAsync<string>("getTextareaValue", "messageInput");
         StateHasChanged();
     }
 
@@ -1318,5 +1251,26 @@
         public byte[] Data { get; set; } = Array.Empty<byte>();
         public string DataUrl { get; set; } = "";
         public string Caption { get; set; } = "";
+    }
+
+    private static ChatView? _instance;
+    
+    [JSInvokable]
+    public static Task OnMobileFormatMenu(double x, double y, string text)
+    {
+        if (_instance == null) return Task.CompletedTask;
+        _instance.showFormatMenu = true;
+        _instance.StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public static Task SetFormatBarVisible(bool visible)
+    {
+        if (_instance == null) return Task.CompletedTask;
+        if (_instance.showFormatMenu == visible) return Task.CompletedTask;
+        _instance.showFormatMenu = visible;
+        _instance.StateHasChanged();
+        return Task.CompletedTask;
     }
 }

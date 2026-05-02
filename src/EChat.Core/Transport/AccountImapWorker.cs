@@ -31,8 +31,8 @@ public class AccountImapWorker
     private const string InboxFolder = "INBOX";
     private const string EchatFolder = "eChat";
 
-    // Short tag used as prefix in every log line for this worker
-    private string LogTag => _account.Email?.Split('@')[0] ?? _account.AccountId[..Math.Min(8, _account.AccountId.Length)];
+    // Tag used as prefix in every log line for this worker — full email for easy grepping
+    private string LogTag => _account.Email ?? _account.AccountId[..Math.Min(8, _account.AccountId.Length)];
 
     public event Func<string, List<ParsedMessage>, Task>? MessagesReceived;
 
@@ -51,11 +51,11 @@ public class AccountImapWorker
         _pgpService = pgpService;
         _deduplicator = deduplicator;
         _scopeFactory = scopeFactory;
-        _imapService = new ImapService(imapLogger);
+        _imapService = new ImapService(imapLogger, fileLogger);
         _imapService.MessageReceived += OnMessageReceivedAsync;
     }
 
-    public void Start(HashSet<string> knownMessageIds, DateTimeOffset since, TimeSpan? syncInterval = null)
+    public void Start(TimeSpan? syncInterval = null)
     {
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -77,6 +77,50 @@ public class AccountImapWorker
             }
             _fileLogger.Write("INFO", "AccountImapWorker", $"[{LogTag}] Using eChat folder: '{echatFolder}' for account {_account.Email}");
 
+            // UID sync state helpers scoped to this worker's account + folder.
+            async Task<(uint UidValidity, uint LastSyncedUid)> LoadSyncState(string folder)
+            {
+                try
+                {
+                    using var scope = _scopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                    var state = await db.ImapFolderStates.FindAsync(_account.AccountId, folder);
+                    return state != null ? (state.UidValidity, state.LastSyncedUid) : (0u, 0u);
+                }
+                catch (Exception ex)
+                {
+                    _fileLogger.Write("WARN", "AccountImapWorker", $"[{LogTag}] Could not load sync state for {folder}: {ex.Message}");
+                    return (0u, 0u);
+                }
+            }
+
+            async Task SaveSyncState(string folder, uint uidValidity, uint lastSyncedUid)
+            {
+                try
+                {
+                    using var scope = _scopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                    var state = await db.ImapFolderStates.FindAsync(_account.AccountId, folder);
+                    if (state == null)
+                    {
+                        state = new ImapFolderSyncState { AccountId = _account.AccountId, FolderName = folder };
+                        db.ImapFolderStates.Add(state);
+                    }
+                    state.UidValidity = uidValidity;
+                    state.LastSyncedUid = lastSyncedUid;
+                    await db.SaveChangesAsync(ct);
+                }
+                catch (Exception ex)
+                {
+                    _fileLogger.Write("WARN", "AccountImapWorker", $"[{LogTag}] Could not save sync state for {folder}: {ex.Message}");
+                }
+            }
+
+            Task<(uint, uint)> LoadEchatState() => LoadSyncState(echatFolder);
+            Task SaveEchatState(uint v, uint u) => SaveSyncState(echatFolder, v, u);
+            Task<(uint, uint)> LoadInboxStateLocal() => LoadSyncState(InboxFolder);
+            Task SaveInboxStateLocal(uint v, uint u) => SaveSyncState(InboxFolder, v, u);
+
             // Restart loop: if the sync loop exits unexpectedly, restart it after a delay.
             // Only stops when ct is cancelled (i.e. Stop() is called).
             while (!ct.IsCancellationRequested)
@@ -86,9 +130,26 @@ public class AccountImapWorker
                     await _imapService.ConnectAsync(
                         _account.ImapServer, _account.ImapPort,
                         _account.Email, _account.Password, _account.ImapUseSsl);
-                    await _imapService.SyncEchatFolderAsync(echatFolder, knownMessageIds, since.UtcDateTime, ct);
-                    await _imapService.SyncInboxAsync(InboxFolder, echatFolder, knownMessageIds, since.UtcDateTime, ct);
-                    await _imapService.StartIdleAsync(InboxFolder, echatFolder, ct, knownMessageIds, syncInterval);
+
+                    // Move any new eChat messages from INBOX.
+                    var (inboxV, inboxUid) = await LoadInboxStateLocal();
+                    var (newInboxV, newInboxUid) = await _imapService.SyncInboxAsync(
+                        InboxFolder, echatFolder, inboxV, inboxUid, ct);
+                    await SaveInboxStateLocal(newInboxV, newInboxUid);
+
+                    // UID-based sync of the eChat folder.
+                    var (uidValidity, lastSyncedUid) = await LoadEchatState();
+                    _fileLogger.Write("INFO", "AccountImapWorker",
+                        $"[{LogTag}] Starting eChat sync: lastSyncedUid={lastSyncedUid}");
+                    var (newValidity, newLastUid) = await _imapService.SyncEchatFolderAsync(
+                        echatFolder, uidValidity, lastSyncedUid, ct);
+                    await SaveEchatState(newValidity, newLastUid);
+
+                    await _imapService.StartIdleAsync(
+                        InboxFolder, echatFolder, ct,
+                        getEchatSyncState: LoadEchatState,
+                        saveEchatSyncState: SaveEchatState,
+                        echatSyncInterval: syncInterval);
 
                     // StartIdleAsync only returns normally when ct is cancelled.
                     // If it returns without cancellation, something exited the loop unexpectedly.

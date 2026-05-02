@@ -13,6 +13,21 @@ window.getCursorPosition = function(id) {
     return el ? {x: el.getBoundingClientRect().left, y: el.getBoundingClientRect().top} : {x:0, y:0};
 };
 
+window.insertTextAtCursor = function(id, text) {
+    var ta = document.getElementById(id);
+    if (!ta) return;
+    var s = ta.selectionStart;
+    var val = ta.value;
+    ta.value = val.substring(0, s) + text + val.substring(s);
+    ta.selectionStart = ta.selectionEnd = s + text.length;
+    ta.focus();
+};
+
+window.getTextareaValue = function(id) {
+    var ta = document.getElementById(id);
+    return ta ? ta.value : '';
+};
+
 window.wrapSelectedText = function(id, prefix, suffix) {
     var ta = document.getElementById(id);
     if (!ta) return;
@@ -29,6 +44,7 @@ window._lastCtxY = 0;
 document.addEventListener('contextmenu', function(e) { window._lastCtxX = e.clientX; window._lastCtxY = e.clientY; });
 
 window.getLastCtxPos = function() { return {x: window._lastCtxX, y: window._lastCtxY}; };
+window.getLastContextMenuPosition = function() { return {x: window._lastCtxX, y: window._lastCtxY}; };
 
 window.positionMenu = function(id, x, y) {
     var el = document.getElementById(id);
@@ -73,6 +89,27 @@ window.showWebNotification = function(title, body) {
     var n = new Notification(title, { body: body, icon: '/favicon.ico', tag: 'echat-msg' });
     n.onclick = function() { window.focus(); n.close(); };
     setTimeout(function() { n.close(); }, 8000);
+};
+
+// Shows/hides the mobile format bar based on textarea selection.
+// Fires only when the has-selection state actually changes to avoid hammering Blazor interop.
+window.setupMobileFormatBar = function() {
+    var lastHasSelection = false;
+    document.addEventListener('selectionchange', function() {
+        var ta = document.getElementById('messageInput');
+        if (!ta || document.activeElement !== ta) {
+            if (lastHasSelection) {
+                lastHasSelection = false;
+                DotNet.invokeMethodAsync('EChat.UI', 'SetFormatBarVisible', false);
+            }
+            return;
+        }
+        var hasSelection = ta.selectionStart !== ta.selectionEnd;
+        if (hasSelection !== lastHasSelection) {
+            lastHasSelection = hasSelection;
+            DotNet.invokeMethodAsync('EChat.UI', 'SetFormatBarVisible', hasSelection);
+        }
+    });
 };
 
 window.downloadBytes = function(filename, bytes) {

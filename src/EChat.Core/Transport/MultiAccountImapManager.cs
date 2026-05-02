@@ -3,7 +3,6 @@ using EChat.Core.Data;
 using EChat.Core.Models;
 using EChat.Core.Protocol;
 using EChat.Core.Services;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -79,29 +78,6 @@ public class MultiAccountImapManager
         if (_workers.ContainsKey(account.AccountId))
             return;
 
-        var since = DateTimeOffset.UtcNow.AddDays(-4);
-        HashSet<string> knownIds;
-        try
-        {
-            using var scope = _sp.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            // DateTimeOffset comparison doesn't translate to SQLite — filter date client-side
-            var rows = await db.Messages
-                .Where(m => m.MessageId != null)
-                .Select(m => new { m.MessageId, m.ReceivedAt })
-                .ToListAsync();
-            var ids = rows
-                .Where(m => m.ReceivedAt >= since)
-                .Select(m => m.MessageId!)
-                .ToList();
-            knownIds = new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
-        }
-        catch (Exception ex)
-        {
-            _fileLogger.Write("WARN", "MultiAccountImapManager", $"Could not load known IDs for {account.Email}: {ex.Message}");
-            knownIds = new HashSet<string>();
-        }
-
         var worker = new AccountImapWorker(
             account,
             _sp.GetRequiredService<ILogger<EChat.Core.Transport.ImapService>>(),
@@ -118,6 +94,6 @@ public class MultiAccountImapManager
         };
 
         _workers[account.AccountId] = worker;
-        worker.Start(knownIds, since);
+        worker.Start();
     }
 }

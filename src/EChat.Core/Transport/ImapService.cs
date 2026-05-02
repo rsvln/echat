@@ -139,12 +139,15 @@ public class ImapService : IDisposable
     /// <paramref name="echatFolderName"/>. Non-εChat messages are left untouched.
     /// Also periodically re-syncs <paramref name="echatFolderName"/> so that messages
     /// moved there by another device (sent-to-self sync copies) are picked up.
+    /// <paramref name="getEchatSyncState"/> / <paramref name="saveEchatSyncState"/>
+    /// are optional callbacks to read/persist UID sync state across the IDLE lifetime.
     /// </summary>
     public async Task StartIdleAsync(string inboxFolderName, string echatFolderName,
-        CancellationToken cancellationToken, HashSet<string>? knownEchatIds = null,
+        CancellationToken cancellationToken,
+        Func<Task<(uint UidValidity, uint LastSyncedUid)>>? getEchatSyncState = null,
+        Func<uint, uint, Task>? saveEchatSyncState = null,
         TimeSpan? echatSyncInterval = null)
     {
-        knownEchatIds ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var lastEchatSync = DateTime.UtcNow;
         // How often to re-check the eChat folder for messages moved by other devices.
         // Defaults to 3 minutes, but can be overridden by caller based on sync profile.
@@ -168,9 +171,15 @@ public class ImapService : IDisposable
             if (DateTime.UtcNow - lastEchatSync < syncInterval) return;
             try
             {
-                // SyncEchatFolderAsync opens its own folder; INBOX will be closed by MailKit SELECT.
-                var since = lastEchatSync.AddMinutes(-1); // 1-min overlap to avoid gaps
-                await SyncEchatFolderAsync(echatFolderName, knownEchatIds!, since, cancellationToken);
+                // Load UID sync state (if caller provided callbacks), run UID-based sync, save result.
+                var (uidValidity, lastSyncedUid) = getEchatSyncState != null
+                    ? await getEchatSyncState()
+                    : (0u, 0u);
+                var (newValidity, newLastUid) = await SyncEchatFolderAsync(
+                    echatFolderName, uidValidity, lastSyncedUid, cancellationToken);
+                if (saveEchatSyncState != null && newLastUid != lastSyncedUid)
+                    await saveEchatSyncState(newValidity, newLastUid);
+
                 lastEchatSync = DateTime.UtcNow;
                 // Do NOT reopen inbox here. Setting null forces the reconnect block on the next
                 // iteration to reopen AND drain — catching any messages that arrived while the
@@ -190,7 +199,7 @@ public class ImapService : IDisposable
         try
         {
             inbox = await OpenInboxAsync();
-            await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken, knownEchatIds);
+            await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken);
             // Ignore return value here — if it failed we'll retry in the IDLE loop anyway.
        }
         catch (OperationCanceledException) { return; }
@@ -229,7 +238,7 @@ public class ImapService : IDisposable
                 // Drain any messages already sitting in inbox before entering IDLE.
                 // After reconnect the server won't send a COUNT change for mail that was
                 // already there, so IDLE would miss them until the sync-interval timeout.
-                bool ok = await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken, knownEchatIds);
+                bool ok = await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken);
                 if (!ok) { inbox = null; continue; }
                 await SyncEchatIfDueAsync();
            }
@@ -286,7 +295,7 @@ public class ImapService : IDisposable
 
             if (inbox != null)
             {
-                bool ok = await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken, knownEchatIds);
+                bool ok = await ProcessChatMessagesAsync(inbox, echatFolderName, cancellationToken);
                 if (!ok)
                 {
                     // Fetch error — force inbox reopen on next iteration so we skip IDLE
@@ -307,7 +316,7 @@ public class ImapService : IDisposable
         SearchQuery.SubjectContains($"[{folderName}]");
 
     /// <returns>true = processed normally; false = broke early due to fetch error (caller should skip IDLE and retry).</returns>
-    private async Task<bool> ProcessChatMessagesAsync(IMailFolder inbox, string echatFolderName, CancellationToken ct, HashSet<string>? knownMessageIds = null)
+    private async Task<bool> ProcessChatMessagesAsync(IMailFolder inbox, string echatFolderName, CancellationToken ct)
     {
         IList<UniqueId> uids;
         var subjectToken = $"[{echatFolderName}]";
@@ -371,13 +380,6 @@ public class ImapService : IDisposable
             if (message.Subject?.Contains(subjectToken, StringComparison.OrdinalIgnoreCase) != true)
                 continue;
 
-            var chatMsgId = message.Headers["Chat-Message-ID"];
-
-            // If already processed (ID in DB), skip content processing but still attempt
-            // to move from INBOX to eChat folder — the previous move may have failed,
-            // leaving the message stuck in INBOX permanently.
-            bool alreadyProcessed = chatMsgId != null && knownMessageIds != null && knownMessageIds.Contains(chatMsgId);
-
             // Move to eChat folder BEFORE firing the event so we can pass the stable
             // eChat UID (inbox UIDs change on move). If the move fails, fall back to
             // the inbox UID so the message is still processed.
@@ -389,8 +391,6 @@ public class ImapService : IDisposable
                 echatFolder ??= await GetOrCreateFolderAsync(echatFolderName);
                 newUid = await inbox.MoveToAsync(uid, echatFolder, ct);
                 if (newUid.HasValue) echatUid = newUid.Value.Id;
-                if (alreadyProcessed)
-                    _fileLogger.Write("INFO", "ImapService", $"[{LogTag}] Moved orphaned inbox message {uid} (already in DB) to {echatFolderName}");
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -400,24 +400,10 @@ public class ImapService : IDisposable
                 try { await inbox.AddFlagsAsync(uid, MessageFlags.Seen, true, ct); } catch { }
             }
 
-            // Skip content processing if already in DB
-            if (alreadyProcessed)
-            {
-                if (newUid.HasValue) movedEchatUids.Add(newUid.Value);
-                continue;
-            }
-
             if (MessageReceived != null)
             {
                 try { await MessageReceived(message, echatUid, echatFolder2); }
                 catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"[{LogTag}] Error in MessageReceived handler: {ex.Message}"); }
-            }
-
-            // Track processed message IDs so periodic eChat sync doesn't re-process them
-            if (chatMsgId != null && knownMessageIds != null)
-            {
-                lock (knownMessageIdsLock)
-                    knownMessageIds.Add(chatMsgId);
             }
 
             // Track UID for bulk Seen marking after the loop
@@ -448,32 +434,72 @@ public class ImapService : IDisposable
     private readonly object knownMessageIdsLock = new();
 
     /// <summary>
-    /// On startup, sync the eChat IMAP folder against the DB.
-    /// Fires <see cref="MessageReceived"/> for any message whose Chat-Message-ID
-    /// is not already in <paramref name="knownMessageIds"/>.
-    /// Never touches the Seen flag — deduplication is DB-driven, not flag-driven.
+    /// Syncs the eChat IMAP folder using UID-based discovery (no date anchors).
+    /// Only fetches messages with UID > <paramref name="storedLastSyncedUid"/>.
+    /// Fetches in descending order (newest first) for faster UI appearance, but
+    /// advances <paramref name="storedLastSyncedUid"/> only once a contiguous prefix
+    /// of the server UID list is fully downloaded (Variant A / two-cursor approach).
     /// </summary>
-    public async Task SyncEchatFolderAsync(string echatFolderName, HashSet<string> knownMessageIds, DateTime since, CancellationToken ct)
+    /// <returns>
+    /// Updated (UidValidity, LastSyncedUid) to be persisted by the caller.
+    /// If UIDVALIDITY changed, LastSyncedUid is reset to 0 and a full re-sync occurs.
+    /// </returns>
+    public async Task<(uint UidValidity, uint LastSyncedUid)> SyncEchatFolderAsync(
+        string echatFolderName,
+        uint storedUidValidity,
+        uint storedLastSyncedUid,
+        CancellationToken ct)
     {
         try
         {
             var echatFolder = await GetOrCreateFolderAsync(echatFolderName);
             await echatFolder.OpenAsync(FolderAccess.ReadWrite, ct);
 
+            var serverUidValidity = (uint)echatFolder.UidValidity;
+
+            // If UidValidity changed, the server rebuilt its UID sequence — reset to 0 and re-sync all.
+            if (storedUidValidity != 0 && serverUidValidity != storedUidValidity)
+            {
+                _fileLogger.Write("WARN", "ImapService",
+                    $"[{LogTag}] UidValidity changed ({storedUidValidity} → {serverUidValidity}) for {echatFolderName}. Full re-sync.");
+                storedLastSyncedUid = 0;
+            }
+
+            // Search all eChat messages in folder (returns only UIDs — cheap, no body download).
+            // Try subject filter first. If the server returns 0 (Yandex ignores SEARCH SUBJECT
+            // in subfolders), fall back to SearchQuery.All — everything in the eChat folder
+            // is an eChat message anyway (placed there by our own code).
             var subjectToken = $"[{echatFolderName}]";
-            var uids = await echatFolder.SearchAsync(
-                BuildSubjectQuery(echatFolderName).And(SearchQuery.DeliveredAfter(since)), ct);
-            if (uids.Count == 0)
+            var allUids = await echatFolder.SearchAsync(BuildSubjectQuery(echatFolderName), ct);
+            if (allUids.Count == 0)
+            {
+                _fileLogger.Write("DEBUG", "ImapService",
+                    $"[{LogTag}] Subject search returned 0 in eChat folder; falling back to SearchQuery.All");
+                allUids = await echatFolder.SearchAsync(SearchQuery.All, ct);
+            }
+
+            // Client-side: keep only UIDs we haven't processed yet.
+            var newUids = allUids.Where(u => u.Id > storedLastSyncedUid).OrderBy(u => u.Id).ToList();
+
+            _fileLogger.Write("INFO", "ImapService",
+                $"[{LogTag}] eChat sync: {allUids.Count} total UIDs in folder, {newUids.Count} new (lastSyncedUid={storedLastSyncedUid})");
+
+            if (newUids.Count == 0)
             {
                 try { await echatFolder.CloseAsync(false, ct); } catch { }
-                return;
-           }
+                return (serverUidValidity, storedLastSyncedUid);
+            }
 
-            _fileLogger.Write("INFO", "ImapService", $"[{LogTag}] eChat sync: {uids.Count} candidates in last 30d");
+            // Fetch in ASC order (oldest first) so the cursor advances after each save.
+            // This ensures that if the app is killed mid-batch, on restart we skip
+            // already-processed UIDs (DB dedup) and continue from where we left off.
+            // newUids is already sorted ASC.
+            var savedUids = new HashSet<uint>();
 
             var syncSeenUids = new List<UniqueId>();
+            var lastSyncedUid = storedLastSyncedUid;
 
-            foreach (var uid in uids)
+            foreach (var uid in newUids)
             {
                 ct.ThrowIfCancellationRequested();
 
@@ -482,59 +508,90 @@ public class ImapService : IDisposable
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                 catch (Exception ex)
                 {
-                    // After a timeout the echatFolder reference is stale — break so the caller
-                    // can re-open it on the next sync cycle rather than spinning with errors.
-                    _fileLogger.Write("WARN", "ImapService", $"[{LogTag}] Failed to fetch eChat message {uid}: {ex.Message}. Breaking to reconnect.");
+                    _fileLogger.Write("WARN", "ImapService", $"[{LogTag}] Failed to fetch eChat message {uid}: {ex.Message}. Stopping batch.");
                     break;
                 }
 
-                // Client-side subject guard — double-check after fetch in case the IMAP
-                // server returned messages that don't actually contain the subject token.
+                // Client-side subject guard (server may return false positives).
                 if (message.Subject?.Contains(subjectToken, StringComparison.OrdinalIgnoreCase) != true)
-                    continue;
-
-                // Chat-Message-ID is a custom header — only available in the full message,
-                // not in IMAP summary/envelope. Check it here against DB-derived knownIds.
-                var chatMsgId = message.Headers["Chat-Message-ID"];
-                if (chatMsgId != null && knownMessageIds.Contains(chatMsgId))
                 {
-                    syncSeenUids.Add(uid); // already processed — still mark Seen
+                    // Subject doesn't match — mark as "seen" so cursor can advance past it.
+                    savedUids.Add(uid.Id);
                     continue;
                 }
 
+                bool fired = false;
                 if (MessageReceived != null)
                 {
-                    try { await MessageReceived(message, (long)uid.Id, echatFolderName); }
-                    catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"[{LogTag}] Error processing eChat message {uid}: {ex.Message}"); continue; }
+                    try
+                    {
+                        await MessageReceived(message, (long)uid.Id, echatFolderName);
+                        fired = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        _fileLogger.Write("ERROR", "ImapService", $"[{LogTag}] Error processing eChat message {uid}: {ex.Message}");
+                        // Don't mark as saved — will retry on next sync.
+                        continue;
+                    }
                 }
 
-                // Track in-session so polling doesn't re-process the same message twice
-                if (chatMsgId != null) knownMessageIds.Add(chatMsgId);
-                syncSeenUids.Add(uid);
+                if (fired || MessageReceived == null)
+                {
+                    savedUids.Add(uid.Id);
+                    syncSeenUids.Add(uid);
+                }
+
+                // Advance the contiguous cursor: scan newUids (ASC) from the beginning,
+                // advance as far as we have consecutive saved entries.
+                lastSyncedUid = ComputeNewLastSyncedUid(newUids, savedUids, storedLastSyncedUid);
            }
 
-            // Bulk mark as Seen so mail clients don't show unread counters for echat messages
+            // Bulk mark processed messages as Seen so mail clients don't show unread counters.
             if (syncSeenUids.Count > 0)
                 try { await echatFolder.AddFlagsAsync(syncSeenUids, MessageFlags.Seen, true, ct); } catch { }
 
             try { await echatFolder.CloseAsync(false, ct); } catch { }
+
+            return (serverUidValidity, lastSyncedUid);
        }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             _fileLogger.Write("ERROR", "ImapService", $"[{LogTag}] Failed to sync eChat folder: {ex.Message}");
+            return (storedUidValidity, storedLastSyncedUid);
        }
    }
 
     /// <summary>
-    /// Startup INBOX scan: catches eChat messages that arrived while the app was offline,
-    /// including those already marked Seen (e.g. opened in Yandex web before the app started).
-    /// Uses DeliveredAfter(since) without NotSeen so Seen emails are not skipped.
-    /// Subject-filtered to avoid touching non-eChat messages.
-    /// Moves every matched message to the eChat folder (even if already processed) to keep INBOX clean.
+    /// Scans <paramref name="serverUids"/> (sorted ASC) from the start and returns
+    /// the highest UID for which all preceding UIDs in the list are also in <paramref name="savedUids"/>.
+    /// This ensures the cursor only advances over a gap-free prefix.
     /// </summary>
-    public async Task SyncInboxAsync(string inboxFolderName, string echatFolderName,
-        HashSet<string> knownMessageIds, DateTime since, CancellationToken ct)
+    private static uint ComputeNewLastSyncedUid(List<UniqueId> serverUids, HashSet<uint> savedUids, uint currentLastSynced)
+    {
+        uint result = currentLastSynced;
+        foreach (var uid in serverUids)
+        {
+            if (!savedUids.Contains(uid.Id)) break;
+            result = uid.Id;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Startup INBOX scan: catches eChat messages that arrived while the app was offline.
+    /// Uses UID-based cursor (same pattern as SyncEchatFolderAsync) to avoid rescanning
+    /// old messages on every start.
+    /// Moves matched messages to the eChat folder — SyncEchatFolderAsync then processes
+    /// them via its own UID cursor with the correct eChat-folder UID.
+    /// Falls back to a 7-day date window on the very first run (storedLastSyncedUid == 0).
+    /// </summary>
+    /// <returns>Updated (UidValidity, LastSyncedUid) for the INBOX folder to be persisted by caller.</returns>
+    public async Task<(uint UidValidity, uint LastSyncedUid)> SyncInboxAsync(
+        string inboxFolderName, string echatFolderName,
+        uint storedUidValidity, uint storedLastSyncedUid,
+        CancellationToken ct)
     {
         var subjectToken = $"[{echatFolderName}]";
         try
@@ -543,107 +600,96 @@ public class ImapService : IDisposable
             if (!inbox.IsOpen)
                 await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
 
-            // Search by subject + date window (no NotSeen — emails opened in web must still be processed).
-            IList<UniqueId> uids;
-            try
+            var serverUidValidity = (uint)inbox.UidValidity;
+
+            // Reset cursor if UidValidity changed.
+            if (storedUidValidity != 0 && serverUidValidity != storedUidValidity)
             {
-                uids = await inbox.SearchAsync(
-                    BuildSubjectQuery(echatFolderName).And(SearchQuery.DeliveredAfter(since)), ct);
-            }
-            catch
-            {
-                // Some servers reject compound queries — fall back to date-only then filter client-side.
-                uids = await inbox.SearchAsync(SearchQuery.DeliveredAfter(since), ct);
+                _fileLogger.Write("WARN", "ImapService",
+                    $"[{LogTag}] INBOX UidValidity changed ({storedUidValidity} → {serverUidValidity}). Resetting cursor.");
+                storedLastSyncedUid = 0;
             }
 
-            // Also try without subject filter if subject search returned 0 (Yandex quirk).
-            if (uids.Count == 0)
+            // First run: seed cursor from a 7-day window so we don't miss recent arrivals,
+            // but don't go through potentially huge inbox history.
+            IList<UniqueId> candidates;
+            if (storedLastSyncedUid == 0)
             {
-                uids = await inbox.SearchAsync(SearchQuery.DeliveredAfter(since), ct);
-                _fileLogger.Write("DEBUG", "ImapService", $"[{LogTag}] SyncInbox: subject search=0, date-only fallback={uids.Count} candidate(s)");
+                var since = DateTime.UtcNow.AddDays(-7);
+                try
+                {
+                    candidates = await inbox.SearchAsync(
+                        BuildSubjectQuery(echatFolderName).And(SearchQuery.DeliveredAfter(since)), ct);
+                }
+                catch
+                {
+                    candidates = await inbox.SearchAsync(SearchQuery.DeliveredAfter(since), ct);
+                }
+                // On Yandex, subject search returns 0 — fall back to date-only, filter client-side.
+                if (candidates.Count == 0)
+                    candidates = await inbox.SearchAsync(SearchQuery.DeliveredAfter(since), ct);
+
+                _fileLogger.Write("INFO", "ImapService",
+                    $"[{LogTag}] SyncInbox first run: {candidates.Count} candidate(s) in last 7 days");
+            }
+            else
+            {
+                // Subsequent runs: only look at new UIDs.
+                candidates = await inbox.SearchAsync(SearchQuery.All, ct);
+                candidates = candidates.Where(u => u.Id > storedLastSyncedUid).ToList();
+                _fileLogger.Write("INFO", "ImapService",
+                    $"[{LogTag}] SyncInbox: {candidates.Count} new candidate(s) after uid={storedLastSyncedUid}");
             }
 
-            if (uids.Count == 0) return;
-            _fileLogger.Write("INFO", "ImapService", $"[{LogTag}] SyncInbox: {uids.Count} candidate(s) since {since:yyyy-MM-dd HH:mm}");
+            if (candidates.Count == 0)
+                return (serverUidValidity, storedLastSyncedUid);
 
             IMailFolder? echatFolder = null;
+            var highestProcessed = storedLastSyncedUid;
 
-            foreach (var uid in uids)
+            foreach (var uid in candidates.OrderBy(u => u.Id))
             {
                 ct.ThrowIfCancellationRequested();
 
-                // Fetch headers first (cheap) for subject check and dedup.
-                var summary = (await inbox.FetchAsync(new[] { uid },
-                    MessageSummaryItems.Headers | MessageSummaryItems.Flags, ct))
-                    .FirstOrDefault();
-                if (summary == null) continue;
+                // Fetch headers only (cheap) for subject guard.
+                var summaries = await inbox.FetchAsync(new[] { uid },
+                    MessageSummaryItems.Headers | MessageSummaryItems.Flags, ct);
+                var summary = summaries.FirstOrDefault();
+                if (summary == null) { highestProcessed = Math.Max(highestProcessed, uid.Id); continue; }
 
-                // Client-side subject guard — only process [eChat] messages.
                 var subject = summary.Headers?[MimeKit.HeaderId.Subject];
-                if (subject?.Contains(subjectToken, StringComparison.OrdinalIgnoreCase) != true)
-                    continue;
+                bool isEchat = subject?.Contains(subjectToken, StringComparison.OrdinalIgnoreCase) == true;
 
-                var msgId = summary.Headers?["Chat-Message-ID"]
-                            ?? summary.Headers?["Message-ID"];
-
-                bool alreadyProcessed = msgId != null && knownMessageIds.Contains(msgId);
-
-                // Read full message BEFORE moving — MoveToAsync invalidates the INBOX UID.
-                MimeMessage? message = null;
-                if (!alreadyProcessed)
+                if (!isEchat)
                 {
-                    try { message = await inbox.GetMessageAsync(uid, ct); }
-                    catch (Exception ex)
-                    {
-                        _fileLogger.Write("ERROR", "ImapService", $"[{LogTag}] Failed to fetch inbox message {uid}: {ex.Message}");
-                        // Still attempt to move (inbox cleanup), but skip processing
-                    }
+                    // Not an eChat message — advance cursor past it so we don't re-examine it.
+                    highestProcessed = Math.Max(highestProcessed, uid.Id);
+                    continue;
                 }
 
-                // Always move eChat messages from INBOX to the eChat folder (keeps inbox clean).
+                // Move to eChat folder — SyncEchatFolderAsync processes it via its UID cursor.
                 try
                 {
                     echatFolder ??= await GetOrCreateFolderAsync(echatFolderName);
                     await inbox.MoveToAsync(uid, echatFolder, ct);
-                    _fileLogger.Write("INFO", "ImapService",
-                        $"[{LogTag}] SyncInbox: moved uid={uid} to {echatFolderName}" +
-                        (alreadyProcessed ? " (already processed, inbox cleanup)" : ""));
-                    if (alreadyProcessed) continue; // moved but no need to re-process content
+                    _fileLogger.Write("INFO", "ImapService", $"[{LogTag}] SyncInbox: moved uid={uid} to {echatFolderName}");
+                    highestProcessed = Math.Max(highestProcessed, uid.Id);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
-                    _fileLogger.Write("WARN", "ImapService",
-                        $"[{LogTag}] SyncInbox: failed to move uid={uid} to {echatFolderName}: {ex.Message}");
-                    if (alreadyProcessed)
-                    {
-                        // Move failed but already processed — just mark Seen and skip
-                        try { await inbox.AddFlagsAsync(uid, MessageFlags.Seen, true, ct); } catch { }
-                        continue;
-                    }
-                    // Move failed, fall through to process content from inbox
-                }
-
-                if (message == null) continue; // fetch failed earlier
-
-                if (MessageReceived != null)
-                {
-                    try { await MessageReceived(message, (long)uid.Id, inboxFolderName); }
-                    catch (Exception ex) { _fileLogger.Write("ERROR", "ImapService", $"[{LogTag}] Error processing inbox message {uid}: {ex.Message}"); }
-                }
-
-                // Track in knownMessageIds so IDLE/polling loop doesn't reprocess on next cycle.
-                if (msgId != null)
-                {
-                    lock (knownMessageIdsLock)
-                        knownMessageIds.Add(msgId);
+                    _fileLogger.Write("WARN", "ImapService", $"[{LogTag}] SyncInbox: failed to move uid={uid}: {ex.Message}");
+                    // Don't advance cursor — will retry on next sync.
                 }
             }
+
+            return (serverUidValidity, highestProcessed);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             _fileLogger.Write("ERROR", "ImapService", $"[{LogTag}] Failed to sync inbox: {ex.Message}");
+            return (storedUidValidity, storedLastSyncedUid);
         }
     }
 

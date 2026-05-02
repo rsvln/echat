@@ -190,6 +190,19 @@
             </div>
         }
 
+        @if (showFormatMenu)
+        {
+            <div class="format-bar-mobile">
+                <button class="format-menu-btn" @onclick="InsertBold"><strong>B</strong></button>
+                <button class="format-menu-btn" @onclick="InsertItalic"><em>I</em></button>
+                <button class="format-menu-btn" @onclick="InsertStrikethrough"><del>S</del></button>
+                <button class="format-menu-btn" @onclick="InsertUnderline"><u>U</u></button>
+                <button class="format-menu-btn" @onclick="InsertInlineCode"><code>&lt;/&gt;</code></button>
+                <button class="format-menu-btn" @onclick="InsertCodeFence"><span style="font-size:9px;">{ }</span></button>
+                <button class="format-menu-btn" @onclick="InsertSpoiler"><span style="background:black;color:white;padding:0 2px;font-size:10px;">S</span></button>
+            </div>
+        }
+
         <div class="message-input-bar">
             <div class="attach-wrap">
                 <button class="input-btn" @onclick="ShowAttachMenu" @onclick:stopPropagation title="Attach">
@@ -209,6 +222,7 @@
                     </div>
                 }
             </div>
+
             <textarea class="message-textarea"
                       id="messageInput"
                       placeholder="@(editingMessage != null ? "Edit message…" : "Write a message...")"
@@ -244,6 +258,7 @@
                 </div>
             </div>
         }
+
 
         @if (showForwardDialog)
         {
@@ -341,6 +356,7 @@
 
     protected override async Task OnInitializedAsync()
     {
+        _instance = this;
         AndroidBackHandler.Register(() => InvokeAsync(GoBack));
         sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
         using var scope = ScopeFactory.CreateScope();
@@ -426,6 +442,7 @@
         if (firstRender)
         {
             await JS.InvokeVoidAsync("setupTextareaResize");
+            await JS.InvokeVoidAsync("setupMobileFormatBar");
         }
         if (_scrollToBottom)
         {
@@ -917,11 +934,11 @@
         });
     }
 
-    private async Task OnMessageTextInput(ChangeEventArgs e)
+    private void OnMessageTextInput(ChangeEventArgs e)
     {
         var wasEmpty = string.IsNullOrWhiteSpace(messageText);
         messageText = e.Value?.ToString() ?? string.Empty;
-        await JS.InvokeVoidAsync("autoResizeTextarea");
+        // textarea resize is handled by the native JS input listener (setupTextareaResize)
 
         if (wasEmpty != string.IsNullOrWhiteSpace(messageText))
             StateHasChanged();
@@ -949,7 +966,7 @@
         StateHasChanged();
     }
     private void ShowAttachMenu() { showAttachMenu = !showAttachMenu; showEmojiPicker = false; }
-    private void ClosePopups() { showAttachMenu = false; showEmojiPicker = false; StateHasChanged(); }
+    private void ClosePopups() { showAttachMenu = false; showEmojiPicker = false; showFormatMenu = false; StateHasChanged(); }
 
     private async Task SelectPhoto() { showAttachMenu = false; await Task.Delay(50); await JS.InvokeVoidAsync("eval", "document.getElementById('photoInput').click();"); }
     private async Task SelectFile() { showAttachMenu = false; await Task.Delay(50); await JS.InvokeVoidAsync("eval", "document.getElementById('fileInput').click();"); }
@@ -1207,6 +1224,25 @@
         return $"avatar-color-{hash}";
     }
 
+    private bool showFormatMenu = false;
+
+    private Task InsertCodeFence() => InsertFormat("```\n", "\n```");
+
+    private Task InsertBold() => InsertFormat("**", "**");
+    private Task InsertItalic() => InsertFormat("*", "*");
+    private Task InsertStrikethrough() => InsertFormat("~~", "~~");
+    private Task InsertUnderline() => InsertFormat("--", "--");
+    private Task InsertInlineCode() => InsertFormat("`", "`");
+    private Task InsertSpoiler() => InsertFormat("||", "||");
+
+    private async Task InsertFormat(string prefix, string suffix)
+    {
+        await JS.InvokeVoidAsync("wrapSelectedText", "messageInput", prefix, suffix);
+        // Update messageText from textarea
+        messageText = await JS.InvokeAsync<string>("getTextareaValue", "messageInput");
+        StateHasChanged();
+    }
+
     private class PendingAttachment
     {
         public string FileName { get; set; } = "";
@@ -1215,5 +1251,26 @@
         public byte[] Data { get; set; } = Array.Empty<byte>();
         public string DataUrl { get; set; } = "";
         public string Caption { get; set; } = "";
+    }
+
+    private static ChatView? _instance;
+    
+    [JSInvokable]
+    public static Task OnMobileFormatMenu(double x, double y, string text)
+    {
+        if (_instance == null) return Task.CompletedTask;
+        _instance.showFormatMenu = true;
+        _instance.StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public static Task SetFormatBarVisible(bool visible)
+    {
+        if (_instance == null) return Task.CompletedTask;
+        if (_instance.showFormatMenu == visible) return Task.CompletedTask;
+        _instance.showFormatMenu = visible;
+        _instance.StateHasChanged();
+        return Task.CompletedTask;
     }
 }

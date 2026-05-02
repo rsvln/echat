@@ -103,6 +103,12 @@ public partial class ChatList
     // Send on Enter mode (true = Enter sends, false = Ctrl+Enter sends)
     private bool sendOnEnter = true;
 
+    // Format context menu
+    private bool showFormatMenu = false;
+    private double formatMenuX;
+    private double formatMenuY;
+    private string selectedText = "";
+
     // Emoji & attach
     private bool showEmojiPicker = false;
     private bool showAttachMenu = false;
@@ -129,6 +135,7 @@ public partial class ChatList
 
     protected override async Task OnInitializedAsync()
     {
+        _instance = this;
         await LoadAccountsAsync();
         await LoadChatsAsync();
         using var scope = ScopeFactory.CreateScope();
@@ -407,7 +414,7 @@ public partial class ChatList
         if (!chatLastMessages.TryGetValue(chat.ChatId, out var info))
             return string.Empty;
 
-        var text = (info.Content ?? string.Empty)
+        var text = StripFormatting(info.Content ?? string.Empty)
             .Replace("\r", "").Replace("\n", " ").Trim();
         if (text.Length > 55) text = text[..52] + "…";
 
@@ -428,6 +435,8 @@ public partial class ChatList
 
         return $"{senderLabel}: {text}";
     }
+
+    private static string StripFormatting(string text) => HtmlFormatter.StripFormatting(text);
 
     private async Task UpdateAccountUnreadCountsAsync()
     {
@@ -516,7 +525,7 @@ public partial class ChatList
                         Content = payload,
                         Recipients = new List<string> { email },
                         RecipientPublicKey = isSelf ? null : contact?.PublicKey,
-                        Timestamp = DateTimeOffset.UtcNow,
+                        Timestamp = NtpClock.UtcNow,
                         Type = MessageType.System,
                         SystemType = "group-delete",
                         GroupId = effectiveGroupId,
@@ -561,7 +570,7 @@ public partial class ChatList
                             Content = payload,
                             Recipients = new List<string> { email },
                             RecipientPublicKey = isSelf ? null : contact?.PublicKey,
-                            Timestamp = DateTimeOffset.UtcNow,
+                            Timestamp = NtpClock.UtcNow,
                             Type = MessageType.System,
                             SystemType = "chat-delete",
                             Tier = BatchTier.Immediate,
@@ -620,7 +629,7 @@ public partial class ChatList
                     Content = payload,
                     Recipients = new List<string> { email },
                     RecipientPublicKey = contact?.PublicKey,
-                    Timestamp = DateTimeOffset.UtcNow,
+                    Timestamp = NtpClock.UtcNow,
                     Type = MessageType.System,
                     SystemType = "group-leave",
                     GroupId = groupId,
@@ -939,7 +948,7 @@ public partial class ChatList
                     Content = "read-notification",
                     Recipients = new List<string> { grp.Key },
                     RecipientPublicKey = contact?.PublicKey,
-                    Timestamp = DateTimeOffset.UtcNow,
+                    Timestamp = NtpClock.UtcNow,
                     Type = MessageType.ReadReceipt,
                     ReadOf = msgIds,
                     Tier = BatchTier.System,
@@ -1082,7 +1091,7 @@ public partial class ChatList
 
             // Optimistic: update in-memory immediately
             var inMem = messages?.FirstOrDefault(m => m.MessageId == editing.MessageId);
-            if (inMem != null) { inMem.Content = text; inMem.IsEdited = true; }
+            if (inMem != null) { inMem.Content = text; inMem.FormattedContent = HtmlFormatter.Format(text); inMem.IsEdited = true; }
             _scrollToBottom = true;
             StateHasChanged();
 
@@ -1090,6 +1099,7 @@ public partial class ChatList
                 .Where(m => m.MessageId == editing.MessageId)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(m => m.Content, text)
+                    .SetProperty(m => m.FormattedContent, HtmlFormatter.Format(text))
                     .SetProperty(m => m.IsEdited, true)
                     .SetProperty(m => m.EditVersion, editing.EditVersion + 1));
 
@@ -1101,7 +1111,7 @@ public partial class ChatList
                     Content = text,
                     Recipients = recipients,
                     GroupId = selectedChat.Type == ChatType.Group ? selectedChat.GroupId : null,
-                    Timestamp = DateTimeOffset.UtcNow,
+                    Timestamp = NtpClock.UtcNow,
                     Type = MessageType.Edit,
                     EditOf = editing.MessageId,
                     EditVersion = editing.EditVersion + 1,
@@ -1131,6 +1141,7 @@ public partial class ChatList
             ChatId = selectedChatId!,
             Sender = UserContext.UserEmail,
             Content = text,
+            FormattedContent = HtmlFormatter.Format(text),
             Timestamp = now,
             DisplayTimestamp = now,
             ReceivedAt = now,
@@ -1258,7 +1269,7 @@ public partial class ChatList
                 MessageId = msgId,
                 Emoji = data.Emoji,
                 Sender = UserContext.UserEmail,
-                Timestamp = DateTimeOffset.UtcNow
+                Timestamp = NtpClock.UtcNow
             };
             list.Add(newReaction);
         }
@@ -1280,7 +1291,7 @@ public partial class ChatList
                 Content = data.Emoji,
                 Recipients = recipients,
                 GroupId = selectedChat?.Type == ChatType.Group ? selectedChat.GroupId : null,
-                Timestamp = DateTimeOffset.UtcNow,
+                Timestamp = NtpClock.UtcNow,
                 Type = MessageType.Reaction,
                 Reaction = data.Emoji,
                 ReactionTo = msgId,
@@ -1358,7 +1369,7 @@ public partial class ChatList
                 Content = string.Empty,
                 Recipients = recipients,
                 GroupId = selectedChat?.Type == ChatType.Group ? selectedChat.GroupId : null,
-                Timestamp = DateTimeOffset.UtcNow,
+                Timestamp = NtpClock.UtcNow,
                 Type = MessageType.Delete,
                 DeleteOf = msg.MessageId,
                 Tier = BatchTier.Immediate
@@ -1394,6 +1405,7 @@ public partial class ChatList
             ChatId = targetChat.ChatId,
             Sender = UserContext.UserEmail,
             Content = msg.Content,
+            FormattedContent = HtmlFormatter.Format(msg.Content),
             Timestamp = now,
             DisplayTimestamp = now,
             ReceivedAt = now
@@ -1523,6 +1535,65 @@ public partial class ChatList
     {
         showAttachMenu = false;
         showEmojiPicker = false;
+        showFormatMenu = false;
+        StateHasChanged();
+    }
+
+    private async Task OnTextareaContextMenu()
+    {
+        selectedText = await JS.InvokeAsync<string>("getSelectedText");
+        Console.WriteLine("[OnTextareaContextMenu] Selected text:", selectedText, "len:", selectedText?.Length);
+        
+        if (!string.IsNullOrEmpty(selectedText))
+        {
+            var pos = await JS.InvokeAsync<PositionResult>("getLastContextMenuPosition");
+            Console.WriteLine("[OnTextareaContextMenu] Position:", pos.x, pos.y);
+            
+            formatMenuX = pos.x - 60;
+            formatMenuY = pos.y - 50;
+            showFormatMenu = true;
+            StateHasChanged();
+        }
+        else
+        {
+            await Task.Delay(50);
+            selectedText = await JS.InvokeAsync<string>("getSelectedText");
+            Console.WriteLine("[OnTextareaContextMenu] Delayed check - selected:", selectedText, "len:", selectedText?.Length);
+            
+            if (!string.IsNullOrEmpty(selectedText))
+            {
+                var pos = await JS.InvokeAsync<PositionResult>("getLastContextMenuPosition");
+                formatMenuX = pos.x - 60;
+                formatMenuY = pos.y - 50;
+                showFormatMenu = true;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private class PositionResult { public double x { get; set; } public double y { get; set; } }
+
+    public async Task ShowFormatMenuAt(string inputId, double clientX, double clientY, string text)
+    {
+        selectedText = text;
+        formatMenuX = clientX - 60;
+        formatMenuY = clientY - 50;
+        showFormatMenu = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void CloseFormatMenu()
+    {
+        showFormatMenu = false;
+        selectedText = "";
+    }
+
+    private async Task InsertFormat(string prefix, string suffix)
+    {
+        await JS.InvokeVoidAsync("wrapSelectedText", "messageInput", prefix, suffix);
+        var domText = await JS.InvokeAsync<string>("eval", "document.getElementById('messageInput').value");
+        messageText = domText;
+        showFormatMenu = false;
         StateHasChanged();
     }
 
@@ -1618,13 +1689,31 @@ public partial class ChatList
         return (Microsoft.AspNetCore.Components.MarkupString)result;
     }
 
-    private class PendingAttachment
+private class PendingAttachment
     {
         public string FileName { get; set; } = "";
         public string ContentType { get; set; } = "";
-        public long Size { get; set; }
+        public long Size { get; set; } = 0;
         public byte[] Data { get; set; } = Array.Empty<byte>();
         public string DataUrl { get; set; } = "";
         public string Caption { get; set; } = "";
+    }
+
+    private static ChatList? _instance;
+    
+    [JSInvokable]
+    public static Task OnMobileFormatMenu(double x, double y, string text)
+    {
+        return _instance?.ShowMobileFormatMenu(x, y, text) ?? Task.CompletedTask;
+    }
+    
+    private Task ShowMobileFormatMenu(double x, double y, string text)
+    {
+selectedText = text;
+        formatMenuX = x;
+        formatMenuY = y;
+        showFormatMenu = true;
+        StateHasChanged();
+        return Task.CompletedTask;
     }
 }

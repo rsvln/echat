@@ -1,5 +1,6 @@
 using EChat.Core.Protocol;
 using EChat.Core.Services;
+using EChat.Core.Sync;
 
 namespace EChat.Core.Groups;
 
@@ -23,7 +24,7 @@ public class GroupMergeEngine
             Name = ChooseNameByTimestamp(local, remote),
             Members = MergeMembers(local, remote),
             Admins = MergeAdmins(local, remote),
-            Timestamp = DateTimeOffset.UtcNow
+            Timestamp = NtpClock.UtcNow
         };
         
         _fileLogger.Write("INFO", "GroupMergeEngine", $"Merged group {merged.GroupId} to version {merged.Version}: {merged.Members.Count} members, {merged.Admins.Count} admins");

@@ -28,6 +28,7 @@ public class EmailTransportService
     private readonly SyncEngine _syncEngine;
     private readonly FileLogger _fileLogger;
     private readonly DatabasePathInfo _dbPathInfo;
+    private readonly NtpTimeService _ntpTimeService;
 
     public bool IsConnected { get; private set; }
 
@@ -200,7 +201,8 @@ public class EmailTransportService
         PgpService pgpService,
         SyncEngine syncEngine,
         FileLogger fileLogger,
-        DatabasePathInfo dbPathInfo)
+        DatabasePathInfo dbPathInfo,
+        NtpTimeService ntpTimeService)
     {
         _logger = logger;
         _imapService = imapService;
@@ -214,6 +216,7 @@ public class EmailTransportService
         _syncEngine = syncEngine;
         _fileLogger = fileLogger;
         _dbPathInfo = dbPathInfo;
+        _ntpTimeService = ntpTimeService;
 
         _batchQueue = new BatchQueue(
             SendBatchedAsync,
@@ -228,6 +231,7 @@ public class EmailTransportService
     {
         await _imapService.ConnectAsync(config.ImapServer, config.ImapPort, config.Email, password, config.UseSsl);
         await _smtpService.ConnectAsync(config.SmtpServer, config.SmtpPort, config.Email, password, config.UseSsl);
+        _ntpTimeService.AddFallbackHost(config.ImapServer);
         IsConnected = true;
     }
 
@@ -359,60 +363,6 @@ public class EmailTransportService
 
     private async Task StartSyncLoopAsync(Account account, CancellationToken ct)
     {
-        var settingKey = SyncTimestampKeyPrefix + account.AccountId;
-
-        // Load last-sync timestamp from DB; default to 30 days ago on first run.
-        DateTimeOffset lastSync;
-        try
-        {
-            using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            var setting = await db.Settings.FindAsync(settingKey);
-            lastSync = setting != null && DateTimeOffset.TryParse(setting.Value, out var parsed)
-                ? parsed
-                : DateTimeOffset.UtcNow.AddDays(-30);
-        }
-        catch (Exception ex)
-        {
-            _fileLogger.Write("WARN", "EmailTransportService", $"Could not load sync timestamp; defaulting to 30 days ago: {ex.Message}");
-            lastSync = DateTimeOffset.UtcNow.AddDays(-30);
-        }
-
-        // 2-day overlap guards against clock skew and partial syncs
-        var since = lastSync.AddDays(-2);
-        if ((DateTimeOffset.UtcNow - since).TotalDays > 30)
-            since = DateTimeOffset.UtcNow.AddDays(-30);
-
-        // Load only recent known IDs — strictly per-account and bounded by the sync window.
-        // Loading IDs from ALL accounts causes cross-account contamination: if account B
-        // already processed a group-chat message (same Chat-Message-ID), account A's IDLE
-        // loop would see it in knownIds and skip it, so account A never shows that message.
-        HashSet<string> knownIds;
-        try
-        {
-            using var scope = _scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            // DateTimeOffset comparison doesn't translate to SQLite — filter date client-side.
-            // Join with Chats to restrict to this account's messages only.
-            var rows = await db.Messages
-                .Where(m => m.MessageId != null)
-                .Join(db.Chats, m => m.ChatId, c => c.ChatId,
-                      (m, c) => new { m.MessageId, m.ReceivedAt, c.AccountId })
-                .Where(x => x.AccountId == account.AccountId)
-                .Select(x => new { x.MessageId, x.ReceivedAt })
-                .ToListAsync();
-            var ids = rows
-                .Where(m => m.ReceivedAt >= since)
-                .Select(m => m.MessageId!)
-                .ToList();
-            knownIds = new HashSet<string>(ids, StringComparer.OrdinalIgnoreCase);
-        }
-        catch (Exception ex)
-        {
-            _fileLogger.Write("WARN", "EmailTransportService", $"Could not load known message IDs; eChat sync may reprocess messages: {ex.Message}");
-            knownIds = new HashSet<string>();
-        }
-
         // Load folder name from per-account settings; fall back to default.
         string echatFolder = EchatFolder;
         try
@@ -432,18 +382,102 @@ public class EmailTransportService
         // Retry messages that were stuck in Sending status (app was killed mid-send)
         await RetryStuckSendingAsync(account, ct);
 
-        // Sync eChat folder before starting IDLE/polling
+        // Helper: load UID sync state for the eChat folder from DB.
+        async Task<(uint UidValidity, uint LastSyncedUid)> LoadSyncState()
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                var state = await db.ImapFolderStates.FindAsync(account.AccountId, echatFolder);
+                return state != null ? (state.UidValidity, state.LastSyncedUid) : (0u, 0u);
+            }
+            catch (Exception ex)
+            {
+                _fileLogger.Write("WARN", "EmailTransportService", $"Could not load IMAP sync state: {ex.Message}");
+                return (0u, 0u);
+            }
+        }
+
+        // Helper: persist updated UID sync state after a successful sync batch.
+        async Task SaveSyncState(uint uidValidity, uint lastSyncedUid)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                var state = await db.ImapFolderStates.FindAsync(account.AccountId, echatFolder);
+                if (state == null)
+                {
+                    state = new ImapFolderSyncState { AccountId = account.AccountId, FolderName = echatFolder };
+                    db.ImapFolderStates.Add(state);
+                }
+                state.UidValidity = uidValidity;
+                state.LastSyncedUid = lastSyncedUid;
+                await db.SaveChangesAsync(ct);
+                _fileLogger.Write("DEBUG", "EmailTransportService",
+                    $"Saved IMAP sync state for {account.Email}/{echatFolder}: uidValidity={uidValidity}, lastSyncedUid={lastSyncedUid}");
+            }
+            catch (Exception ex)
+            {
+                _fileLogger.Write("WARN", "EmailTransportService", $"Could not save IMAP sync state: {ex.Message}");
+            }
+        }
+
+        // Helper: load/save sync state for INBOX (separate cursor from eChat folder).
+        async Task<(uint UidValidity, uint LastSyncedUid)> LoadInboxState()
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                var state = await db.ImapFolderStates.FindAsync(account.AccountId, InboxFolder);
+                return state != null ? (state.UidValidity, state.LastSyncedUid) : (0u, 0u);
+            }
+            catch (Exception ex)
+            {
+                _fileLogger.Write("WARN", "EmailTransportService", $"Could not load INBOX sync state: {ex.Message}");
+                return (0u, 0u);
+            }
+        }
+
+        async Task SaveInboxState(uint uidValidity, uint lastSyncedUid)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                var state = await db.ImapFolderStates.FindAsync(account.AccountId, InboxFolder);
+                if (state == null)
+                {
+                    state = new ImapFolderSyncState { AccountId = account.AccountId, FolderName = InboxFolder };
+                    db.ImapFolderStates.Add(state);
+                }
+                state.UidValidity = uidValidity;
+                state.LastSyncedUid = lastSyncedUid;
+                await db.SaveChangesAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _fileLogger.Write("WARN", "EmailTransportService", $"Could not save INBOX sync state: {ex.Message}");
+            }
+        }
+
+        // Startup: scan INBOX for any eChat messages that arrived while offline, move them to eChat folder.
+        // SyncEchatFolderAsync will then process them via UID cursor.
         _syncEngine.RecordWakeup();
-        await _imapService.SyncEchatFolderAsync(echatFolder, knownIds, since.UtcDateTime, ct);
+        var (inboxValidity, inboxLastUid) = await LoadInboxState();
+        var (newInboxValidity, newInboxLastUid) = await _imapService.SyncInboxAsync(
+            InboxFolder, echatFolder, inboxValidity, inboxLastUid, ct);
+        await SaveInboxState(newInboxValidity, newInboxLastUid);
 
-        // Also scan INBOX for any unseen eChat messages that arrived before the current session.
-        // StartIdleAsync uses a subject-search approach that may return 0 results on some servers
-        // (e.g. Yandex IMAP ignores SubjectContains for existing INBOX messages), so we explicitly
-        // sweep INBOX with SearchQuery.NotSeen here to catch anything missed by the subject search.
-        await _imapService.SyncInboxAsync(InboxFolder, echatFolder, knownIds, since.UtcDateTime, ct);
-
-        // Save current time as the new high-water mark
-        await SaveSyncTimestampAsync(settingKey);
+        // Sync eChat folder using UID-based cursor — no date anchors.
+        var (uidValidity, lastSyncedUid) = await LoadSyncState();
+        _fileLogger.Write("INFO", "EmailTransportService",
+            $"Starting eChat sync for {account.Email}: storedUidValidity={uidValidity}, lastSyncedUid={lastSyncedUid}");
+        var (newValidity, newLastUid) = await _imapService.SyncEchatFolderAsync(
+            echatFolder, uidValidity, lastSyncedUid, ct);
+        await SaveSyncState(newValidity, newLastUid);
 
         // Determine strategy
         var strategy = _syncEngine.GetCurrentStrategy(batteryLevel: 100, isMetered: false, isCellular: false);
@@ -451,65 +485,47 @@ public class EmailTransportService
         if (strategy.UseIdle)
         {
             _fileLogger.Write("INFO", "EmailTransportService", $"Starting IMAP IDLE for {account.Email} (sync interval={strategy.PollingInterval.TotalMinutes}min)");
-            await _imapService.StartIdleAsync(InboxFolder, echatFolder, ct, knownIds, strategy.PollingInterval);
+            await _imapService.StartIdleAsync(
+                InboxFolder, echatFolder, ct,
+                getEchatSyncState: LoadSyncState,
+                saveEchatSyncState: SaveSyncState,
+                echatSyncInterval: strategy.PollingInterval);
         }
         else
         {
             _fileLogger.Write("INFO", "EmailTransportService", $"Starting polling loop for {account.Email} (interval={strategy.PollingInterval})");
-            await StartPollingLoopAsync(strategy.PollingInterval, since, ct, echatFolder);
+            await StartPollingLoopAsync(strategy.PollingInterval, ct, echatFolder,
+                LoadSyncState, SaveSyncState, LoadInboxState, SaveInboxState);
         }
     }
 
-    private async Task StartPollingLoopAsync(TimeSpan interval, DateTimeOffset since, CancellationToken ct, string? echatFolderOverride = null)
+    private async Task StartPollingLoopAsync(
+        TimeSpan interval, CancellationToken ct, string echatFolder,
+        Func<Task<(uint UidValidity, uint LastSyncedUid)>> loadSyncState,
+        Func<uint, uint, Task> saveSyncState,
+        Func<Task<(uint UidValidity, uint LastSyncedUid)>> loadInboxState,
+        Func<uint, uint, Task> saveInboxState)
     {
-        var lastSync = since;
-
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                using var scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-
-                // Load known IDs only from last sync window (with 2-day overlap),
-                // strictly filtered to this account. Cross-account IDs would cause this
-                // account's polling to skip messages that another account already processed
-                // (same Chat-Message-ID in group chats).
-                var overlapSince = lastSync.AddDays(-2);
-                var accountId = _accountConfig.AccountId;
-                var allRows = await db.Messages
-                    .Where(m => m.MessageId != null)
-                    .Join(db.Chats, m => m.ChatId, c => c.ChatId,
-                          (m, c) => new { m.MessageId, m.ReceivedAt, c.AccountId })
-                    .Where(x => x.AccountId == accountId)
-                    .Select(x => new { x.MessageId, x.ReceivedAt })
-                    .ToListAsync();
-                var knownIds = new HashSet<string>(
-                    allRows.Where(m => m.ReceivedAt >= overlapSince).Select(m => m.MessageId!),
-                    StringComparer.OrdinalIgnoreCase);
-
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeoutCts.CancelAfter(interval);
 
-                var echatFolder = echatFolderOverride ?? EchatFolder;
                 _syncEngine.RecordWakeup();
-                await _imapService.SyncEchatFolderAsync(echatFolder, knownIds, overlapSince.UtcDateTime, timeoutCts.Token);
-                await _imapService.SyncInboxAsync(InboxFolder, echatFolder, knownIds, overlapSince.UtcDateTime, timeoutCts.Token);
 
-                lastSync = DateTimeOffset.UtcNow;
+                // Move any new eChat messages from INBOX.
+                var (inboxV, inboxUid) = await loadInboxState();
+                var (newInboxV, newInboxUid) = await _imapService.SyncInboxAsync(
+                    InboxFolder, echatFolder, inboxV, inboxUid, timeoutCts.Token);
+                await saveInboxState(newInboxV, newInboxUid);
 
-                // Save sync timestamp
-                var settingKey = SyncTimestampKeyPrefix + _accountConfig.AccountId;
-                var setting = await db.Settings.FindAsync(settingKey);
-                var now = DateTimeOffset.UtcNow.ToString("O");
-                if (setting == null)
-                    db.Settings.Add(new Setting { Key = settingKey, Value = now, UpdatedAt = DateTimeOffset.UtcNow });
-                else
-                {
-                    setting.Value = now;
-                    setting.UpdatedAt = DateTimeOffset.UtcNow;
-                }
-                await db.SaveChangesAsync();
+                // UID-based sync of the eChat folder.
+                var (uidValidity, lastSyncedUid) = await loadSyncState();
+                var (newValidity, newLastUid) = await _imapService.SyncEchatFolderAsync(
+                    echatFolder, uidValidity, lastSyncedUid, timeoutCts.Token);
+                await saveSyncState(newValidity, newLastUid);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

@@ -242,6 +242,9 @@ namespace EChat.Core.Data.Migrations
                     b.Property<bool>("Encrypted")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("FormattedContent")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("ImapFolder")
                         .HasColumnType("TEXT");
 
@@ -411,6 +414,25 @@ namespace EChat.Core.Data.Migrations
                     b.HasIndex("GroupId", "Version");
 
                     b.ToTable("GroupOperations");
+                });
+
+            modelBuilder.Entity("EChat.Core.Models.ImapFolderSyncState", b =>
+                {
+                    b.Property<string>("AccountId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("FolderName")
+                        .HasColumnType("TEXT");
+
+                    b.Property<uint>("LastSyncedUid")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("UidValidity")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("AccountId", "FolderName");
+
+                    b.ToTable("ImapFolderStates");
                 });
 
             modelBuilder.Entity("EChat.Core.Models.MessageReaction", b =>

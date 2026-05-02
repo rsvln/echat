@@ -31,6 +31,7 @@ public class ChatMessage
     public long? ImapUid { get; set; }
     /// <summary>IMAP folder the source email lives in (e.g. "eChat").</summary>
     public string? ImapFolder { get; set; }
+    public string? FormattedContent { get; set; }
 
     // Navigation
     public Chat? Chat { get; set; }

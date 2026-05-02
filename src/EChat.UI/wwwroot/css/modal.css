@@ -144,3 +144,50 @@
     padding-top: 16px;
     border-top: 1px solid var(--divider);
 }
+
+/* ── Code Editor Modal ────────────────────────────────────────────── */
+.code-editor-modal .modal-content {
+    width: 600px;
+    max-width: 95vw;
+}
+
+.code-lang-select {
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+.code-editor-textarea {
+    width: 100%;
+    height: 300px;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.4;
+    resize: vertical;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 14px 20px;
+    border-top: 1px solid var(--divider);
+}
+
+.btn-primary,
+.btn-secondary {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.btn-primary {
+    background: var(--primary, #5b8fd9);
+    color: white;
+}
+
+.btn-secondary {
+    background: var(--surface-variant, #f5f5f5);
+    color: var(--text-primary, #333);
+}

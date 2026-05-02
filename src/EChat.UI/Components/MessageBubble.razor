@@ -41,7 +41,7 @@
             </div>
         }
 
-        <div class="message-content" style="white-space:pre-wrap;word-break:break-word;">@Message.Content</div>
+        <div class="message-content" style="white-space:pre-wrap;word-break:break-word;">@((MarkupString)(!string.IsNullOrEmpty(Message.FormattedContent) ? Message.FormattedContent : HtmlFormatter.Format(Message.Content)))</div>
 
         @* ── Attachments ───────────────────────────────────────────────── *@
         @if (Attachments != null && Attachments.Count > 0)

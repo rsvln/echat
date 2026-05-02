@@ -32,7 +32,7 @@ public class DeviceSyncService
         {
             SyncType = "read-state",
             DeviceId = _accountConfig.DeviceId,
-            Timestamp = DateTimeOffset.UtcNow,
+            Timestamp = NtpClock.UtcNow,
             Data = new Dictionary<string, object>
             {
                 ["chat_id"] = chatId,
@@ -49,7 +49,7 @@ public class DeviceSyncService
         {
             SyncType = "draft",
             DeviceId = _accountConfig.DeviceId,
-            Timestamp = DateTimeOffset.UtcNow,
+            Timestamp = NtpClock.UtcNow,
             Data = new Dictionary<string, object>
             {
                 ["chat_id"] = chatId,
@@ -66,7 +66,7 @@ public class DeviceSyncService
         {
             SyncType = "settings",
             DeviceId = _accountConfig.DeviceId,
-            Timestamp = DateTimeOffset.UtcNow,
+            Timestamp = NtpClock.UtcNow,
             Data = settings
         };
         

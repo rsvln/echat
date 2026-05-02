@@ -16,6 +16,7 @@ public class ChatDbContext : DbContext
     public DbSet<GroupKeyPair> GroupKeyPairs => Set<GroupKeyPair>();
     public DbSet<Attachment> Attachments => Set<Attachment>();
     public DbSet<MessageReaction> MessageReactions => Set<MessageReaction>();
+    public DbSet<ImapFolderSyncState> ImapFolderStates => Set<ImapFolderSyncState>();
     
     public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options)
     {
@@ -128,6 +129,12 @@ public class ChatDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.MessageId);
             entity.HasIndex(e => new { e.MessageId, e.Emoji, e.Sender });
+        });
+
+        // ImapFolderSyncState
+        modelBuilder.Entity<ImapFolderSyncState>(entity =>
+        {
+            entity.HasKey(e => new { e.AccountId, e.FolderName });
         });
     }
 }

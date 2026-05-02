@@ -212,3 +212,21 @@
     resize: none;
     max-height: 120px;
 }
+
+
+/* ── Format bar (shown above input on mobile) ─────────────────── */
+.format-bar-mobile {
+    display: flex;
+    gap: 2px;
+    padding: 4px 8px;
+    background: var(--surface, #fff);
+    border-top: 1px solid var(--divider, #e0e0e0);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-shrink: 0;
+}
+
+.format-btn-active {
+    color: var(--primary, #5b8fd9) !important;
+    opacity: 1 !important;
+}

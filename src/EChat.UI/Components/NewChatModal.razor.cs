@@ -2,6 +2,7 @@ using EChat.Core.Crypto;
 using EChat.Core.Data;
 using EChat.Core.Models;
 using EChat.Core.Protocol;
+using EChat.Core.Sync;
 using EChat.Core.Transport;
 using EChat.UI.Services;
 using Microsoft.AspNetCore.Components;
@@ -480,7 +481,7 @@ public partial class NewChatModal
                     Content = groupCreatePayload,
                     Recipients = new List<string> { email },
                     RecipientPublicKey = contact.PublicKey,
-                    Timestamp = DateTimeOffset.UtcNow,
+                    Timestamp = NtpClock.UtcNow,
                     Type = MessageType.System,
                     SystemType = "group-create",
                     GroupId = groupId,

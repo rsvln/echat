@@ -16,10 +16,46 @@
 
         @if (chat != null)
         {
+            var canRename = chat.Type == ChatType.Group &&
+                            members != null &&
+                            members.Any(m => m.MemberEmail == UserContext.UserEmail && m.Role == GroupRole.Admin);
             <div class="modal-body">
-                <div class="info-row">
-                    <strong>Name:</strong> @chat.Name
+                <div class="info-row info-row-name">
+                    <strong>Name:</strong>
+                    @if (_editingName)
+                    {
+                        <input class="rename-input" @bind="_editNameValue" @bind:event="oninput"
+                               @onkeydown="@(e => { if (e.Key == "Enter") _ = RenameGroupAsync(); else if (e.Key == "Escape") CancelRename(); })"
+                               maxlength="64" />
+                        <button class="rename-save-btn" @onclick="RenameGroupAsync" disabled="@(_renameLoading || string.IsNullOrWhiteSpace(_editNameValue))">
+                            @if (_renameLoading) { <span>...</span> } else { <span>✓</span> }
+                        </button>
+                    }
+                    else
+                    {
+                        <span>@chat.Name</span>
+                    }
+                    @if (canRename)
+                    {
+                        <button class="rename-edit-btn" @onclick="ToggleRename" title="@(_editingName ? "Cancel" : "Rename")">
+                            @if (_editingName)
+                            {
+                                <span>✕</span>
+                            }
+                            else
+                            {
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                                </svg>
+                            }
+                        </button>
+                    }
                 </div>
+                @if (!string.IsNullOrEmpty(_renameError))
+                {
+                    <div class="new-chat-error">@_renameError</div>
+                }
                 <div class="info-row">
                     <strong>Type:</strong> @chat.Type
                 </div>
@@ -220,6 +256,11 @@
     private string addMemberEmail = string.Empty;
     private string? addMemberError;
     private bool addMemberLoading;
+
+    private bool _editingName;
+    private string _editNameValue = string.Empty;
+    private bool _renameLoading;
+    private string? _renameError;
 
     private bool _wasVisible;
 
@@ -603,6 +644,117 @@
         catch (Exception ex)
         {
             FileLogger.Write("ERROR", "ChatInfoModal", $"RemoveMember failed: {ex.Message}");
+        }
+    }
+
+    private void ToggleRename()
+    {
+        if (_editingName)
+        {
+            CancelRename();
+        }
+        else
+        {
+            _editNameValue = chat?.Name ?? string.Empty;
+            _renameError = null;
+            _editingName = true;
+        }
+    }
+
+    private void CancelRename()
+    {
+        _editingName = false;
+        _renameError = null;
+    }
+
+    private async Task RenameGroupAsync()
+    {
+        if (chat == null || string.IsNullOrEmpty(chat.GroupId)) return;
+        var newName = _editNameValue.Trim();
+        if (string.IsNullOrEmpty(newName) || newName == chat.Name) { CancelRename(); return; }
+
+        _renameLoading = true;
+        _renameError = null;
+        var groupId = chat.GroupId;
+        var myEmail = UserContext.UserEmail;
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+            var group = await db.Groups.FindAsync(groupId);
+            int newVersion = (group?.Version ?? 1) + 1;
+            if (group != null) { group.Name = newName; group.Version = newVersion; }
+
+            var localChat = await db.Chats.FindAsync(chat.ChatId);
+            if (localChat != null) localChat.Name = newName;
+
+            db.Messages.Add(new ChatMessage
+            {
+                MessageId = Guid.NewGuid().ToString(),
+                ChatId = chat.ChatId,
+                Sender = myEmail ?? "",
+                Content = $"Group renamed to \"{newName}\"",
+                Timestamp = DateTimeOffset.UtcNow,
+                DisplayTimestamp = DateTimeOffset.UtcNow,
+                ReceivedAt = DateTimeOffset.UtcNow,
+                IsSystem = true,
+                Status = MessageStatus.Sent
+            });
+
+            await db.SaveChangesAsync();
+            chat.Name = newName;
+            ChatEvents.NotifyChatUpdated(chat.ChatId);
+
+            // Notify all members
+            var memberEmails = await db.GroupMembers.AsNoTracking()
+                .Where(m => m.GroupId == groupId)
+                .Select(m => m.MemberEmail)
+                .ToListAsync();
+
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "group-rename",
+                group_id = groupId,
+                new_name = newName,
+                renamed_by = myEmail,
+                version = newVersion
+            });
+
+            foreach (var email in memberEmails)
+            {
+                if (email.Equals(myEmail, StringComparison.OrdinalIgnoreCase)) continue;
+                var contact = await db.Contacts.FindAsync(email);
+                try
+                {
+                    await TransportService.SendMessageAsync(new OutgoingMessage
+                    {
+                        MessageId = Guid.NewGuid().ToString(),
+                        Content = payload,
+                        Recipients = new List<string> { email },
+                        RecipientPublicKey = contact?.PublicKey,
+                        Timestamp = DateTimeOffset.UtcNow,
+                        Type = MessageType.System,
+                        SystemType = "group-rename",
+                        GroupId = groupId,
+                        Tier = BatchTier.Immediate,
+                        Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
+                    });
+                }
+                catch { }
+            }
+
+            _editingName = false;
+        }
+        catch (Exception ex)
+        {
+            _renameError = $"Error: {ex.Message}";
+            FileLogger.Write("ERROR", "ChatInfoModal", $"RenameGroup failed: {ex.Message}");
+        }
+        finally
+        {
+            _renameLoading = false;
         }
     }
 

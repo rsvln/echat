@@ -110,6 +110,83 @@
                     </div>
                 }
 
+                @* ── Contact info (1:1 chats only) ── *@
+                @if (chat.Type == ChatType.OneToOne && contact != null)
+                {
+                    <div class="chat-info-divider"></div>
+                    <div class="info-section">
+                        <h3>Contact</h3>
+
+                        @* Display name *@
+                        <div class="info-row">
+                            <strong>Name:</strong>
+                            @if (_editingContactName)
+                            {
+                                <input class="rename-input" @bind="_contactNameValue" @bind:event="oninput"
+                                       @onkeydown="@(async e => { if (e.Key == "Enter") await SaveContactNameAsync(); else if (e.Key == "Escape") _editingContactName = false; })"
+                                       maxlength="64" />
+                                <button class="rename-save-btn" @onclick="SaveContactNameAsync">✓</button>
+                                <button class="rename-save-btn" @onclick="@(() => _editingContactName = false)">✕</button>
+                            }
+                            else
+                            {
+                                <span>@(contact.DisplayName ?? contact.Email.Split('@')[0])</span>
+                                <button class="rename-edit-btn" @onclick="@(() => { _contactNameValue = contact.DisplayName ?? ""; _editingContactName = true; })">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                </button>
+                            }
+                        </div>
+
+                        @* Verified badge *@
+                        <div class="info-row">
+                            <strong>Status:</strong>
+                            @if (contact.Verified)
+                            {
+                                <span class="contact-verified-badge">✓ Verified</span>
+                            }
+                            else
+                            {
+                                <span class="contact-unverified-badge">⚠ Unverified</span>
+                            }
+                            @if (contact.IsBlocked)
+                            {
+                                <span class="contact-blocked-badge">🚫 Blocked</span>
+                            }
+                        </div>
+
+                        @* Key fingerprint *@
+                        @if (!string.IsNullOrEmpty(contact.KeyFingerprint))
+                        {
+                            <div class="info-row info-row-fingerprint">
+                                <strong>Key:</strong>
+                                <span class="key-fingerprint">@contact.KeyFingerprint</span>
+                            </div>
+                        }
+
+                        @* Notes *@
+                        <div class="info-row info-row-notes">
+                            <strong>Notes:</strong>
+                            @if (_editingNotes)
+                            {
+                                <textarea class="notes-input" @bind="_notesValue" @bind:event="oninput" rows="2" maxlength="500"></textarea>
+                                <div class="notes-actions">
+                                    <button class="rename-save-btn" @onclick="SaveNotesAsync">Save</button>
+                                    <button class="rename-save-btn" @onclick="@(() => _editingNotes = false)">Cancel</button>
+                                </div>
+                            }
+                            else
+                            {
+                                <span class="notes-text @(string.IsNullOrEmpty(contact.Notes) ? "notes-empty" : "")">
+                                    @(string.IsNullOrEmpty(contact.Notes) ? "no notes" : contact.Notes)
+                                </span>
+                                <button class="rename-edit-btn" @onclick="@(() => { _notesValue = contact.Notes ?? ""; _editingNotes = true; })">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                </button>
+                            }
+                        </div>
+                    </div>
+                }
+
                 <div class="chat-info-divider"></div>
 
                 <div class="new-chat-actions">
@@ -125,6 +202,21 @@
                         }
                         Mute
                     </button>
+                    @if (chat.Type == ChatType.OneToOne && contact != null)
+                    {
+                        @if (contact.IsBlocked)
+                        {
+                            <button class="new-chat-btn-primary" @onclick="UnblockContactAsync">
+                                Unblock
+                            </button>
+                        }
+                        else
+                        {
+                            <button class="new-chat-btn-danger" @onclick="ConfirmBlock">
+                                Block
+                            </button>
+                        }
+                    }
                     @if (chat.Archived)
                     {
                         <button class="new-chat-btn-primary" @onclick="UnarchiveChat">
@@ -143,6 +235,26 @@
                     <button class="new-chat-btn-toggle" @onclick="Close">
                         Close
                     </button>
+                </div>
+            </div>
+        }
+
+        @if (showBlockConfirm)
+        {
+            <div class="modal-overlay visible" @onclick="CancelBlock">
+                <div class="modal-content modal-sm" @onclick:stopPropagation="true">
+                    <div class="modal-header">
+                        <h2>Block Contact</h2>
+                        <button class="close-btn" @onclick="CancelBlock">✕</button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Block <strong>@(contact?.DisplayName ?? contact?.Email)</strong>?<br/>
+                           Future messages from them will be silently discarded.</p>
+                        <div class="delete-actions">
+                            <button class="new-chat-btn-danger" @onclick="BlockContactAsync">Block</button>
+                        </div>
+                        <button class="new-chat-btn-cancel" @onclick="CancelBlock">Cancel</button>
+                    </div>
                 </div>
             </div>
         }
@@ -237,11 +349,13 @@
     public EChat.Core.Services.ChatEventService ChatEvents { get; set; } = null!;
 
     private Chat? chat;
+    private Contact? contact;
     private int messageCount;
     private List<GroupMember>? members;
     private Dictionary<string, string> memberNames = new();
     private List<Contact> contactsWithKeys = new();
     private bool showDeleteConfirm;
+    private bool showBlockConfirm;
 
     private string addMemberEmail = string.Empty;
     private string? addMemberError;
@@ -251,6 +365,12 @@
     private string _editNameValue = string.Empty;
     private bool _renameLoading;
     private string? _renameError;
+
+    // Contact editing state
+    private bool _editingContactName;
+    private string _contactNameValue = string.Empty;
+    private bool _editingNotes;
+    private string _notesValue = string.Empty;
 
     private bool _wasVisible;
 
@@ -279,10 +399,18 @@
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
         chat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.ChatId == ChatId);
+        contact = null;
 
         if (chat != null)
         {
             messageCount = await db.Messages.AsNoTracking().CountAsync(m => m.ChatId == ChatId);
+
+            if (chat.Type == ChatType.OneToOne && !string.IsNullOrEmpty(chat.ContactEmail))
+            {
+                // Not AsNoTracking — we mutate the object for optimistic UI updates
+                contact = await db.Contacts
+                    .FirstOrDefaultAsync(c => c.Email == chat.ContactEmail);
+            }
 
             if (chat.Type == ChatType.Group)
             {
@@ -380,6 +508,76 @@
         showDeleteConfirm = false;
         await OnClose.InvokeAsync();
         await OnChatDeleted.InvokeAsync(chat.ChatId);
+    }
+
+    // ── Contact management ────────────────────────────────────────────────────
+
+    private void ConfirmBlock() => showBlockConfirm = true;
+    private void CancelBlock()  => showBlockConfirm = false;
+
+    private async Task BlockContactAsync()
+    {
+        if (contact == null) return;
+        await DbContext.Contacts
+            .Where(c => c.Email == contact.Email)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(c => c.IsBlocked,  true)
+                .SetProperty(c => c.BlockedAt,  DateTimeOffset.UtcNow));
+        contact.IsBlocked = true;
+        contact.BlockedAt = DateTimeOffset.UtcNow;
+        showBlockConfirm = false;
+        // Archive the chat so it disappears from the active list
+        if (chat != null)
+        {
+            await DbContext.Chats
+                .Where(c => c.ChatId == chat.ChatId)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, true));
+            await OnChatArchived.InvokeAsync(chat.ChatId);
+        }
+        await Close();
+    }
+
+    private async Task UnblockContactAsync()
+    {
+        if (contact == null) return;
+        await DbContext.Contacts
+            .Where(c => c.Email == contact.Email)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(c => c.IsBlocked, false)
+                .SetProperty(c => c.BlockedAt,  (DateTimeOffset?)null));
+        contact.IsBlocked = false;
+        contact.BlockedAt = null;
+    }
+
+    private async Task SaveContactNameAsync()
+    {
+        if (contact == null) return;
+        var name = _contactNameValue.Trim();
+        if (string.IsNullOrEmpty(name)) { _editingContactName = false; return; }
+        await DbContext.Contacts
+            .Where(c => c.Email == contact.Email)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.DisplayName, name));
+        contact.DisplayName = name;
+        // Also update chat name to match
+        if (chat != null)
+        {
+            await DbContext.Chats
+                .Where(c => c.ChatId == chat.ChatId)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.Name, name));
+            ChatEvents.NotifyChatUpdated(chat.ChatId);
+        }
+        _editingContactName = false;
+    }
+
+    private async Task SaveNotesAsync()
+    {
+        if (contact == null) return;
+        var notes = _notesValue.Trim();
+        await DbContext.Contacts
+            .Where(c => c.Email == contact.Email)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Notes, notes == "" ? null : notes));
+        contact.Notes = notes == "" ? null : notes;
+        _editingNotes = false;
     }
 
     private async Task AddMemberToGroupAsync()

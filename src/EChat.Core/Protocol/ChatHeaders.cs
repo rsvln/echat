@@ -43,4 +43,23 @@ public class ChatHeaders
 
     // Message type override (e.g. "reaction")
     public string? MessageType { get; set; }
+
+    // ── Invite / key-exchange ─────────────────────────────────────────────────
+    /// <summary>
+    /// One-time invite token sent by the initiating party in the first message.
+    /// The receiver verifies it against their PendingInvites table and burns it.
+    /// </summary>
+    public string? InviteToken { get; set; }
+
+    /// <summary>
+    /// HMAC-SHA256(token, "echat-invite-v1:" + senderPubKey + ":" + recipientEmail).
+    /// Binds the token to the sender's specific public key, preventing key substitution.
+    /// </summary>
+    public string? InviteHmac { get; set; }
+
+    /// <summary>
+    /// Sender's PGP public key extracted from the Autocrypt header of the incoming email.
+    /// Not persisted — used transiently during message processing.
+    /// </summary>
+    public string? SenderPublicKey { get; set; }
 }

@@ -88,6 +88,11 @@
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
 	</ItemGroup>
 
+	<!-- DPAPI: only needed for the Windows target -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">
+		<PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.4" />
+	</ItemGroup>
+
 	<ItemGroup>
 		<ProjectReference Include="..\EChat.Core\EChat.Core.csproj" />
 		<ProjectReference Include="..\EChat.UI\EChat.UI.csproj" />

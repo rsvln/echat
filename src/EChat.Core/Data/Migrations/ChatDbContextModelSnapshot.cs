@@ -160,9 +160,6 @@ namespace EChat.Core.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<int>("Priority")
-                        .HasColumnType("INTEGER");
-
                     b.Property<int?>("TombstoneVersion")
                         .HasColumnType("INTEGER");
 
@@ -378,44 +375,6 @@ namespace EChat.Core.Data.Migrations
                     b.ToTable("GroupMembers");
                 });
 
-            modelBuilder.Entity("EChat.Core.Models.GroupOperation", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Actor")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<bool>("Applied")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("GroupId")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("Operation")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<string>("Target")
-                        .HasColumnType("TEXT");
-
-                    b.Property<DateTimeOffset>("Timestamp")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("Version")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("Applied");
-
-                    b.HasIndex("GroupId", "Version");
-
-                    b.ToTable("GroupOperations");
-                });
-
             modelBuilder.Entity("EChat.Core.Models.ImapFolderSyncState", b =>
                 {
                     b.Property<string>("AccountId")
@@ -513,17 +472,6 @@ namespace EChat.Core.Data.Migrations
                 {
                     b.HasOne("EChat.Core.Models.ChatGroup", "Group")
                         .WithMany("Members")
-                        .HasForeignKey("GroupId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Group");
-                });
-
-            modelBuilder.Entity("EChat.Core.Models.GroupOperation", b =>
-                {
-                    b.HasOne("EChat.Core.Models.ChatGroup", "Group")
-                        .WithMany()
                         .HasForeignKey("GroupId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

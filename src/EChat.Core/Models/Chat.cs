@@ -19,7 +19,6 @@ public class Chat
     /// greater than the version that triggered the deletion.  Null = never tombstoned.
     /// </summary>
     public int? TombstoneVersion { get; set; }
-    public ChatPriority Priority { get; set; } = ChatPriority.Normal;
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? LastActivityAt { get; set; }
 
@@ -35,10 +34,3 @@ public enum ChatType
     Group
 }
 
-public enum ChatPriority
-{
-    High,
-    Normal,
-    Low,
-    Muted
-}

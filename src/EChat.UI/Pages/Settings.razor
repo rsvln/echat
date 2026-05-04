@@ -92,14 +92,24 @@
             <h2>Quiet Hours</h2>
             <div class="setup-field">
                 <label>Start time</label>
-                <input type="time" class="setup-input" @bind="quietStart" @bind:format="HH:mm" />
+                <select class="setup-input" @bind="quietStartHour">
+                    @for (int h = 0; h < 24; h++)
+                    {
+                        <option value="@h">@($"{h:D2}:00")</option>
+                    }
+                </select>
             </div>
 
             <div style="height: 12px;"></div>
 
             <div class="setup-field">
                 <label>End time</label>
-                <input type="time" class="setup-input" @bind="quietEnd" @bind:format="HH:mm" />
+                <select class="setup-input" @bind="quietEndHour">
+                    @for (int h = 0; h < 24; h++)
+                    {
+                        <option value="@h">@($"{h:D2}:00")</option>
+                    }
+                </select>
             </div>
 
             <div style="height: 12px;"></div>
@@ -287,6 +297,18 @@
                 <div class="setup-success">@backupStatus</div>
             }
 
+            <div class="setup-field">
+                <label>Backup password</label>
+                <input type="password"
+                       class="setup-input"
+                       @bind="backupPassword"
+                       @bind:event="oninput"
+                       placeholder="Required for export; enter to import encrypted backup"
+                       disabled="@backupBusy" />
+            </div>
+
+            <div style="height: 10px;"></div>
+
             <div class="settings-row" style="gap:8px;flex-wrap:wrap;">
                 <button class="new-chat-btn-toggle" @onclick="ExportBackupAsync" disabled="@backupBusy">
                     @if (backupBusy && backupOp == "export") { <span>Exporting…</span> }
@@ -330,7 +352,7 @@
                             <span>Import Backup</span>
                         }
                         <InputFile OnChange="ImportBackupWebAsync"
-                                   accept=".zip"
+                                   accept=".echatbackup,.zip"
                                    style="display:none;"
                                    disabled="@backupBusy" />
                     </label>
@@ -339,8 +361,9 @@
 
             <div class="settings-info-row" style="margin-top:8px;">
                 <span class="settings-info-label" style="font-size:12px;color:var(--text-secondary)">
-                    Backup contains the full database (accounts, chats, messages).
+                    Backup is AES-256 encrypted with your password. Contains accounts, chats, messages.
                     After import the app will restart automatically.
+                    Old <em>.zip</em> backups can be imported without a password.
                 </span>
             </div>
         </div>
@@ -353,8 +376,8 @@
     private int pollingInterval = 5;
     private bool allowCellularSync = true;
     private bool syncMetered = false;
-    private TimeOnly quietStart = new(22, 0);
-    private TimeOnly quietEnd = new(8, 0);
+    private int quietStartHour = 22;
+    private int quietEndHour = 8;
     private SyncProfile quietHoursProfile = SyncProfile.PowerSaver;
     private bool useDarkTheme = false;
     private bool sendOnEnter = true;
@@ -370,10 +393,11 @@
     private string? _notifPermission; // "granted" | "denied" | "default" | "unsupported" | null
 
     // ── Backup ──────────────────────────────────────────────────────────────
-    private bool   backupBusy   = false;
-    private string backupOp     = "";          // "export" | "import"
-    private string? backupError  = null;
-    private string? backupStatus = null;
+    private bool    backupBusy     = false;
+    private string  backupOp       = "";       // "export" | "export-folder" | "import"
+    private string? backupError    = null;
+    private string? backupStatus   = null;
+    private string  backupPassword = "";       // AES key source; required for export
 
     // ── Log ─────────────────────────────────────────────────────────────────
     private bool   logBusy   = false;
@@ -413,40 +437,49 @@
 
     private async Task ExportBackupAsync()
     {
+        if (string.IsNullOrWhiteSpace(backupPassword))
+        {
+            backupError = "Please set a backup password before exporting.";
+            return;
+        }
         backupBusy = true; backupOp = "export";
         backupError = null; backupStatus = null;
         StateHasChanged();
         try
         {
-            var bytes    = await BackupSvc.CreateBackupAsync();
+            var bytes    = await BackupSvc.CreateBackupAsync(backupPassword);
             var filename = BackupSvc.SuggestedFileName;
 
             if (Platform.SupportsMauiFilePicker)
-                await Platform.SaveFileAsync(filename, bytes, title: "Save EChat Backup", mimeType: "application/zip");
+                await Platform.SaveFileAsync(filename, bytes, title: "Save EChat Backup", mimeType: "application/octet-stream");
             else
                 await JS.InvokeVoidAsync("downloadBytes", filename, bytes);
 
             backupStatus = "Backup exported successfully.";
         }
-        catch (Exception ex) { backupError = $"Export failed: {ex.Message}"; }
+        catch (Exception ex) { backupError = FormatError("Export failed", ex); }
         finally { backupBusy = false; backupOp = ""; StateHasChanged(); }
     }
 
     private async Task ExportToFolderAsync()
     {
+        if (string.IsNullOrWhiteSpace(backupPassword))
+        {
+            backupError = "Please set a backup password before exporting.";
+            return;
+        }
         backupBusy = true; backupOp = "export-folder";
         backupError = null; backupStatus = null;
         StateHasChanged();
         try
         {
-            var bytes    = await BackupSvc.CreateBackupAsync();
+            var bytes    = await BackupSvc.CreateBackupAsync(backupPassword);
             var filename = BackupSvc.SuggestedFileName;
-            var saved    = await Platform.SaveToPickedFolderAsync(filename, bytes, "application/zip");
+            var saved    = await Platform.SaveToPickedFolderAsync(filename, bytes, "application/octet-stream");
             if (saved)
                 backupStatus = "Backup saved successfully.";
-            // If not saved (user cancelled) — silently do nothing
         }
-        catch (Exception ex) { backupError = $"Save failed: {ex.Message}"; }
+        catch (Exception ex) { backupError = FormatError("Save failed", ex); }
         finally { backupBusy = false; backupOp = ""; StateHasChanged(); }
     }
 
@@ -463,7 +496,7 @@
         }
         catch (Exception ex)
         {
-            backupError = $"Import failed: {ex.Message}";
+            backupError = FormatError("Import failed", ex);
             backupBusy = false; backupOp = ""; StateHasChanged();
         }
     }
@@ -481,7 +514,7 @@
         }
         catch (Exception ex)
         {
-            backupError = $"Import failed: {ex.Message}";
+            backupError = FormatError("Import failed", ex);
             backupBusy = false; backupOp = ""; StateHasChanged();
         }
     }
@@ -490,13 +523,16 @@
     {
         using var ms = new MemoryStream();
         await stream.CopyToAsync(ms);
-        ms.Position = 0;
+        var data = ms.ToArray();
 
-        if (!EChat.Core.Services.BackupService.IsValidBackup(ms))
+        if (!EChat.Core.Services.BackupService.IsValidBackup(data))
             throw new InvalidDataException("File is not a valid EChat backup.");
 
-        ms.Position = 0;
-        await BackupSvc.RestoreBackupAsync(ms);
+        // For encrypted backups a password is required; plain .zip backups need none.
+        string? pwd = string.IsNullOrWhiteSpace(backupPassword) ? null : backupPassword;
+
+        using var restoreStream = new MemoryStream(data);
+        await BackupSvc.RestoreBackupAsync(restoreStream, pwd);
 
         backupStatus = "Import successful. Restarting…";
         StateHasChanged();
@@ -595,8 +631,8 @@
         quietHoursProfile = settings.QuietHoursProfile;
         if (settings.QuietHours != null)
         {
-            quietStart = new TimeOnly(settings.QuietHours.StartHour, 0);
-            quietEnd = new TimeOnly(settings.QuietHours.EndHour, 0);
+            quietStartHour = settings.QuietHours.StartHour;
+            quietEndHour = settings.QuietHours.EndHour;
         }
 
         try
@@ -702,7 +738,7 @@
             PollingInterval = TimeSpan.FromMinutes(pollingInterval),
             AllowCellularSync = allowCellularSync,
             SyncOnMeteredConnection = syncMetered,
-            QuietHours = new TimeRange(quietStart.Hour, quietEnd.Hour),
+            QuietHours = new TimeRange(quietStartHour, quietEndHour),
             QuietHoursProfile = quietHoursProfile
         };
 
@@ -758,4 +794,33 @@
     }
 
     private void GoBack() => Navigation.NavigateTo("/chats");
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Formats an exception into a user-visible error string with enough detail to diagnose issues.
+    /// Shows exception type + message + inner exception chain so "Export failed: " never appears blank.
+    /// </summary>
+    private static string FormatError(string prefix, Exception ex)
+    {
+        var parts = new System.Text.StringBuilder();
+        parts.Append(prefix).Append(": ");
+
+        var e = ex;
+        var depth = 0;
+        while (e != null && depth < 4)
+        {
+            if (depth > 0) parts.Append(" → ");
+            var msg = e.Message;
+            if (string.IsNullOrWhiteSpace(msg))
+                msg = e.GetType().Name;
+            else
+                msg = $"{e.GetType().Name}: {msg}";
+            parts.Append(msg);
+            e = e.InnerException;
+            depth++;
+        }
+
+        return parts.ToString();
+    }
 }

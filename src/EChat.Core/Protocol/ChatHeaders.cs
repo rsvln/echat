@@ -20,10 +20,6 @@ public class ChatHeaders
     public string? GroupName { get; set; }
     public List<string>? GroupMembers { get; set; }
     public List<string>? GroupAdmins { get; set; }
-    public string? GroupOperation { get; set; }
-    public string? GroupOperationActor { get; set; }
-    public string? GroupOperationTarget { get; set; }
-    
     // Crypto
     public string? Encryption { get; set; }
     public string? KeyFingerprint { get; set; }

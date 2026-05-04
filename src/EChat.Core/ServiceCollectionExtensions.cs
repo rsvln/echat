@@ -9,6 +9,7 @@ using EChat.Core.Transport;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 
 namespace EChat.Core;
@@ -20,6 +21,10 @@ public static class ServiceCollectionExtensions
         string dbPath,
         string deviceId)
     {
+        // Credential protector — platform-specific code can register a stronger implementation
+        // (e.g. DpapiCredentialProtector) BEFORE calling AddEChatCore; TryAdd skips this default.
+        services.TryAddSingleton<ICredentialProtector, PlaintextCredentialProtector>();
+
         // Database
         services.AddDbContext<ChatDbContext>(options =>
             options.UseSqlite($"Data Source={dbPath}",
@@ -43,7 +48,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<NtpTimeService>();
         services.AddSingleton<SyncEngine>(); // loaded from DB at runtime
         services.AddSingleton<SyncWarningService>();
-        services.AddSingleton<DeviceSyncService>(); // takes AccountConfig via DI
 
         // Groups
         services.AddScoped<GroupStateManager>();
@@ -318,7 +322,23 @@ public static class ServiceCollectionExtensions
                 .Select(c => new { c.ChatId, c.GroupId })
                 .ToListAsync();
             var deletedChatIds = deletedChats.Select(c => c.ChatId).ToList();
-            var deletedGroupIds = deletedChats.Where(c => c.GroupId != null).Select(c => c.GroupId!).Distinct().ToList();
+
+            // Only purge group data for GroupIds where NO active (non-deleted) chat still references them.
+            // A GroupId shared between a deleted and an active chat must be kept intact.
+            var candidateGroupIds = deletedChats
+                .Where(c => c.GroupId != null)
+                .Select(c => c.GroupId!)
+                .Distinct()
+                .ToList();
+            var activeGroupIds = candidateGroupIds.Count > 0
+                ? await ctx.Chats
+                    .Where(c => !c.Deleted && c.GroupId != null && candidateGroupIds.Contains(c.GroupId!))
+                    .Select(c => c.GroupId!)
+                    .Distinct()
+                    .ToListAsync()
+                : new List<string>();
+            var deletedGroupIds = candidateGroupIds.Except(activeGroupIds).ToList();
+
             if (deletedChatIds.Count > 0)
             {
                 await ctx.Messages.Where(m => deletedChatIds.Contains(m.ChatId)).ExecuteDeleteAsync();
@@ -331,11 +351,50 @@ public static class ServiceCollectionExtensions
                 // Chat rows are intentionally kept as tombstones — do NOT delete them.
             }
         }
+
         }
-        catch
+        catch (Exception stepEx)
         {
             // Swallow — let callers handle their own errors.
-            // Fall through to Step 4 so preferences are always loaded.
+            // Fall through to Step 3d so credentials are always re-encrypted.
+            serviceProvider.GetService<FileLogger>()?.Write("ERROR", "Init",
+                $"Steps 1–3c failed: {stepEx.GetType().Name}: {stepEx.Message}");
+        }
+
+        // ── Step 3d: re-encrypt legacy plaintext credentials ──────────────────
+        // Runs OUTSIDE the main try/catch so a failed migration never skips this.
+        // EF Value Converters only run on write. Existing accounts that were saved
+        // before encryption was introduced still have plaintext in the DB.
+        // Marking Password and PrivateKey as Modified forces SaveChanges to call
+        // Protect() on them, encrypting any plaintext values.
+        // With PlaintextCredentialProtector this is a no-op (Protect returns as-is).
+        // Already-encrypted values pass through Protect() unchanged (prefix check).
+        try
+        {
+            var log3d = serviceProvider.GetService<FileLogger>();
+            using (var scope = serviceProvider.CreateScope())
+            {
+                var ctx       = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                var accounts  = await ctx.Accounts.ToListAsync();
+                log3d?.Write("INFO", "Init", $"Step 3d: re-encrypting credentials for {accounts.Count} account(s).");
+                foreach (var acc in accounts)
+                {
+                    // Always mark modified. Protect() is idempotent (checks prefix),
+                    // so already-encrypted values are written back unchanged.
+                    // Overhead is negligible for 1–3 accounts per startup.
+                    ctx.Entry(acc).Property(a => a.Password).IsModified = true;
+                    if (acc.PrivateKey != null)
+                        ctx.Entry(acc).Property(a => a.PrivateKey).IsModified = true;
+                }
+                if (accounts.Count > 0)
+                    await ctx.SaveChangesAsync();
+                log3d?.Write("INFO", "Init", "Step 3d: done.");
+            }
+        }
+        catch (Exception e3d)
+        {
+            serviceProvider.GetService<FileLogger>()?.Write("ERROR", "Init",
+                $"Step 3d (credential re-encryption) failed: {e3d.GetType().Name}: {e3d.Message}");
         }
 
         // ── Step 4: load app preferences into cache ──

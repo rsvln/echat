@@ -48,6 +48,11 @@ public class ImapService : IDisposable
     /// </summary>
     public event Func<MimeMessage, long, string, Task>? MessageReceived;
 
+    /// <summary>
+    /// True when the underlying IMAP client is connected and authenticated.
+    /// </summary>
+    public bool IsConnected => _client.IsConnected && _client.IsAuthenticated;
+
     public ImapService(ILogger<ImapService> logger, FileLogger? fileLogger = null)
     {
         _logger = logger;

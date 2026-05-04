@@ -23,6 +23,7 @@ public class IncomingMessageService
     private readonly PgpService _pgpService;
     private readonly AccountConfig _accountConfig;
     private readonly FileLogger _fileLogger;
+    private readonly InviteService _inviteService;
 
     // Serialises concurrent SaveAsync calls so two callers processing the same
     // message (e.g. SyncEchatFolderAsync + ProcessChatMessagesAsync) cannot both
@@ -35,7 +36,8 @@ public class IncomingMessageService
         ChatEventService chatEvents,
         PgpService pgpService,
         AccountConfig accountConfig,
-        FileLogger fileLogger)
+        FileLogger fileLogger,
+        InviteService inviteService)
     {
         _logger = logger;
         _scopeFactory = scopeFactory;
@@ -43,6 +45,7 @@ public class IncomingMessageService
         _pgpService = pgpService;
         _accountConfig = accountConfig;
         _fileLogger = fileLogger;
+        _inviteService = inviteService;
     }
 
     public async Task SaveAsync(string accountId, List<ParsedMessage> parsed)
@@ -305,6 +308,10 @@ public class IncomingMessageService
                 : pm.Sender;
 
             _fileLogger.Write("DEBUG", "SaveAsync", $"[{logAcct}] Msg ROUTING: id={pm.Headers.MessageId}, sender={pm.Sender}, accountEmail={accountEmail}, isSentSync={isSentSync}, chatPartner={chatPartner}, recipients={string.Join(",", pm.Recipients)}");
+
+            // ── Invite / key-exchange ────────────────────────────────────────
+            if (!isSentSync && !string.IsNullOrEmpty(pm.Headers.InviteToken))
+                await HandleInviteTokenAsync(db, pm, accountId, accountEmail ?? "", logAcct);
 
             if (string.IsNullOrEmpty(pm.Headers.GroupId) && string.IsNullOrEmpty(chatPartner))
             {
@@ -652,6 +659,51 @@ public class IncomingMessageService
         {
             _fileLogger.Write("INFO", "SaveAsync", $"[{logAcct}] No chats to update");
         }
+    }
+
+    // ── Invite / key-exchange ────────────────────────────────────────────────
+
+    private async Task HandleInviteTokenAsync(ChatDbContext db, ParsedMessage pm,
+        string accountId, string accountEmail, string logAcct)
+    {
+        var token     = pm.Headers.InviteToken!;
+        var hmac      = pm.Headers.InviteHmac ?? "";
+        var senderKey = pm.Headers.SenderPublicKey;
+
+        bool hmacValid = !string.IsNullOrEmpty(senderKey) &&
+            InviteService.VerifyHmac(token, hmac, senderKey, accountEmail);
+
+        _fileLogger.Write("INFO", "HandleInvite",
+            $"[{logAcct}] InviteToken from {pm.Sender}: hmacValid={hmacValid}, hasSenderKey={!string.IsNullOrEmpty(senderKey)}");
+
+        if (!hmacValid) return;
+
+        bool consumed = await _inviteService.VerifyAndConsumeAsync(token, accountId);
+        _fileLogger.Write(consumed ? "INFO" : "WARN", "HandleInvite",
+            $"[{logAcct}] Token consumed={consumed}");
+
+        if (!consumed || string.IsNullOrEmpty(senderKey) || string.IsNullOrEmpty(pm.Sender)) return;
+
+        // Token is valid and burned — trust the sender's public key
+        var contact = await db.Contacts.FindAsync(pm.Sender);
+        if (contact == null)
+        {
+            contact = new Contact
+            {
+                Email       = pm.Sender,
+                DisplayName = pm.Sender.Split('@')[0],
+                PublicKey   = senderKey,
+                Verified    = true
+            };
+            db.Contacts.Add(contact);
+        }
+        else
+        {
+            contact.PublicKey = senderKey;
+            contact.Verified  = true;
+        }
+        _fileLogger.Write("INFO", "HandleInvite",
+            $"[{logAcct}] Contact {pm.Sender} marked Verified with sender's public key");
     }
 
     private async Task HandleGroupCreateAsync(

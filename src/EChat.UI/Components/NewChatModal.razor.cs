@@ -62,7 +62,7 @@ public partial class NewChatModal
             using var scope = ScopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
             allContacts = await db.Contacts.AsNoTracking().OrderBy(c => c.DisplayName).ToListAsync();
-            BuildMyInvite();
+            await BuildMyInviteAsync();
         }
         else if (!IsVisible && _wasVisible)
         {
@@ -104,23 +104,37 @@ public partial class NewChatModal
         newChatError = string.Empty;
     }
 
-    private void BuildMyInvite()
+    /// <summary>
+    /// Generates a fresh one-time invite token and builds the QR / link.
+    /// Called every time the modal opens so each share produces a new token.
+    /// </summary>
+    private async Task BuildMyInviteAsync()
     {
-        if (ActiveAccount == null) return;
-        var token = ActiveAccount.InviteToken ?? "?????-?????";
-        myInviteCode = token;
-        var tokenRaw = token.Replace("-", "");
-        var email = Uri.EscapeDataString(ActiveAccount.Email);
-        var name = Uri.EscapeDataString(ActiveAccount.DisplayName);
-        myInviteLink = $"echat://invite?e={email}&n={name}&t={tokenRaw}";
+        if (ActiveAccount == null || string.IsNullOrEmpty(ActiveAccountId)) return;
 
         try
         {
-            var qr = QrCode.EncodeText(myInviteLink, QrCode.Ecc.Medium);
+            var (formattedToken, _) = await InviteService.GenerateAsync(ActiveAccountId);
+            myInviteCode = formattedToken;
+        }
+        catch
+        {
+            myInviteCode = "?????-?????";
+        }
+
+        var tokenRaw  = EChat.Core.Services.InviteService.Normalize(myInviteCode);
+        var email     = Uri.EscapeDataString(ActiveAccount.Email);
+        var name      = Uri.EscapeDataString(ActiveAccount.DisplayName);
+        // Include public key so recipient can encrypt their first message back
+        var pubKey    = Uri.EscapeDataString(ActiveAccount.PublicKey ?? "");
+        myInviteLink  = $"echat://invite?e={email}&n={name}&t={tokenRaw}"
+                      + (string.IsNullOrEmpty(pubKey) ? "" : $"&k={pubKey}");
+
+        try
+        {
+            var qr  = QrCode.EncodeText(myInviteLink, QrCode.Ecc.Medium);
             var svg = qr.ToSvgString(3);
             // No inline style — CSS .invite-qr-box svg controls size.
-            // Inline styles have higher specificity than class selectors and would
-            // override our width/height rules, making the SVG stretch to 100% width.
             myInviteQr = new MarkupString(svg);
         }
         catch
@@ -190,6 +204,7 @@ public partial class NewChatModal
         string email;
         string displayName;
         string? invitePublicKey;
+        string? pendingToken;
         try
         {
             var uri = new Uri(input);
@@ -198,9 +213,15 @@ public partial class NewChatModal
                 .Where(p => p.Length == 2)
                 .ToDictionary(p => Uri.UnescapeDataString(p[0]), p => Uri.UnescapeDataString(p[1]),
                               StringComparer.OrdinalIgnoreCase);
-            email = pairs.GetValueOrDefault("e", string.Empty);
-            displayName = pairs.GetValueOrDefault("n", string.Empty);
+            email           = pairs.GetValueOrDefault("e", string.Empty);
+            displayName     = pairs.GetValueOrDefault("n", string.Empty);
             invitePublicKey = pairs.GetValueOrDefault("k");
+
+            // Parse one-time invite token (t=) if present
+            var rawToken = pairs.GetValueOrDefault("t");
+            pendingToken = string.IsNullOrEmpty(rawToken)
+                ? null
+                : EChat.Core.Services.InviteService.FormatToken(rawToken.ToUpperInvariant());
         }
         catch
         {
@@ -214,7 +235,7 @@ public partial class NewChatModal
             return;
         }
 
-        await StartOrOpenChat(email, displayName, verified: true, invitePublicKey);
+        await StartOrOpenChat(email, displayName, verified: true, invitePublicKey, pendingToken);
     }
 
     private async Task CreateChatFromCodeAndEmail(string code, string email)
@@ -244,7 +265,8 @@ public partial class NewChatModal
         string? publicKey = contact?.PublicKey;
 
         var displayName = contact?.DisplayName ?? email.Split('@')[0];
-        await StartOrOpenChat(email, displayName, verified: true, publicKey);
+        // The code IS the invite token — store it on the chat so the first message carries it
+        await StartOrOpenChat(email, displayName, verified: true, publicKey, pendingInviteToken: code);
     }
 
     private async Task CreateDirectChat()
@@ -267,7 +289,8 @@ public partial class NewChatModal
         await StartOrOpenChat(email, email.Split('@')[0], verified: false, publicKey: null);
     }
 
-    private async Task StartOrOpenChat(string email, string displayName, bool verified, string? publicKey = null)
+    private async Task StartOrOpenChat(string email, string displayName, bool verified,
+        string? publicKey = null, string? pendingInviteToken = null)
     {
         var existingChat = await DbContext.Chats
             .Where(c => c.Type == ChatType.OneToOne &&
@@ -279,19 +302,20 @@ public partial class NewChatModal
         if (existingChat != null)
         {
             if (existingChat.Archived)
-            {
                 existingChat.Archived = false;
-                await DbContext.SaveChangesAsync();
-            }
+
             if (publicKey != null)
             {
                 var c = await DbContext.Contacts.FindAsync(email);
                 if (c != null && c.PublicKey != publicKey)
-                {
                     c.PublicKey = publicKey;
-                    await DbContext.SaveChangesAsync();
-                }
             }
+
+            // Store/update the invite token so the next message carries it
+            if (!string.IsNullOrEmpty(pendingInviteToken))
+                existingChat.PendingOutgoingInviteToken = pendingInviteToken;
+
+            await DbContext.SaveChangesAsync();
             await HandleClose();
             await OnChatReady.InvokeAsync(existingChat.ChatId);
             return;
@@ -302,10 +326,10 @@ public partial class NewChatModal
         {
             contact = new Contact
             {
-                Email = email,
+                Email       = email,
                 DisplayName = string.IsNullOrEmpty(displayName) ? email.Split('@')[0] : displayName,
-                Verified = verified,
-                PublicKey = publicKey
+                Verified    = verified,
+                PublicKey   = publicKey
             };
             DbContext.Contacts.Add(contact);
         }
@@ -320,16 +344,17 @@ public partial class NewChatModal
         }
 
         var chatName = contact.DisplayName ?? email.Split('@')[0];
-        var chatId = Guid.NewGuid().ToString();
+        var chatId   = Guid.NewGuid().ToString();
         DbContext.Chats.Add(new Chat
         {
-            ChatId = chatId,
-            Type = ChatType.OneToOne,
-            Name = chatName,
-            ContactEmail = email,
-            AccountId = ActiveAccountId,
-            CreatedAt = DateTimeOffset.UtcNow,
-            LastActivityAt = DateTimeOffset.UtcNow
+            ChatId                    = chatId,
+            Type                      = ChatType.OneToOne,
+            Name                      = chatName,
+            ContactEmail              = email,
+            AccountId                 = ActiveAccountId,
+            CreatedAt                 = DateTimeOffset.UtcNow,
+            LastActivityAt            = DateTimeOffset.UtcNow,
+            PendingOutgoingInviteToken = pendingInviteToken
         });
         await DbContext.SaveChangesAsync();
 

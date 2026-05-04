@@ -55,12 +55,47 @@ public class AccountImapWorker
         _imapService.MessageReceived += OnMessageReceivedAsync;
     }
 
-    public void Start(TimeSpan? syncInterval = null)
+    /// <summary>
+    /// Loads the polling interval from per-account settings.
+    /// Background accounts never use IMAP IDLE — polling is cheaper (no persistent TCP connection).
+    /// Falls back to 15 minutes if not configured.
+    /// </summary>
+    private async Task<TimeSpan> LoadPollingIntervalAsync()
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            var key = $"acct_{_account.AccountId}_polling_interval";
+            var setting = await db.Settings.FindAsync(key);
+            if (setting != null && int.TryParse(setting.Value, out var minutes) && minutes > 0)
+            {
+                _fileLogger.Write("INFO", "AccountImapWorker",
+                    $"[{LogTag}] Loaded polling interval: {minutes}min");
+                return TimeSpan.FromMinutes(minutes);
+            }
+        }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("WARN", "AccountImapWorker",
+                $"[{LogTag}] Could not load polling_interval setting: {ex.Message}");
+        }
+        _fileLogger.Write("INFO", "AccountImapWorker",
+            $"[{LogTag}] Using default polling interval: 15min");
+        return TimeSpan.FromMinutes(15);
+    }
+
+    public void Start()
     {
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         _ = Task.Run(async () =>
         {
+            // Load per-account polling interval once at startup.
+            // Background accounts always poll — never IDLE (IDLE needs a persistent TCP
+            // connection which is the most resource-intensive sync mode).
+            var pollingInterval = await LoadPollingIntervalAsync();
+
             // Read folder name from per-account settings; fall back to default.
             string echatFolder = EchatFolder;
             try
@@ -145,16 +180,44 @@ public class AccountImapWorker
                         echatFolder, uidValidity, lastSyncedUid, ct);
                     await SaveEchatState(newValidity, newLastUid);
 
-                    await _imapService.StartIdleAsync(
-                        InboxFolder, echatFolder, ct,
-                        getEchatSyncState: LoadEchatState,
-                        saveEchatSyncState: SaveEchatState,
-                        echatSyncInterval: syncInterval);
+                    // Background accounts poll on interval — no IMAP IDLE.
+                    // IDLE requires a persistent TCP connection (most resource-intensive mode),
+                    // which is wrong for accounts that are not currently active in the UI.
+                    _fileLogger.Write("INFO", "AccountImapWorker",
+                        $"[{LogTag}] Entering polling loop (interval={pollingInterval.TotalMinutes:F0}min) for {_account.Email}");
 
-                    // StartIdleAsync only returns normally when ct is cancelled.
-                    // If it returns without cancellation, something exited the loop unexpectedly.
+                    while (!ct.IsCancellationRequested)
+                    {
+                        try { await Task.Delay(pollingInterval, ct); }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+
+                        // If the server closed the connection between polls, let the outer
+                        // restart loop reconnect rather than trying to sync on a dead socket.
+                        if (!_imapService.IsConnected)
+                            throw new InvalidOperationException("IMAP connection lost during polling interval");
+
+                        _fileLogger.Write("INFO", "AccountImapWorker",
+                            $"[{LogTag}] Poll tick for {_account.Email}");
+
+                        var (iv2, iu2) = await LoadInboxStateLocal();
+                        var (niv2, niu2) = await _imapService.SyncInboxAsync(
+                            InboxFolder, echatFolder, iv2, iu2, ct);
+                        await SaveInboxStateLocal(niv2, niu2);
+
+                        var (ev2, eu2) = await LoadEchatState();
+                        var (nev2, neu2) = await _imapService.SyncEchatFolderAsync(
+                            echatFolder, ev2, eu2, ct);
+                        await SaveEchatState(nev2, neu2);
+
+                        _fileLogger.Write("INFO", "AccountImapWorker",
+                            $"[{LogTag}] Poll complete for {_account.Email}, next in {pollingInterval.TotalMinutes:F0}min");
+                    }
+
+                    // Polling loop exits normally only when ct is cancelled.
+                    // If we reach here without cancellation, something is wrong.
                     if (!ct.IsCancellationRequested)
-                        _fileLogger.Write("WARN", "AccountImapWorker", $"[{LogTag}] Sync loop exited unexpectedly for {_account.Email} — restarting in 30s");
+                        _fileLogger.Write("WARN", "AccountImapWorker",
+                            $"[{LogTag}] Polling loop exited unexpectedly for {_account.Email} — restarting in 30s");
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {

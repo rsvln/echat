@@ -40,6 +40,15 @@ public partial class App : Application
         {
             try
             {
+#if ANDROID
+                // Load (or generate) the AES key from Android Keystore BEFORE opening the DB.
+                // The key is needed by SecureStorageCredentialProtector to decrypt credential
+                // fields via EF Value Converters on the first Accounts query.
+                if (serviceProvider.GetService<EChat.Core.Services.ICredentialProtector>() is
+                    EChat.Maui.Platforms.Android.Services.SecureStorageCredentialProtector ssp)
+                    await ssp.InitializeAsync();
+#endif
+
                 await serviceProvider.InitializeEChatDatabaseAsync();
 
                 using var scope = serviceProvider.CreateScope();

@@ -1,0 +1,222 @@
+@using EChat.Core.Models
+@using EChat.Core.Data
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.DependencyInjection
+@inject IServiceScopeFactory ScopeFactory
+@inject EChat.Core.Services.FileLogger FileLogger
+@inject Microsoft.AspNetCore.Components.NavigationManager Navigation
+@inject IJSRuntime JS
+
+@if (IsVisible)
+{
+    <div class="modal-overlay visible" @onclick="HandleClose" @onkeydown="OnOverlayKeyDown" tabindex="-1">
+        <div class="modal-content contacts-modal" @onclick:stopPropagation="true">
+
+            <div class="modal-header">
+                <h2>Contacts</h2>
+                <button class="new-chat-close" @onclick="HandleClose">✕</button>
+            </div>
+
+            <div class="contacts-search-row">
+                <input class="contacts-search" type="search" placeholder="Search contacts..."
+                       @bind="_search" @bind:event="oninput" />
+                @if (_showBlocked)
+                {
+                    <button class="contacts-filter-btn active" @onclick="@(() => _showBlocked = false)" title="Showing blocked">
+                        🚫
+                    </button>
+                }
+                else
+                {
+                    <button class="contacts-filter-btn" @onclick="@(() => _showBlocked = true)" title="Show blocked">
+                        🚫
+                    </button>
+                }
+            </div>
+
+            <div class="contacts-list">
+                @if (_contacts == null)
+                {
+                    <div class="contacts-empty">Loading…</div>
+                }
+                else if (!Filtered.Any())
+                {
+                    <div class="contacts-empty">No contacts found.</div>
+                }
+                else
+                {
+                    @foreach (var c in Filtered)
+                    {
+                        <div class="contact-row @(c.IsBlocked ? "contact-blocked" : "")">
+                            <div class="contact-row-avatar">
+                                @((c.DisplayName ?? c.Email).Substring(0, 1).ToUpper())
+                            </div>
+                            <div class="contact-row-info">
+                                <div class="contact-row-name">
+                                    @(c.DisplayName ?? c.Email.Split('@')[0])
+                                    @if (c.Verified)   { <span class="contact-verified-badge">✓</span> }
+                                    @if (c.IsBlocked)  { <span class="contact-blocked-badge">🚫</span> }
+                                </div>
+                                <div class="contact-row-email">@c.Email</div>
+                                @if (!string.IsNullOrEmpty(c.Notes))
+                                {
+                                    <div class="contact-row-notes">@c.Notes</div>
+                                }
+                            </div>
+                            <div class="contact-row-actions">
+                                @if (!c.IsBlocked)
+                                {
+                                    <button class="contact-action-btn" title="Open chat"
+                                            @onclick="@(() => OpenChatAsync(c.Email))">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                                        </svg>
+                                    </button>
+                                }
+                                @if (c.IsBlocked)
+                                {
+                                    <button class="contact-action-btn contact-action-unblock" title="Unblock"
+                                            @onclick="@(() => UnblockAsync(c))">Unblock</button>
+                                }
+                                else
+                                {
+                                    <button class="contact-action-btn contact-action-danger" title="Block"
+                                            @onclick="@(() => ConfirmBlockContact(c))">Block</button>
+                                }
+                            </div>
+                        </div>
+                    }
+                }
+            </div>
+
+        </div>
+    </div>
+
+    @if (_blockTarget != null)
+    {
+        <div class="modal-overlay visible" @onclick="@(() => _blockTarget = null)">
+            <div class="modal-content modal-sm" @onclick:stopPropagation="true">
+                <div class="modal-header">
+                    <h2>Block Contact</h2>
+                    <button class="close-btn" @onclick="@(() => _blockTarget = null)">✕</button>
+                </div>
+                <div class="modal-body">
+                    <p>Block <strong>@(_blockTarget.DisplayName ?? _blockTarget.Email)</strong>?<br/>
+                       Future messages from them will be silently discarded.</p>
+                    <div class="delete-actions">
+                        <button class="new-chat-btn-danger" @onclick="BlockConfirmedAsync">Block</button>
+                    </div>
+                    <button class="new-chat-btn-cancel" @onclick="@(() => _blockTarget = null)">Cancel</button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public bool IsVisible { get; set; }
+    [Parameter] public string? ActiveAccountId { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<string> OnOpenChat { get; set; }
+
+    private List<Contact>? _contacts;
+    private string _search = string.Empty;
+    private bool _showBlocked;
+    private Contact? _blockTarget;
+    private bool _wasVisible;
+
+    private IEnumerable<Contact> Filtered =>
+        (_contacts ?? Enumerable.Empty<Contact>())
+            .Where(c => _showBlocked ? c.IsBlocked : !c.IsBlocked)
+            .Where(c => string.IsNullOrWhiteSpace(_search) ||
+                        (c.DisplayName ?? "").Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+                        c.Email.Contains(_search, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(c => c.IsBlocked)
+            .ThenBy(c => c.DisplayName ?? c.Email);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (IsVisible && !_wasVisible)
+        {
+            _wasVisible = true;
+            _search = string.Empty;
+            _showBlocked = false;
+            await JS.InvokeVoidAsync("lockBodyScroll");
+            await LoadAsync();
+        }
+        else if (!IsVisible && _wasVisible)
+        {
+            _wasVisible = false;
+            await JS.InvokeVoidAsync("unlockBodyScroll");
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+        _contacts = await db.Contacts.AsNoTracking()
+            .OrderBy(c => c.DisplayName)
+            .ToListAsync();
+    }
+
+    private async Task OpenChatAsync(string email)
+    {
+        // Find existing chat for this account + email
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+        var chat = await db.Chats.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Type == ChatType.OneToOne &&
+                                      !c.Deleted &&
+                                      c.AccountId == ActiveAccountId &&
+                                      c.ContactEmail == email);
+        if (chat != null)
+        {
+            await HandleClose();
+            await OnOpenChat.InvokeAsync(chat.ChatId);
+        }
+    }
+
+    private void ConfirmBlockContact(Contact c) => _blockTarget = c;
+
+    private async Task BlockConfirmedAsync()
+    {
+        if (_blockTarget == null) return;
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+        await db.Contacts
+            .Where(c => c.Email == _blockTarget.Email)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(c => c.IsBlocked, true)
+                .SetProperty(c => c.BlockedAt, DateTimeOffset.UtcNow));
+        await db.Chats
+            .Where(c => c.ContactEmail == _blockTarget.Email && c.AccountId == ActiveAccountId)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, true));
+        _blockTarget = null;
+        await LoadAsync();
+    }
+
+    private async Task UnblockAsync(Contact c)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+        await db.Contacts
+            .Where(x => x.Email == c.Email)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(x => x.IsBlocked, false)
+                .SetProperty(x => x.BlockedAt, (DateTimeOffset?)null));
+        await LoadAsync();
+    }
+
+    private async Task HandleClose()
+    {
+        _wasVisible = false;
+        await JS.InvokeVoidAsync("unlockBodyScroll");
+        await OnClose.InvokeAsync();
+    }
+
+    private async Task OnOverlayKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") await HandleClose();
+    }
+}

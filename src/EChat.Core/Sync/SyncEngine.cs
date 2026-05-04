@@ -124,18 +124,6 @@ public class SyncEngine
 
     public SyncSettings GetCurrentSettings() => _settings;
 
-    private Dictionary<string, ChatPriority> _chatPriorities = new();
-
-    public void SetChatPriority(string chatId, ChatPriority priority)
-    {
-        _chatPriorities[chatId] = priority;
-    }
-
-    public ChatPriority GetChatPriority(string chatId)
-    {
-        return _chatPriorities.GetValueOrDefault(chatId, ChatPriority.Normal);
-    }
-
     public void RecordActivity()
     {
         _lastActivityTime = DateTime.UtcNow;
@@ -176,11 +164,6 @@ public class SyncEngine
 
     public SyncStrategy GetCurrentStrategy(int batteryLevel, bool isMetered, bool isCellular)
     {
-        return GetCurrentStrategy(batteryLevel, isMetered, isCellular, ChatPriority.Normal);
-    }
-
-    public SyncStrategy GetCurrentStrategy(int batteryLevel, bool isMetered, bool isCellular, ChatPriority chatPriority)
-    {
         if (batteryLevel < 15)
         {
             _fileLogger.Write("INFO", "SyncEngine", "Low battery mode activated");
@@ -192,30 +175,26 @@ public class SyncEngine
             };
         }
 
-        // High priority chats override quiet hours and metered restrictions
-        if (chatPriority != ChatPriority.High)
+        if (IsQuietHours())
         {
-            if (IsQuietHours())
-            {
-                _fileLogger.Write("INFO", "SyncEngine", "Quiet hours active");
-                return ApplyProfile(_settings.QuietHoursProfile, chatPriority);
-            }
+            _fileLogger.Write("INFO", "SyncEngine", "Quiet hours active");
+            return ApplyProfile(_settings.QuietHoursProfile);
+        }
 
-            if (isMetered && !_settings.SyncOnMeteredConnection)
+        if (isMetered && !_settings.SyncOnMeteredConnection)
+        {
+            _fileLogger.Write("INFO", "SyncEngine", "Metered connection, reducing sync");
+            return new SyncStrategy
             {
-                _fileLogger.Write("INFO", "SyncEngine", "Metered connection, reducing sync");
-                return new SyncStrategy
-                {
-                    UseIdle = false,
-                    PollingInterval = TimeSpan.FromMinutes(30),
-                    Reason = "Metered connection"
-                };
-            }
+                UseIdle = false,
+                PollingInterval = TimeSpan.FromMinutes(30),
+                Reason = "Metered connection"
+            };
         }
 
         if (!isCellular || _settings.AllowCellularSync)
         {
-            return ApplyProfile(_settings.Profile, chatPriority);
+            return ApplyProfile(_settings.Profile);
         }
 
         return new SyncStrategy
@@ -269,56 +248,39 @@ public class SyncEngine
         }
     }
 
-    private SyncStrategy ApplyProfile(SyncProfile profile, ChatPriority chatPriority = ChatPriority.Normal)
+    private SyncStrategy ApplyProfile(SyncProfile profile)
     {
-        // UseImapIdle = false acts as a platform-level override (e.g. Android forces polling).
-        // High-priority chats can still bypass this to get near-instant delivery.
-        bool idleAllowed = _settings.UseImapIdle || chatPriority == ChatPriority.High;
-
         return profile switch
         {
             SyncProfile.Realtime => new SyncStrategy
             {
-                UseIdle = idleAllowed,
+                UseIdle = _settings.UseImapIdle,
                 PollingInterval = TimeSpan.FromMinutes(1),
                 Reason = "Realtime mode"
             },
             SyncProfile.Balanced => new SyncStrategy
             {
-                UseIdle = idleAllowed && (!IsQuietHours() || chatPriority == ChatPriority.High),
-                PollingInterval = chatPriority == ChatPriority.High
-                    ? TimeSpan.FromMinutes(1)
-                    : _settings.PollingInterval,
+                UseIdle = _settings.UseImapIdle && !IsQuietHours(),
+                PollingInterval = _settings.PollingInterval,
                 Reason = "Balanced mode"
             },
             SyncProfile.PowerSaver => new SyncStrategy
             {
-                UseIdle = idleAllowed && chatPriority == ChatPriority.High,
-                PollingInterval = chatPriority switch
-                {
-                    ChatPriority.High => TimeSpan.FromMinutes(5),
-                    ChatPriority.Normal => TimeSpan.FromMinutes(15),
-                    ChatPriority.Low => TimeSpan.FromMinutes(30),
-                    ChatPriority.Muted => TimeSpan.FromHours(6),
-                    _ => TimeSpan.FromMinutes(15)
-                },
+                UseIdle = false,
+                PollingInterval = TimeSpan.FromMinutes(15),
                 Reason = "Power saver mode"
             },
             SyncProfile.Manual => new SyncStrategy
             {
-                UseIdle = chatPriority == ChatPriority.High,
-                PollingInterval = chatPriority == ChatPriority.High
-                    ? TimeSpan.FromMinutes(5)
-                    : TimeSpan.FromDays(1),
-                Reason = chatPriority == ChatPriority.High ? "High priority override" : "Manual sync only"
+                UseIdle = false,
+                PollingInterval = TimeSpan.FromDays(1),
+                Reason = "Manual sync only"
             },
             SyncProfile.Custom => new SyncStrategy
             {
-                UseIdle = _settings.UseImapIdle || chatPriority == ChatPriority.High,
-                PollingInterval = chatPriority == ChatPriority.High
-                    ? TimeSpan.FromMinutes(1)
-                    : _settings.PollingInterval,
-                Reason = chatPriority == ChatPriority.High ? "High priority override" : "Custom settings"
+                UseIdle = _settings.UseImapIdle,
+                PollingInterval = _settings.PollingInterval,
+                Reason = "Custom settings"
             },
             _ => new SyncStrategy
             {

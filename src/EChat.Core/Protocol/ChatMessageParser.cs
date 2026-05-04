@@ -51,10 +51,6 @@ public class ChatMessageParser
         headers.GroupName = email.Headers["Chat-Group-Name"];
         headers.GroupMembers = ParseList(email.Headers["Chat-Group-Members"]);
         headers.GroupAdmins = ParseList(email.Headers["Chat-Group-Admins"]);
-        headers.GroupOperation = email.Headers["Chat-Group-Operation"];
-        headers.GroupOperationActor = email.Headers["Chat-Group-Operation-Actor"];
-        headers.GroupOperationTarget = email.Headers["Chat-Group-Operation-Target"];
-        
         headers.Encryption = email.Headers["Chat-Encryption"];
         headers.KeyFingerprint = email.Headers["Chat-Key-Fingerprint"];
         

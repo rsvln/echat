@@ -45,14 +45,6 @@ public class SyncWarningService
         }
     }
 
-    public void ValidateChatPriority(ChatPriority priority)
-    {
-        if (priority == ChatPriority.Muted)
-        {
-            ShowInfo("Muted chats will only sync when you open them.");
-        }
-    }
-
     private void ShowWarning(string message)
     {
         _fileLogger.Write("WARN", "SyncWarningService", message);

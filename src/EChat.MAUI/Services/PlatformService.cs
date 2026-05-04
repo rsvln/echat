@@ -84,10 +84,11 @@ public class PlatformService : IPlatformService
             FileTypes   = new FilePickerFileType(
                 new Dictionary<DevicePlatform, IEnumerable<string>>
                 {
-                    { DevicePlatform.Android, ["application/zip"] },
-                    { DevicePlatform.WinUI,   [".zip"] },
-                    { DevicePlatform.iOS,     ["public.zip-archive"] },
-                    { DevicePlatform.macOS,   ["zip"] },
+                    // Both .echatbackup (new encrypted) and .zip (legacy) are accepted.
+                    { DevicePlatform.Android, ["application/octet-stream", "application/zip"] },
+                    { DevicePlatform.WinUI,   [".echatbackup", ".zip"] },
+                    { DevicePlatform.iOS,     ["public.data", "public.zip-archive"] },
+                    { DevicePlatform.macOS,   ["echatbackup", "zip"] },
                 })
         };
 

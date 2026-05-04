@@ -132,6 +132,7 @@ public partial class ChatList
 
     // New chat modal visibility
     private bool showNewChat = false;
+    private bool showContacts = false;
 
     protected override async Task OnInitializedAsync()
     {

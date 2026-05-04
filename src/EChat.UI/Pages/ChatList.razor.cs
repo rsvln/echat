@@ -1021,15 +1021,45 @@ public partial class ChatList
 
         if (selectedChat.Type == ChatType.Group)
         {
+            // GroupId should equal ChatId for groups created/migrated correctly.
+            // If GroupId is null (pre-migration row that missed the backfill), fall back to ChatId.
+            var groupId = selectedChat.GroupId ?? selectedChat.ChatId;
+
             recipients = await db.GroupMembers
                 .AsNoTracking()
-                .Where(m => m.GroupId == selectedChat.GroupId)
+                .Where(m => m.GroupId == groupId)
                 .Select(m => m.MemberEmail)
                 .ToListAsync();
+
+            // If still empty, GroupMembers rows were lost (e.g. cleanup bug wiped them).
+            // Recover from message senders across ALL chats sharing the same GroupId
+            // (messages may live under a different ChatId due to multi-device duplicates).
+            if (recipients.Count == 0)
+            {
+                var allChatIdsForGroup = await db.Chats
+                    .AsNoTracking()
+                    .Where(c => c.GroupId == groupId)
+                    .Select(c => c.ChatId)
+                    .ToListAsync();
+
+                recipients = await db.Messages
+                    .AsNoTracking()
+                    .Where(m => allChatIdsForGroup.Contains(m.ChatId))
+                    .Select(m => m.Sender)
+                    .Distinct()
+                    .ToListAsync();
+            }
             return;
         }
 
-        // 1. Try to find from existing messages (most reliable)
+        // 1. ContactEmail field — set when the chat was created or migrated (most reliable)
+        if (!string.IsNullOrEmpty(selectedChat.ContactEmail))
+        {
+            recipients = new List<string> { selectedChat.ContactEmail };
+            return;
+        }
+
+        // 2. Try to find from existing messages (reliable when ContactEmail is missing)
         var myEmail = UserContext.UserEmail;
         var otherSender = await db.Messages
             .AsNoTracking()
@@ -1039,24 +1069,37 @@ public partial class ChatList
 
         if (otherSender != null)
         {
+            // Backfill ContactEmail so next time we skip the query
+            await db.Chats
+                .Where(c => c.ChatId == selectedChatId)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.ContactEmail, otherSender));
+            selectedChat.ContactEmail = otherSender;
             recipients = new List<string> { otherSender };
             return;
         }
 
-        // 2. Look up contact by DisplayName or Email matching the chat name
+        // 3. Look up contact by DisplayName or Email matching the chat name
         var chatName = selectedChat.Name;
         var contact = await db.Contacts.AsNoTracking().FirstOrDefaultAsync(c =>
             c.DisplayName == chatName || c.Email == chatName);
 
         if (contact != null)
         {
+            await db.Chats
+                .Where(c => c.ChatId == selectedChatId)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.ContactEmail, contact.Email));
+            selectedChat.ContactEmail = contact.Email;
             recipients = new List<string> { contact.Email };
             return;
         }
 
-        // 3. Chat name looks like an email address
+        // 4. Chat name looks like an email address
         if (chatName.Contains('@'))
         {
+            await db.Chats
+                .Where(c => c.ChatId == selectedChatId)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.ContactEmail, chatName));
+            selectedChat.ContactEmail = chatName;
             recipients = new List<string> { chatName };
             return;
         }

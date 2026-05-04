@@ -1,10 +1,13 @@
 using EChat.Core.Models;
+using EChat.Core.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace EChat.Core.Data;
 
 public class ChatDbContext : DbContext
 {
+    private readonly ICredentialProtector _protector;
+
     public DbSet<ChatMessage> Messages => Set<ChatMessage>();
     public DbSet<Chat> Chats => Set<Chat>();
     public DbSet<Contact> Contacts => Set<Contact>();
@@ -17,8 +20,14 @@ public class ChatDbContext : DbContext
     public DbSet<MessageReaction> MessageReactions => Set<MessageReaction>();
     public DbSet<ImapFolderSyncState> ImapFolderStates => Set<ImapFolderSyncState>();
     
-    public ChatDbContext(DbContextOptions<ChatDbContext> options) : base(options)
+    /// <param name="protector">
+    /// Optional credential protector injected by the DI container.
+    /// When null (e.g. during EF design-time migrations) the no-op plaintext protector is used.
+    /// </param>
+    public ChatDbContext(DbContextOptions<ChatDbContext> options, ICredentialProtector? protector = null)
+        : base(options)
     {
+        _protector = protector ?? PlaintextCredentialProtector.Instance;
     }
     
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -65,6 +74,21 @@ public class ChatDbContext : DbContext
             entity.HasKey(e => e.AccountId);
             entity.HasIndex(e => e.Email).IsUnique();
             entity.HasIndex(e => e.IsActive);
+
+            // Encrypt sensitive fields at rest using the platform credential protector.
+            // With PlaintextCredentialProtector (default) these are no-ops — no behaviour
+            // change until a real protector (e.g. DpapiCredentialProtector) is registered.
+            // Migration-safe: Unprotect() transparently handles legacy plaintext values
+            // that were stored before encryption was introduced.
+            var p = _protector;
+            entity.Property(e => e.Password)
+                .HasConversion(
+                    v => p.Protect(v),
+                    v => p.Unprotect(v));
+            entity.Property(e => e.PrivateKey)
+                .HasConversion(
+                    v => v == null ? null : p.Protect(v),
+                    v => v == null ? null : p.Unprotect(v));
         });
         
         // Contact

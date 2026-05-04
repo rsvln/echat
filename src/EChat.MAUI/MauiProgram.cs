@@ -3,6 +3,7 @@ using EChat.Core;
 using EChat.Core.Services;
 using EChat.Maui.Services;
 using EChat.UI.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace EChat.Maui;
@@ -56,6 +57,16 @@ public static class MauiProgram
         var dbPath = Path.Combine(dbDir, "echat.db");
         var deviceId = Preferences.Get("device_id", Guid.NewGuid().ToString());
         Preferences.Set("device_id", deviceId);
+
+        // Register platform-specific credential protector BEFORE AddEChatCore
+        // so TryAddSingleton inside it finds our implementation already registered.
+#if WINDOWS
+        builder.Services.AddSingleton<ICredentialProtector,
+            EChat.Maui.Platforms.Windows.Services.DpapiCredentialProtector>();
+#elif ANDROID
+        builder.Services.AddSingleton<ICredentialProtector,
+            EChat.Maui.Platforms.Android.Services.SecureStorageCredentialProtector>();
+#endif
 
         builder.Services.AddEChatCore(dbPath, deviceId);
         builder.Services.AddSingleton<UserContextService>();

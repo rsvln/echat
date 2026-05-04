@@ -296,13 +296,34 @@ namespace EChat.Core.Data.Migrations
                     b.Property<string>("Email")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTimeOffset?>("AddedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("BlockedAt")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("DisplayName")
                         .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsBlocked")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("KeyFingerprint")
                         .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset?>("LastSeen")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("LocalKeyRevokedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LocalPrivateKey")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LocalPublicKey")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Notes")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("ProtocolVersion")

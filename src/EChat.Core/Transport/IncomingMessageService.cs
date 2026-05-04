@@ -76,6 +76,22 @@ public class IncomingMessageService
             .Select(a => a.Email)
             .FirstOrDefaultAsync();
 
+        // Pre-load blocked senders so we can filter the entire batch in O(1)
+        var blockedSenders = await db.Contacts
+            .Where(c => c.IsBlocked)
+            .Select(c => c.Email)
+            .ToHashSetAsync(StringComparer.OrdinalIgnoreCase);
+
+        if (blockedSenders.Count > 0)
+        {
+            var before = parsed.Count;
+            parsed = parsed.Where(p => !blockedSenders.Contains(p.Sender)).ToList();
+            var dropped = before - parsed.Count;
+            if (dropped > 0)
+                _fileLogger.Write("INFO", "SaveAsync", $"Dropped {dropped} message(s) from blocked sender(s)");
+            if (parsed.Count == 0) return;
+        }
+
         _fileLogger.Write("INFO", "SaveAsync", $"accountEmail={accountEmail}, accountId={accountId}");
 
         // Short tag used as a prefix in every log message so interleaved multi-account

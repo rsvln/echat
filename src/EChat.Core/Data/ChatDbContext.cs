@@ -97,6 +97,7 @@ public class ChatDbContext : DbContext
         {
             entity.HasKey(e => e.Email);
             entity.HasIndex(e => e.Verified);
+            entity.HasIndex(e => e.IsBlocked);
         });
         
         // ChatGroup

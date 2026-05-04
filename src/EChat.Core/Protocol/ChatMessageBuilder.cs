@@ -3,6 +3,7 @@ using EChat.Core.Models;
 using EChat.Core.Crypto;
 using EChat.Core.Services;
 using System.Text;
+using System.Linq;
 
 namespace EChat.Core.Protocol;
 
@@ -53,6 +54,18 @@ public class ChatMessageBuilder
             email.Headers.Add("Autocrypt", $"addr={_accountConfig.Email}; keydata={_accountConfig.PublicKey}");
 
         email.Headers.Add("Chat-Version", "2.0");
+
+        // Invite token — outer headers so Alice can verify BEFORE decrypting
+        if (!string.IsNullOrEmpty(message.InviteToken) && !string.IsNullOrEmpty(_accountConfig.PublicKey))
+        {
+            var recipientEmail = message.Recipients
+                .FirstOrDefault(r => !r.Equals(_accountConfig.Email, StringComparison.OrdinalIgnoreCase))
+                ?? message.Recipients.FirstOrDefault() ?? "";
+            var hmac = InviteService.ComputeHmac(
+                message.InviteToken, _accountConfig.PublicKey, recipientEmail);
+            email.Headers.Add("Chat-Invite-Token", message.InviteToken);
+            email.Headers.Add("Chat-Invite-HMAC",  hmac);
+        }
 
         // Chat-Group-ID must stay in outer headers so the receiver knows
         // which group private key to use for decryption BEFORE decrypting.

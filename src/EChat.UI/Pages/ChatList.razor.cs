@@ -1232,20 +1232,33 @@ public partial class ChatList
         foreach (var ae in attachmentEntities) DbContext.Attachments.Add(ae);
         var trackedChat = await DbContext.Chats.FindAsync(selectedChatId);
         if (trackedChat != null) trackedChat.LastActivityAt = now;
+
+        // Capture and clear the one-time invite token atomically with the message save.
+        // Clearing before the send means a retry won't re-use the same token, which is
+        // intentional — the token is one-time on Alice's side anyway.
+        string? pendingInviteToken = null;
+        if (trackedChat != null && !string.IsNullOrEmpty(trackedChat.PendingOutgoingInviteToken))
+        {
+            pendingInviteToken = trackedChat.PendingOutgoingInviteToken;
+            trackedChat.PendingOutgoingInviteToken = null;
+            if (selectedChat != null) selectedChat.PendingOutgoingInviteToken = null;
+        }
+
         await DbContext.SaveChangesAsync();
 
         // ── Send via SMTP in background, then update status ──
         var outgoing = new OutgoingMessage
         {
-            MessageId = msgId,
-            Content = text,
-            Recipients = recipients,
-            GroupId = selectedChat.Type == ChatType.Group ? selectedChat.GroupId : null,
-            Timestamp = now,
-            InReplyTo = replyTo?.MessageId,
-            Tier = BatchTier.Immediate,
-            Subject = SubjectLine,
-            Attachments = attachmentsToSend.Count > 0 ? attachmentsToSend : null
+            MessageId   = msgId,
+            Content     = text,
+            Recipients  = recipients,
+            GroupId     = selectedChat.Type == ChatType.Group ? selectedChat.GroupId : null,
+            Timestamp   = now,
+            InReplyTo   = replyTo?.MessageId,
+            Tier        = BatchTier.Immediate,
+            Subject     = SubjectLine,
+            Attachments = attachmentsToSend.Count > 0 ? attachmentsToSend : null,
+            InviteToken = pendingInviteToken
         };
         _ = TransportService.SendMessageAsync(outgoing).ContinueWith(async t =>
         {

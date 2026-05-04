@@ -22,6 +22,13 @@ public class Chat
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? LastActivityAt { get; set; }
 
+    /// <summary>
+    /// One-time invite token to include in the next outgoing message to this chat.
+    /// Set when Bob starts a chat using Alice's invite code; cleared after the first send.
+    /// Null once the key exchange is complete.
+    /// </summary>
+    public string? PendingOutgoingInviteToken { get; set; }
+
     // Navigation
     public Contact? Contact { get; set; }
     public ChatGroup? Group { get; set; }

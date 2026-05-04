@@ -31,6 +31,13 @@ public class OutgoingMessage
     // Device sync headers
     public string? SyncType { get; set; }
     public string? SyncDeviceId { get; set; }
+
+    // ── Invite / key-exchange ─────────────────────────────────────────────────
+    /// <summary>
+    /// One-time invite token to include in this message.
+    /// Cleared from the Chat after the first send.
+    /// </summary>
+    public string? InviteToken { get; set; }
 }
 
 public enum MessageType

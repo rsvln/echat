@@ -19,6 +19,7 @@ public class ChatDbContext : DbContext
     public DbSet<Attachment> Attachments => Set<Attachment>();
     public DbSet<MessageReaction> MessageReactions => Set<MessageReaction>();
     public DbSet<ImapFolderSyncState> ImapFolderStates => Set<ImapFolderSyncState>();
+    public DbSet<PendingInvite> PendingInvites => Set<PendingInvite>();
     
     /// <param name="protector">
     /// Optional credential protector injected by the DI container.
@@ -147,6 +148,14 @@ public class ChatDbContext : DbContext
         modelBuilder.Entity<ImapFolderSyncState>(entity =>
         {
             entity.HasKey(e => new { e.AccountId, e.FolderName });
+        });
+
+        // PendingInvite
+        modelBuilder.Entity<PendingInvite>(entity =>
+        {
+            entity.HasKey(e => e.TokenId);
+            entity.HasIndex(e => e.TokenHash).IsUnique();
+            entity.HasIndex(e => new { e.AccountId, e.UsedAt, e.ExpiresAt });
         });
     }
 }

@@ -160,6 +160,9 @@ namespace EChat.Core.Data.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("PendingOutgoingInviteToken")
+                        .HasColumnType("TEXT");
+
                     b.Property<int?>("TombstoneVersion")
                         .HasColumnType("INTEGER");
 
@@ -421,6 +424,41 @@ namespace EChat.Core.Data.Migrations
                     b.HasIndex("MessageId", "Emoji", "Sender");
 
                     b.ToTable("MessageReactions");
+                });
+
+            modelBuilder.Entity("EChat.Core.Models.PendingInvite", b =>
+                {
+                    b.Property<string>("TokenId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("AccountId")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Label")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset?>("UsedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TokenId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("AccountId", "UsedAt", "ExpiresAt");
+
+                    b.ToTable("PendingInvites");
                 });
 
             modelBuilder.Entity("EChat.Core.Models.Setting", b =>

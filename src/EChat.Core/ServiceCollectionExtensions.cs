@@ -57,6 +57,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<PgpService>();
         services.AddSingleton<KeyVerificationService>();
 
+        // Invite / key-exchange
+        services.AddSingleton<InviteService>();
+
         // Event bus & app-level services
         services.AddSingleton<ChatEventService>();
         services.AddSingleton<IncomingMessageService>();

@@ -102,6 +102,32 @@ FileName / ContentType / Size / Caption / IsImage
 
 `DatabasePathInfo.ResolveFilePath(stored)` — всегда используй этот метод для получения абсолютного пути из `att.FilePath`. Обрабатывает оба формата (относительный и абсолютный).
 
+### Contact
+```csharp
+AccountId       // PK part 1 — владелец контакта
+Email           // PK part 2 — email контакта
+DisplayName     // Имя, редактируемое пользователем
+PublicKey       // PGP-ключ контакта (для шифрования исходящих)
+KeyFingerprint  // Fingerprint для отображения в ChatInfoModal
+Verified        // Верифицирован через invite-flow
+IsBlocked       // Заблокирован
+BlockedAt       // Время блокировки
+Notes           // Заметки пользователя
+```
+
+**Изоляция по аккаунту**: PK — `(AccountId, Email)`. Контакт из ящика A не виден из ящика B.
+
+### GroupMember
+```csharp
+GroupId      // PK part 1
+MemberEmail  // PK part 2
+Role         // Admin | Member
+AddedAt / AddedBy
+NameColor    // Цвет имени в чате
+DisplayName  // Имя участника — приходит в протоколе (group-create/group-member-add)
+             // Fallback-цепочка: GroupMember.DisplayName → Contact.DisplayName → полный email
+```
+
 ### Account / AccountConfig
 - `Account` — персистентная запись в БД (credentials, PGP-ключи)
 - `AccountConfig` — мутабельный синглтон в DI, обновляется при `ReconnectAsync`
@@ -457,6 +483,67 @@ publish-win.bat   # Только Windows: Core/UI (если изменились
 
 ---
 
+## Безопасность credentials
+
+### ICredentialProtector
+Интерфейс для шифрования/дешифрования чувствительных полей (пароль IMAP, приватный PGP-ключ) в SQLite.
+
+```csharp
+string Protect(string plaintext)      // идемпотентно: уже зашифрованное возвращает as-is
+string Unprotect(string ciphertext)   // legacy plaintext (без префикса) возвращает as-is
+bool IsProtected(string storedValue)  // true если несёт платформенный префикс
+```
+
+Реализации:
+- `DpapiCredentialProtector` (Windows) — префикс `dpapi:`, entropy `"echat-cred-v1"`
+- `SecureStorageCredentialProtector` (Android) — префикс `aes:`, AES-256-GCM через Android Keystore
+- `PlaintextCredentialProtector` — no-op, для Web и разработки
+
+**Step 3d при старте**: читает сырые значения из БД через прямой `SqliteConnection` (минуя EF Value Converter), проверяет `IsProtected()`. Если все уже зашифрованы — SaveChanges не вызывается.
+
+---
+
+## Группы — протокол передачи DisplayName
+
+В сообщениях типа `group-create`, `group-member-add`, `group-member-remove` передаются имена участников:
+
+```json
+// group-create
+{
+  "type": "group-create",
+  "group_id": "...",
+  "members": ["a@x.com", "b@x.com"],
+  "member_names": { "a@x.com": "Alice", "b@x.com": "Bob" }
+}
+
+// group-member-add
+{ "type": "group-member-add", "added_email": "c@x.com", "added_name": "Carol", "added_by": "a@x.com" }
+
+// group-member-remove
+{ "type": "group-member-remove", "removed_email": "b@x.com", "removed_name": "Bob", "removed_by": "a@x.com" }
+```
+
+`IncomingMessageService` сохраняет `DisplayName` в `GroupMember` при создании; обновляет если пришло лучшее имя.
+
+Fallback-цепочка при отображении: `GroupMember.DisplayName` → `Contact.DisplayName` → полный email (никогда `email.Split('@')[0]`).
+
+---
+
+## NTP синхронизация времени
+
+`NtpTimeService` корректирует `DateTimeOffset.UtcNow` через атомарный `_offsetTicks`.
+
+**Важно**: `socket.ReceiveTimeout` игнорируется `await ReceiveAsync`. Таймаут реализован через `CancellationTokenSource(5s)`, переданный в `ConnectAsync` / `SendAsync` / `ReceiveAsync`.
+
+Валидация NTP-ответа:
+1. `received < 48` → `InvalidDataException`
+2. `intPart == 0` → `InvalidDataException` (нулевой timestamp = мусор)
+3. `|networkDateTime - UtcNow| > 3650 дней` → `InvalidDataException` (санитарная проверка)
+
+При сбое NTP — HTTP HEAD fallback к mail-доменам подключённых аккаунтов (из заголовка `Date`).
+
+---
+
 ## Инварианты и ловушки
 
 1. **Никогда не используй `Environment.SpecialFolder.LocalApplicationData` для путей к файлам** — на Android это внутреннее хранилище. Используй `_fileLogger.AppDir` или `DatabasePathInfo.AttachmentsDir`.
@@ -486,3 +573,11 @@ publish-win.bat   # Только Windows: Core/UI (если изменились
 13. **`version.txt` в Dockerfile** — должен копироваться вместе с `.csproj` перед `dotnet restore`. MSBuild вычисляет `<Version>` из `version.txt` при парсинге `.csproj`, а не при компиляции.
 
 14. **`TaskScheduler.UnobservedTaskException` на Android** — без `SetObserved()` необработанное исключение в `Task.Run` через некоторое время убивает процесс во время GC. Обязательно регистрируй в `MainApplication`.
+
+15. **`PRAGMA foreign_keys` внутри транзакции EF** — SQLite молча игнорирует `PRAGMA foreign_keys = OFF/ON` внутри активной транзакции. Для миграций, требующих пересборки таблиц с FK, используй `migrationBuilder.Sql("PRAGMA ...", suppressTransaction: true)` — EF коммитит транзакцию перед выполнением.
+
+16. **`Contact.Split('@')[0]` — никогда** — префикс email не является именем пользователя. Для отображения используй `DisplayName ?? полный_email`. Fallback `Split('@')[0]` удалён из всего кодовой базы.
+
+17. **EF Value Converter не срабатывает при чтении через `SELECT`** — конвертеры (например, шифрование паролей) применяются только при записи через EF. Чтение raw-значений для проверки `IsProtected()` требует прямого `SqliteConnection`, не `DbContext`.
+
+18. **`GroupMember.DisplayName` — источник правды для имён в группе** — не делай лукап в `Contacts` когда нужно имя участника группы. Contacts может не знать о человеке (добавлен другим участником). `GroupMember.DisplayName` заполняется из протокола и всегда актуален.

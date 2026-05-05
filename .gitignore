@@ -370,3 +370,5 @@ pub/
 
 # Claude Code memory/session data
 .claude/
+# EChat Web runtime data (SQLite DB, logs)
+src/EChat.Web/data/

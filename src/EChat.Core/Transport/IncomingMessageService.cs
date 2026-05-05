@@ -567,7 +567,7 @@ public class IncomingMessageService
             // Collect notification data (first incoming message per chat wins as preview).
             if (!isSentSync && chat != null && !chat.Muted && !notificationEntries.ContainsKey(chatId))
             {
-                var senderName = pm.Sender?.Split('@')[0] ?? "Unknown";
+                var senderName = pm.Sender ?? "Unknown";
                 if (batchContacts.TryGetValue(pm.Sender ?? "", out var sc) &&
                     !string.IsNullOrEmpty(sc.DisplayName))
                     senderName = sc.DisplayName;

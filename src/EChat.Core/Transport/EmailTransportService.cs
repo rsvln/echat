@@ -598,7 +598,7 @@ public class EmailTransportService
                 else if (message.Recipients.Count == 1)
                 {
                     // 1:1 message — encrypt with the contact's personal public key
-                    var contact = await db.Contacts.FindAsync(message.Recipients[0]);
+                    var contact = await db.Contacts.FindAsync(_accountConfig.AccountId, message.Recipients[0]);
                     if (contact?.PublicKey != null)
                         message.RecipientPublicKey = contact.PublicKey;
                 }
@@ -1036,12 +1036,13 @@ public class EmailTransportService
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
-            var contact = await db.Contacts.FindAsync(senderEmail);
+            var contact = await db.Contacts.FindAsync(_accountConfig.AccountId, senderEmail);
             bool keyChanged;
             if (contact == null)
             {
                 contact = new Contact
                 {
+                    AccountId = _accountConfig.AccountId,
                     Email = senderEmail,
                     DisplayName = senderEmail.Split('@')[0],
                     PublicKey = keydata

@@ -191,6 +191,26 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    position: relative;
+}
+
+.page-back-btn {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: background 0.15s, color 0.15s;
+}
+
+.page-back-btn:hover {
+    background: var(--hover);
+    color: var(--text);
 }
 
 .setup-logo {

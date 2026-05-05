@@ -21,8 +21,8 @@ public class ImapService : IDisposable
     private string? _password;
     private bool _useSsl;
 
-    // Short tag for log prefixes: "yarustam", "avchatmail", etc.
-    private string LogTag => _email?.Split('@')[0] ?? "imap";
+    // Full email used as log tag: "yarustam@yandex.ru", "avchatmail@mail.ru", etc.
+    private string LogTag => _email ?? "imap";
 
     // Accept certificates where only revocation status is unknown (common on Android/mobile).
     // Reject certificates with real errors (expired, wrong host, untrusted root, etc.).

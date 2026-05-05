@@ -390,6 +390,7 @@
 
     <ChatInfoModal IsVisible="@showChatInfo"
                    ChatId="@selectedChatId"
+                   ActiveAccountId="@activeAccountId"
                    OnClose="@(() => showChatInfo = false)"
                    OnChatArchived="@OnChatArchived"
                    OnChatUnarchived="@OnChatUnarchived"

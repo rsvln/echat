@@ -20,7 +20,13 @@ public class GroupMember
     public DateTimeOffset AddedAt { get; set; }
     public string? AddedBy { get; set; }
     public string? NameColor { get; set; }
-    
+    /// <summary>
+    /// Display name as known by the member who created/added this entry.
+    /// Populated from the group-create / group-member-add protocol message.
+    /// Falls back to MemberEmail when null.
+    /// </summary>
+    public string? DisplayName { get; set; }
+
     // Navigation
     public ChatGroup? Group { get; set; }
 }

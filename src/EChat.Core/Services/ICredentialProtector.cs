@@ -22,6 +22,13 @@ public interface ICredentialProtector
     /// plaintext stored before encryption was introduced), it is returned as-is.
     /// </summary>
     string Unprotect(string ciphertext);
+
+    /// <summary>
+    /// Returns true when <paramref name="storedValue"/> is already encrypted
+    /// by this protector (i.e. carries the platform-specific prefix).
+    /// Used to skip re-encryption on startup when all credentials are up to date.
+    /// </summary>
+    bool IsProtected(string storedValue);
 }
 
 /// <summary>
@@ -33,4 +40,6 @@ public sealed class PlaintextCredentialProtector : ICredentialProtector
     public static readonly PlaintextCredentialProtector Instance = new();
     public string Protect(string plaintext) => plaintext;
     public string Unprotect(string ciphertext) => ciphertext;
+    // Plaintext is trivially "protected" — never needs re-encryption.
+    public bool IsProtected(string storedValue) => true;
 }

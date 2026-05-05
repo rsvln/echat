@@ -65,6 +65,15 @@
             <button class="account-add-btn" title="Add account"
                     @onclick="@(() => Navigation.NavigateTo("/setup"))">+</button>
             <div class="account-spacer"></div>
+            <button class="account-global-btn" title="Contacts"
+                    @onclick="@(() => showContacts = true)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                    <circle cx="9" cy="7" r="4"/>
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+            </button>
             <button class="account-settings-btn" title="Account settings"
                     @onclick="OpenAccountSettings">⚙</button>
             <button class="account-global-btn" title="App settings"
@@ -381,6 +390,7 @@
 
     <ChatInfoModal IsVisible="@showChatInfo"
                    ChatId="@selectedChatId"
+                   ActiveAccountId="@activeAccountId"
                    OnClose="@(() => showChatInfo = false)"
                    OnChatArchived="@OnChatArchived"
                    OnChatUnarchived="@OnChatUnarchived"
@@ -684,5 +694,10 @@ else
              ActiveAccountId="@activeAccountId"
              OnClose="@CloseNewChat"
              OnChatReady="@OnNewChatReady" />
+
+<ContactsModal IsVisible="@showContacts"
+               ActiveAccountId="@activeAccountId"
+               OnClose="@(() => showContacts = false)"
+               OnOpenChat="@OnNewChatReady" />
 
 @* C# code moved to ChatList.razor.cs (partial class) *@

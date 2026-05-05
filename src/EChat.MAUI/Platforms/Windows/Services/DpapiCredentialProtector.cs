@@ -36,4 +36,8 @@ public sealed class DpapiCredentialProtector : ICredentialProtector
         var decrypted = ProtectedData.Unprotect(encrypted, Entropy, DataProtectionScope.CurrentUser);
         return Encoding.UTF8.GetString(decrypted);
     }
+
+    public bool IsProtected(string storedValue) =>
+        !string.IsNullOrEmpty(storedValue) &&
+        storedValue.StartsWith(Prefix, StringComparison.Ordinal);
 }

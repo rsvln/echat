@@ -74,7 +74,7 @@
                         {
                             var memberEmail = member.MemberEmail;
                             <div class="member-item">
-                                <span class="member-name">@(memberNames.TryGetValue(memberEmail, out var n) ? n : memberEmail.Split('@')[0])</span>
+                                <span class="member-name">@(member.DisplayName ?? memberNames.GetValueOrDefault(memberEmail) ?? memberEmail)</span>
                                 @if (member.Role == GroupRole.Admin)
                                 {
                                     <span class="admin-badge">Admin</span>
@@ -110,6 +110,83 @@
                     </div>
                 }
 
+                @* ── Contact info (1:1 chats only) ── *@
+                @if (chat.Type == ChatType.OneToOne && contact != null)
+                {
+                    <div class="chat-info-divider"></div>
+                    <div class="info-section">
+                        <h3>Contact</h3>
+
+                        @* Display name *@
+                        <div class="info-row">
+                            <strong>Name:</strong>
+                            @if (_editingContactName)
+                            {
+                                <input class="rename-input" @bind="_contactNameValue" @bind:event="oninput"
+                                       @onkeydown="@(async e => { if (e.Key == "Enter") await SaveContactNameAsync(); else if (e.Key == "Escape") _editingContactName = false; })"
+                                       maxlength="64" />
+                                <button class="rename-save-btn" @onclick="SaveContactNameAsync">✓</button>
+                                <button class="rename-save-btn" @onclick="@(() => _editingContactName = false)">✕</button>
+                            }
+                            else
+                            {
+                                <span>@(contact.DisplayName ?? contact.Email.Split('@')[0])</span>
+                                <button class="rename-edit-btn" @onclick="@(() => { _contactNameValue = contact.DisplayName ?? ""; _editingContactName = true; })">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                </button>
+                            }
+                        </div>
+
+                        @* Verified badge *@
+                        <div class="info-row">
+                            <strong>Status:</strong>
+                            @if (contact.Verified)
+                            {
+                                <span class="contact-verified-badge">✓ Verified</span>
+                            }
+                            else
+                            {
+                                <span class="contact-unverified-badge">⚠ Unverified</span>
+                            }
+                            @if (contact.IsBlocked)
+                            {
+                                <span class="contact-blocked-badge">🚫 Blocked</span>
+                            }
+                        </div>
+
+                        @* Key fingerprint *@
+                        @if (!string.IsNullOrEmpty(contact.KeyFingerprint))
+                        {
+                            <div class="info-row info-row-fingerprint">
+                                <strong>Key:</strong>
+                                <span class="key-fingerprint">@contact.KeyFingerprint</span>
+                            </div>
+                        }
+
+                        @* Notes *@
+                        <div class="info-row info-row-notes">
+                            <strong>Notes:</strong>
+                            @if (_editingNotes)
+                            {
+                                <textarea class="notes-input" @bind="_notesValue" @bind:event="oninput" rows="2" maxlength="500"></textarea>
+                                <div class="notes-actions">
+                                    <button class="rename-save-btn" @onclick="SaveNotesAsync">Save</button>
+                                    <button class="rename-save-btn" @onclick="@(() => _editingNotes = false)">Cancel</button>
+                                </div>
+                            }
+                            else
+                            {
+                                <span class="notes-text @(string.IsNullOrEmpty(contact.Notes) ? "notes-empty" : "")">
+                                    @(string.IsNullOrEmpty(contact.Notes) ? "no notes" : contact.Notes)
+                                </span>
+                                <button class="rename-edit-btn" @onclick="@(() => { _notesValue = contact.Notes ?? ""; _editingNotes = true; })">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                </button>
+                            }
+                        </div>
+                    </div>
+                }
+
                 <div class="chat-info-divider"></div>
 
                 <div class="new-chat-actions">
@@ -125,6 +202,21 @@
                         }
                         Mute
                     </button>
+                    @if (chat.Type == ChatType.OneToOne && contact != null)
+                    {
+                        @if (contact.IsBlocked)
+                        {
+                            <button class="new-chat-btn-primary" @onclick="UnblockContactAsync">
+                                Unblock
+                            </button>
+                        }
+                        else
+                        {
+                            <button class="new-chat-btn-danger" @onclick="ConfirmBlock">
+                                Block
+                            </button>
+                        }
+                    }
                     @if (chat.Archived)
                     {
                         <button class="new-chat-btn-primary" @onclick="UnarchiveChat">
@@ -143,6 +235,26 @@
                     <button class="new-chat-btn-toggle" @onclick="Close">
                         Close
                     </button>
+                </div>
+            </div>
+        }
+
+        @if (showBlockConfirm)
+        {
+            <div class="modal-overlay visible" @onclick="CancelBlock">
+                <div class="modal-content modal-sm" @onclick:stopPropagation="true">
+                    <div class="modal-header">
+                        <h2>Block Contact</h2>
+                        <button class="close-btn" @onclick="CancelBlock">✕</button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Block <strong>@(contact?.DisplayName ?? contact?.Email)</strong>?<br/>
+                           Future messages from them will be silently discarded.</p>
+                        <div class="delete-actions">
+                            <button class="new-chat-btn-danger" @onclick="BlockContactAsync">Block</button>
+                        </div>
+                        <button class="new-chat-btn-cancel" @onclick="CancelBlock">Cancel</button>
+                    </div>
                 </div>
             </div>
         }
@@ -198,6 +310,9 @@
     public string? ChatId { get; set; }
 
     [Parameter]
+    public string? ActiveAccountId { get; set; }
+
+    [Parameter]
     public EventCallback OnClose { get; set; }
 
     [Parameter]
@@ -237,11 +352,13 @@
     public EChat.Core.Services.ChatEventService ChatEvents { get; set; } = null!;
 
     private Chat? chat;
+    private Contact? contact;
     private int messageCount;
     private List<GroupMember>? members;
     private Dictionary<string, string> memberNames = new();
     private List<Contact> contactsWithKeys = new();
     private bool showDeleteConfirm;
+    private bool showBlockConfirm;
 
     private string addMemberEmail = string.Empty;
     private string? addMemberError;
@@ -251,6 +368,12 @@
     private string _editNameValue = string.Empty;
     private bool _renameLoading;
     private string? _renameError;
+
+    // Contact editing state
+    private bool _editingContactName;
+    private string _contactNameValue = string.Empty;
+    private bool _editingNotes;
+    private string _notesValue = string.Empty;
 
     private bool _wasVisible;
 
@@ -279,10 +402,18 @@
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
         chat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.ChatId == ChatId);
+        contact = null;
 
         if (chat != null)
         {
             messageCount = await db.Messages.AsNoTracking().CountAsync(m => m.ChatId == ChatId);
+
+            if (chat.Type == ChatType.OneToOne && !string.IsNullOrEmpty(chat.ContactEmail))
+            {
+                // Not AsNoTracking — we mutate the object for optimistic UI updates
+                contact = await db.Contacts
+                    .FirstOrDefaultAsync(c => c.AccountId == ActiveAccountId && c.Email == chat.ContactEmail);
+            }
 
             if (chat.Type == ChatType.Group)
             {
@@ -292,11 +423,11 @@
 
                 var emails = members.Select(m => m.MemberEmail).ToList();
                 memberNames = await db.Contacts.AsNoTracking()
-                    .Where(c => emails.Contains(c.Email) && c.DisplayName != null)
+                    .Where(c => c.AccountId == ActiveAccountId && emails.Contains(c.Email) && c.DisplayName != null)
                     .ToDictionaryAsync(c => c.Email, c => c.DisplayName!);
 
                 contactsWithKeys = await db.Contacts.AsNoTracking()
-                    .Where(c => c.PublicKey != null && c.PublicKey != "" && !emails.Contains(c.Email))
+                    .Where(c => c.AccountId == ActiveAccountId && c.PublicKey != null && c.PublicKey != "" && !emails.Contains(c.Email))
                     .OrderBy(c => c.DisplayName)
                     .ToListAsync();
                 addMemberEmail = string.Empty;
@@ -382,6 +513,76 @@
         await OnChatDeleted.InvokeAsync(chat.ChatId);
     }
 
+    // ── Contact management ────────────────────────────────────────────────────
+
+    private void ConfirmBlock() => showBlockConfirm = true;
+    private void CancelBlock()  => showBlockConfirm = false;
+
+    private async Task BlockContactAsync()
+    {
+        if (contact == null) return;
+        await DbContext.Contacts
+            .Where(c => c.AccountId == ActiveAccountId && c.Email == contact.Email)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(c => c.IsBlocked,  true)
+                .SetProperty(c => c.BlockedAt,  DateTimeOffset.UtcNow));
+        contact.IsBlocked = true;
+        contact.BlockedAt = DateTimeOffset.UtcNow;
+        showBlockConfirm = false;
+        // Archive the chat so it disappears from the active list
+        if (chat != null)
+        {
+            await DbContext.Chats
+                .Where(c => c.ChatId == chat.ChatId)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, true));
+            await OnChatArchived.InvokeAsync(chat.ChatId);
+        }
+        await Close();
+    }
+
+    private async Task UnblockContactAsync()
+    {
+        if (contact == null) return;
+        await DbContext.Contacts
+            .Where(c => c.AccountId == ActiveAccountId && c.Email == contact.Email)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(c => c.IsBlocked, false)
+                .SetProperty(c => c.BlockedAt,  (DateTimeOffset?)null));
+        contact.IsBlocked = false;
+        contact.BlockedAt = null;
+    }
+
+    private async Task SaveContactNameAsync()
+    {
+        if (contact == null) return;
+        var name = _contactNameValue.Trim();
+        if (string.IsNullOrEmpty(name)) { _editingContactName = false; return; }
+        await DbContext.Contacts
+            .Where(c => c.AccountId == ActiveAccountId && c.Email == contact.Email)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.DisplayName, name));
+        contact.DisplayName = name;
+        // Also update chat name to match
+        if (chat != null)
+        {
+            await DbContext.Chats
+                .Where(c => c.ChatId == chat.ChatId)
+                .ExecuteUpdateAsync(s => s.SetProperty(c => c.Name, name));
+            ChatEvents.NotifyChatUpdated(chat.ChatId);
+        }
+        _editingContactName = false;
+    }
+
+    private async Task SaveNotesAsync()
+    {
+        if (contact == null) return;
+        var notes = _notesValue.Trim();
+        await DbContext.Contacts
+            .Where(c => c.AccountId == ActiveAccountId && c.Email == contact.Email)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Notes, notes == "" ? null : notes));
+        contact.Notes = notes == "" ? null : notes;
+        _editingNotes = false;
+    }
+
     private async Task AddMemberToGroupAsync()
     {
         addMemberError = null;
@@ -410,7 +611,7 @@
             using var scope = ScopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
-            var contact = await db.Contacts.FindAsync(email);
+            var contact = await db.Contacts.FindAsync(ActiveAccountId, email);
             if (contact == null || string.IsNullOrEmpty(contact.PublicKey))
             {
                 addMemberError = "Contact not found or has no public key.";
@@ -425,12 +626,12 @@
                 return;
             }
 
-            // Get current member emails
-            var currentMembers = await db.GroupMembers.AsNoTracking()
+            // Get current members with their stored display names
+            var currentMemberRows = await db.GroupMembers.AsNoTracking()
                 .Where(m => m.GroupId == groupId)
-                .Select(m => m.MemberEmail)
                 .ToListAsync();
-            var allMembers = currentMembers.Append(email).Distinct().ToList();
+            var currentMemberEmails = currentMemberRows.Select(m => m.MemberEmail).ToList();
+            var allMemberEmails = currentMemberEmails.Append(email).Distinct().ToList();
 
             var groupInfo = await db.Groups.FirstOrDefaultAsync(g => g.GroupId == groupId);
             var groupName = groupInfo?.Name ?? chat.Name;
@@ -440,6 +641,22 @@
             int newVersion = (groupInfo?.Version ?? 1) + 1;
             if (groupInfo != null) groupInfo.Version = newVersion;
 
+            // Build member_names map: prefer GroupMember.DisplayName, fallback to Contacts
+            var memberNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in currentMemberRows)
+            {
+                if (!string.IsNullOrEmpty(m.DisplayName))
+                    memberNameMap[m.MemberEmail] = m.DisplayName;
+                else
+                {
+                    var mc = await db.Contacts.FindAsync(ActiveAccountId, m.MemberEmail);
+                    memberNameMap[m.MemberEmail] = mc?.DisplayName ?? m.MemberEmail;
+                }
+            }
+            // Add new member's name
+            var addedName = contact.DisplayName ?? email;
+            memberNameMap[email] = addedName;
+
             // Add to local DB
             db.GroupMembers.Add(new GroupMember
             {
@@ -447,7 +664,8 @@
                 MemberEmail = email,
                 Role = GroupRole.Member,
                 AddedAt = DateTimeOffset.UtcNow,
-                AddedBy = myEmail
+                AddedBy = myEmail,
+                DisplayName = addedName
             });
 
             db.Messages.Add(new ChatMessage
@@ -455,7 +673,7 @@
                 MessageId = Guid.NewGuid().ToString(),
                 ChatId = chat.ChatId,
                 Sender = myEmail ?? "",
-                Content = $"{contact.DisplayName ?? email.Split('@')[0]} was added to the group",
+                Content = $"{addedName} was added to the group",
                 Timestamp = DateTimeOffset.UtcNow,
                 DisplayTimestamp = DateTimeOffset.UtcNow,
                 ReceivedAt = DateTimeOffset.UtcNow,
@@ -467,18 +685,21 @@
             ChatEvents.NotifyChatUpdated(chat.ChatId);
 
             // Send group-create to the new member so they get the full group state
+            var adminEmails = await db.GroupMembers.AsNoTracking()
+                .Where(m => m.GroupId == groupId && m.Role == GroupRole.Admin)
+                .Select(m => m.MemberEmail).ToListAsync();
+
             var groupCreatePayload = System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "group-create",
                 group_id = groupId,
                 group_name = groupName,
                 version = newVersion,
-                members = allMembers,
-                admins = (await db.GroupMembers.AsNoTracking()
-                    .Where(m => m.GroupId == groupId && m.Role == GroupRole.Admin)
-                    .Select(m => m.MemberEmail).ToListAsync()),
+                members = allMemberEmails,
+                admins = adminEmails,
                 group_public_key = keyPair.PublicKey,
-                group_private_key = keyPair.PrivateKey
+                group_private_key = keyPair.PrivateKey,
+                member_names = memberNameMap
             });
 
             await TransportService.SendMessageAsync(new OutgoingMessage
@@ -501,13 +722,14 @@
                 type = "group-member-add",
                 group_id = groupId,
                 added_email = email,
+                added_name = addedName,
                 added_by = myEmail
             });
 
-            foreach (var memberEmail in currentMembers)
+            foreach (var memberEmail in currentMemberEmails)
             {
                 if (memberEmail.Equals(myEmail, StringComparison.OrdinalIgnoreCase)) continue;
-                var mc = await db.Contacts.FindAsync(memberEmail);
+                var mc = await db.Contacts.FindAsync(ActiveAccountId, memberEmail);
                 try
                 {
                     await TransportService.SendMessageAsync(new OutgoingMessage
@@ -559,8 +781,9 @@
             var groupInfoR = await db.Groups.FindAsync(groupId);
             if (groupInfoR != null) groupInfoR.Version++;
 
-            var targetContact = await db.Contacts.FindAsync(targetEmail);
-            var targetName = targetContact?.DisplayName ?? targetEmail.Split('@')[0];
+            var targetMemberRow = await db.GroupMembers.FindAsync(groupId, targetEmail); // before Remove
+            var targetContact = await db.Contacts.FindAsync(ActiveAccountId, targetEmail);
+            var targetName = targetMemberRow?.DisplayName ?? targetContact?.DisplayName ?? targetEmail;
 
             var removeNotifyMsgId = Guid.NewGuid().ToString();
 
@@ -585,6 +808,7 @@
                 type = "group-member-remove",
                 group_id = groupId,
                 removed_email = targetEmail,
+                removed_name = targetName,
                 removed_by = myEmail
             });
 
@@ -598,7 +822,7 @@
 
             foreach (var email in recipients)
             {
-                var contact = await db.Contacts.FindAsync(email);
+                var contact = await db.Contacts.FindAsync(ActiveAccountId, email);
                 try
                 {
                     await TransportService.SendMessageAsync(new OutgoingMessage
@@ -704,7 +928,7 @@
             foreach (var email in memberEmails)
             {
                 if (email.Equals(myEmail, StringComparison.OrdinalIgnoreCase)) continue;
-                var contact = await db.Contacts.FindAsync(email);
+                var contact = await db.Contacts.FindAsync(ActiveAccountId, email);
                 try
                 {
                     await TransportService.SendMessageAsync(new OutgoingMessage

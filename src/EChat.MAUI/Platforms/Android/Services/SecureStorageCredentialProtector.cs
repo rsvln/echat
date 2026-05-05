@@ -75,6 +75,10 @@ public sealed class SecureStorageCredentialProtector : ICredentialProtector
         return Prefix + Convert.ToBase64String(packed);
     }
 
+    public bool IsProtected(string storedValue) =>
+        !string.IsNullOrEmpty(storedValue) &&
+        storedValue.StartsWith(Prefix, StringComparison.Ordinal);
+
     public string Unprotect(string ciphertext)
     {
         if (string.IsNullOrEmpty(ciphertext)) return ciphertext;

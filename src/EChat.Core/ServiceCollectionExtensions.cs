@@ -308,7 +308,7 @@ public static class ServiceCollectionExtensions
             // Normalize Attachment.FilePath: old records stored absolute paths; convert to filename only.
             // Split on both / and \ so Windows paths are handled correctly on any platform.
             var absPathAtts = await ctx.Attachments
-                .Where(a => a.FilePath != null && (a.FilePath.Contains('/') || a.FilePath.Contains('\\')))
+                .Where(a => a.FilePath != null && (a.FilePath.Contains("/") || a.FilePath.Contains("\\")))
                 .ToListAsync();
             if (absPathAtts.Count > 0)
             {
@@ -348,6 +348,14 @@ public static class ServiceCollectionExtensions
                 if (deletedGroupIds.Count > 0)
                 {
                     await ctx.GroupMembers.Where(m => deletedGroupIds.Contains(m.GroupId)).ExecuteDeleteAsync();
+                    // Null out GroupId on tombstone chats BEFORE deleting Groups.
+                    // Tombstone Chat rows are kept (not deleted) but still hold GroupId,
+                    // which creates a FK reference that blocks DELETE from Groups
+                    // (Chats→Groups ON DELETE RESTRICT). Clearing it unblocks the delete
+                    // while preserving the tombstone semantics (Deleted=true is the marker).
+                    await ctx.Chats
+                        .Where(c => c.Deleted && c.GroupId != null && deletedGroupIds.Contains(c.GroupId!))
+                        .ExecuteUpdateAsync(s => s.SetProperty(c => c.GroupId, (string?)null));
                     await ctx.Groups.Where(g => deletedGroupIds.Contains(g.GroupId)).ExecuteDeleteAsync();
                     await ctx.GroupKeyPairs.Where(g => deletedGroupIds.Contains(g.GroupId)).ExecuteDeleteAsync();
                 }
@@ -368,30 +376,61 @@ public static class ServiceCollectionExtensions
         // Runs OUTSIDE the main try/catch so a failed migration never skips this.
         // EF Value Converters only run on write. Existing accounts that were saved
         // before encryption was introduced still have plaintext in the DB.
-        // Marking Password and PrivateKey as Modified forces SaveChanges to call
-        // Protect() on them, encrypting any plaintext values.
-        // With PlaintextCredentialProtector this is a no-op (Protect returns as-is).
-        // Already-encrypted values pass through Protect() unchanged (prefix check).
+        // We read raw stored values (bypassing the EF converter) via raw SQL,
+        // check whether they are already protected, and skip the write entirely
+        // when all credentials are up to date — avoiding a pointless DB write on
+        // every startup once migration has been performed.
         try
         {
-            var log3d = serviceProvider.GetService<FileLogger>();
-            using (var scope = serviceProvider.CreateScope())
+            var log3d     = serviceProvider.GetService<FileLogger>();
+            var protector = serviceProvider.GetService<ICredentialProtector>()
+                            ?? PlaintextCredentialProtector.Instance;
+
+            using var scope = serviceProvider.CreateScope();
+            var ctx = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+            // Read raw (possibly-plaintext) stored values without the EF converter.
+            var rawRows = new List<(string Id, string RawPwd, string? RawKey)>();
+            await using (var conn = new Microsoft.Data.Sqlite.SqliteConnection(
+                ctx.Database.GetConnectionString()))
             {
-                var ctx       = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-                var accounts  = await ctx.Accounts.ToListAsync();
-                log3d?.Write("INFO", "Init", $"Step 3d: re-encrypting credentials for {accounts.Count} account(s).");
-                foreach (var acc in accounts)
+                await conn.OpenAsync();
+                await using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT AccountId, Password, PrivateKey FROM Accounts";
+                await using var reader = await cmd.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                    rawRows.Add((
+                        reader.GetString(0),
+                        reader.GetString(1),
+                        reader.IsDBNull(2) ? null : reader.GetString(2)));
+            }
+
+            if (rawRows.Count > 0)
+            {
+                var needsMigration = rawRows.Any(r =>
+                    !protector.IsProtected(r.RawPwd) ||
+                    (r.RawKey != null && !protector.IsProtected(r.RawKey)));
+
+                if (needsMigration)
                 {
-                    // Always mark modified. Protect() is idempotent (checks prefix),
-                    // so already-encrypted values are written back unchanged.
-                    // Overhead is negligible for 1–3 accounts per startup.
-                    ctx.Entry(acc).Property(a => a.Password).IsModified = true;
-                    if (acc.PrivateKey != null)
-                        ctx.Entry(acc).Property(a => a.PrivateKey).IsModified = true;
-                }
-                if (accounts.Count > 0)
+                    log3d?.Write("INFO", "Init",
+                        $"Step 3d: re-encrypting credentials for {rawRows.Count} account(s).");
+
+                    var accounts = await ctx.Accounts.ToListAsync();
+                    foreach (var acc in accounts)
+                    {
+                        ctx.Entry(acc).Property(a => a.Password).IsModified = true;
+                        if (acc.PrivateKey != null)
+                            ctx.Entry(acc).Property(a => a.PrivateKey).IsModified = true;
+                    }
                     await ctx.SaveChangesAsync();
-                log3d?.Write("INFO", "Init", "Step 3d: done.");
+                    log3d?.Write("INFO", "Init", "Step 3d: done.");
+                }
+                else
+                {
+                    log3d?.Write("DEBUG", "Init",
+                        $"Step 3d: all {rawRows.Count} account(s) already encrypted — skipping.");
+                }
             }
         }
         catch (Exception e3d)

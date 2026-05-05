@@ -124,7 +124,32 @@
                 </div>
             }
 
-            @if (Platform.SupportsMauiFilePicker)
+            @if (importNeedsPassword)
+            {
+                <div class="setup-field">
+                    <label>Backup password</label>
+                    <input type="password"
+                           placeholder="Enter backup password"
+                           @bind="importBackupPassword"
+                           @bind:event="oninput"
+                           @onkeydown="OnImportPasswordKeyDown" />
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button class="setup-btn-primary"
+                            style="flex:1;"
+                            @onclick="ProceedWithImportAsync"
+                            disabled="@(importBusy || string.IsNullOrEmpty(importBackupPassword))">
+                        @(importBusy ? "Importing…" : "Import")
+                    </button>
+                    <button class="setup-btn-secondary"
+                            style="flex:0 0 auto; padding: 0 16px;"
+                            @onclick="CancelImport"
+                            disabled="@importBusy">
+                        Cancel
+                    </button>
+                </div>
+            }
+            else if (Platform.SupportsMauiFilePicker)
             {
                 <button class="setup-btn-secondary"
                         @onclick="ImportBackupMauiAsync"
@@ -137,7 +162,7 @@
                 <label class="setup-btn-secondary" style="cursor:pointer; text-align:center;">
                     @(importBusy ? "Importing…" : "Restore from Backup")
                     <InputFile OnChange="ImportBackupWebAsync"
-                               accept=".zip"
+                               accept=".zip,.echatbackup"
                                style="display:none;"
                                disabled="@(isSaving || importBusy)" />
                 </label>
@@ -166,6 +191,9 @@
     // ── Import backup ────────────────────────────────────────────────────────
     private bool importBusy = false;
     private string? importError;
+    private byte[]? importPendingBytes;        // buffered backup data awaiting password
+    private bool importNeedsPassword = false;  // true when pending file is encrypted
+    private string importBackupPassword = string.Empty;
 
     protected override async Task OnInitializedAsync()
     {
@@ -257,7 +285,7 @@
         {
             using var stream = await Platform.PickFileAsync();
             if (stream == null) return;
-            await RestoreAndRestartAsync(stream);
+            await StageBackupAsync(stream);
         }
         catch (Exception ex) { importError = $"Import failed: {ex.Message}"; }
         finally { importBusy = false; StateHasChanged(); }
@@ -270,30 +298,79 @@
         try
         {
             await using var stream = e.File.OpenReadStream(maxAllowedSize: 200 * 1024 * 1024);
-            await RestoreAndRestartAsync(stream);
+            await StageBackupAsync(stream);
         }
         catch (Exception ex) { importError = $"Import failed: {ex.Message}"; }
         finally { importBusy = false; StateHasChanged(); }
     }
 
-    private async Task RestoreAndRestartAsync(Stream stream)
+    /// <summary>
+    /// Buffers the backup stream, validates it, then either imports immediately
+    /// (plain ZIP) or shows the password prompt (encrypted backup).
+    /// </summary>
+    private async Task StageBackupAsync(Stream stream)
     {
-        // Buffer the stream into memory first — web InputFile streams are not seekable,
-        // so IsValidBackup would consume the stream and leave nothing for RestoreBackupAsync.
         using var ms = new MemoryStream();
         await stream.CopyToAsync(ms);
-        ms.Position = 0;
+        var data = ms.ToArray();
 
-        if (!EChat.Core.Services.BackupService.IsValidBackup(ms))
+        if (!EChat.Core.Services.BackupService.IsValidBackup(data))
             throw new InvalidDataException("File is not a valid EChat backup.");
 
-        ms.Position = 0;
-        await BackupSvc.RestoreBackupAsync(ms);
+        if (EChat.Core.Services.BackupService.IsEncryptedBackup(data))
+        {
+            // Encrypted — keep bytes and ask for password
+            importPendingBytes    = data;
+            importNeedsPassword   = true;
+            importBackupPassword  = string.Empty;
+        }
+        else
+        {
+            // Plain ZIP — import immediately (legacy backup)
+            await RestoreFromBytesAsync(data, password: null);
+        }
+    }
 
+    private async Task ProceedWithImportAsync()
+    {
+        if (importPendingBytes == null || string.IsNullOrEmpty(importBackupPassword)) return;
+        importBusy = true; importError = null;
+        StateHasChanged();
+        try
+        {
+            await RestoreFromBytesAsync(importPendingBytes, importBackupPassword);
+        }
+        catch (Exception ex)
+        {
+            importError = $"Import failed: {ex.Message}";
+        }
+        finally { importBusy = false; StateHasChanged(); }
+    }
+
+    private async Task RestoreFromBytesAsync(byte[] data, string? password)
+    {
+        await BackupSvc.RestoreBackupAsync(new MemoryStream(data), password);
+        importNeedsPassword  = false;
+        importPendingBytes   = null;
+        importBackupPassword = string.Empty;
         if (Platform.SupportsMauiFilePicker)
             Platform.RestartApp();
         else
             Navigation.NavigateTo("/", forceLoad: true);
+    }
+
+    private void CancelImport()
+    {
+        importPendingBytes   = null;
+        importNeedsPassword  = false;
+        importBackupPassword = string.Empty;
+        importError          = null;
+    }
+
+    private async Task OnImportPasswordKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !string.IsNullOrEmpty(importBackupPassword))
+            await ProceedWithImportAsync();
     }
 
     private async Task CreateProfile()

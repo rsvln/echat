@@ -58,10 +58,7 @@ public class ChatDbContext : DbContext
             entity.HasIndex(e => new { e.AccountId, e.ContactEmail });
             entity.HasIndex(e => e.GroupId);
 
-            entity.HasOne(e => e.Contact)
-                  .WithMany()
-                  .HasForeignKey(e => e.ContactEmail)
-                  .OnDelete(DeleteBehavior.Restrict);
+            // No DB-level FK to Contacts — relationship is managed in application code.
 
             entity.HasOne(e => e.Group)
                   .WithMany()
@@ -95,7 +92,7 @@ public class ChatDbContext : DbContext
         // Contact
         modelBuilder.Entity<Contact>(entity =>
         {
-            entity.HasKey(e => e.Email);
+            entity.HasKey(e => new { e.AccountId, e.Email });
             entity.HasIndex(e => e.Verified);
         });
         

@@ -132,6 +132,7 @@ public partial class ChatList
 
     // New chat modal visibility
     private bool showNewChat = false;
+    private bool showContacts = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -140,7 +141,9 @@ public partial class ChatList
         await LoadChatsAsync();
         using var scope = ScopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        var contacts = await db.Contacts.AsNoTracking().OrderBy(c => c.DisplayName).ToListAsync();
+        var contacts = await db.Contacts.AsNoTracking()
+            .Where(c => c.AccountId == activeAccountId)
+            .OrderBy(c => c.DisplayName).ToListAsync();
         contactNames = contacts.ToDictionary(c => c.Email, c => c.DisplayName ?? c.Email.Split('@')[0], StringComparer.OrdinalIgnoreCase);
         ChatEvents.ChatUpdated += OnChatUpdated;
         TransportService.RateLimitStarted += OnRateLimitStarted;
@@ -313,7 +316,7 @@ public partial class ChatList
     {
         using var scope = ScopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        var query = db.Chats.AsNoTracking().Include(c => c.Contact).AsQueryable();
+        var query = db.Chats.AsNoTracking().AsQueryable();
         query = query.Where(c => !c.Deleted);
         if (!showArchived)
             query = query.Where(c => !c.Archived);
@@ -351,14 +354,20 @@ public partial class ChatList
         chats = list;
 
         // Load contact display names for sender labels in preview
-        var contacts = await db.Contacts.AsNoTracking().ToListAsync();
+        var contacts = await db.Contacts.AsNoTracking()
+            .Where(c => c.AccountId == activeAccountId)
+            .ToListAsync();
         contactDisplayNames = contacts
             .Where(c => !string.IsNullOrEmpty(c.DisplayName))
             .ToDictionary(c => c.Email, c => c.DisplayName!, StringComparer.OrdinalIgnoreCase);
 
         // Build set of encrypted chat IDs: for 1:1 chats, check if the linked Contact has a public key.
+        var contactsWithKeys = contacts
+            .Where(c => c.PublicKey != null)
+            .Select(c => c.Email)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         encryptedContactEmails = chats
-            .Where(c => c.Type == ChatType.OneToOne && c.Contact?.PublicKey != null)
+            .Where(c => c.Type == ChatType.OneToOne && c.ContactEmail != null && contactsWithKeys.Contains(c.ContactEmail))
             .Select(c => c.ChatId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
@@ -512,7 +521,7 @@ public partial class ChatList
 
             foreach (var email in allRecipients)
             {
-                var contact = await DbContext.Contacts.FindAsync(email);
+                var contact = await DbContext.Contacts.FindAsync(activeAccountId, email);
                 var isSelf = email.Equals(myEmail, StringComparison.OrdinalIgnoreCase);
                 try
                 {
@@ -557,7 +566,7 @@ public partial class ChatList
 
                 foreach (var email in recipients)
                 {
-                    var contact = await DbContext.Contacts.FindAsync(email);
+                    var contact = await DbContext.Contacts.FindAsync(activeAccountId, email);
                     var isSelf = email.Equals(UserContext.UserEmail, StringComparison.OrdinalIgnoreCase);
                     try
                     {
@@ -617,7 +626,7 @@ public partial class ChatList
 
         foreach (var email in members)
         {
-            var contact = await DbContext.Contacts.FindAsync(email);
+            var contact = await DbContext.Contacts.FindAsync(activeAccountId, email);
             try
             {
                 await TransportService.SendMessageAsync(new OutgoingMessage
@@ -937,7 +946,7 @@ public partial class ChatList
             var msgIds = grp.Select(m => m.MessageId).ToList();
             try
             {
-                var contact = await DbContext.Contacts.FindAsync(grp.Key);
+                var contact = await DbContext.Contacts.FindAsync(activeAccountId, grp.Key);
                 await TransportService.SendMessageAsync(new OutgoingMessage
                 {
                     MessageId = Guid.NewGuid().ToString(),
@@ -1081,7 +1090,7 @@ public partial class ChatList
         // 3. Look up contact by DisplayName or Email matching the chat name
         var chatName = selectedChat.Name;
         var contact = await db.Contacts.AsNoTracking().FirstOrDefaultAsync(c =>
-            c.DisplayName == chatName || c.Email == chatName);
+            c.AccountId == activeAccountId && (c.DisplayName == chatName || c.Email == chatName));
 
         if (contact != null)
         {
@@ -1502,7 +1511,7 @@ public partial class ChatList
         if (otherSender != null) return new List<string> { otherSender };
 
         var contact = await DbContext.Contacts.FirstOrDefaultAsync(c =>
-            c.DisplayName == chat.Name || c.Email == chat.Name);
+            c.AccountId == activeAccountId && (c.DisplayName == chat.Name || c.Email == chat.Name));
         if (contact != null) return new List<string> { contact.Email };
 
         if (chat.Name.Contains('@')) return new List<string> { chat.Name };

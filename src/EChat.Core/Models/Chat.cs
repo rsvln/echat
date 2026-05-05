@@ -30,7 +30,6 @@ public class Chat
     public string? PendingOutgoingInviteToken { get; set; }
 
     // Navigation
-    public Contact? Contact { get; set; }
     public ChatGroup? Group { get; set; }
     public ICollection<ChatMessage> Messages { get; set; } = new List<ChatMessage>();
 }

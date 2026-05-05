@@ -3,6 +3,7 @@ using System;
 using EChat.Core.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -10,9 +11,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace EChat.Core.Data.Migrations
 {
     [DbContext(typeof(ChatDbContext))]
-    partial class ChatDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260504055434_AddContactManagementFields")]
+    partial class AddContactManagementFields
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "9.0.4");
@@ -176,6 +179,8 @@ namespace EChat.Core.Data.Migrations
 
                     b.HasIndex("AccountId");
 
+                    b.HasIndex("ContactEmail");
+
                     b.HasIndex("GroupId");
 
                     b.HasIndex("LastActivityAt");
@@ -291,9 +296,6 @@ namespace EChat.Core.Data.Migrations
 
             modelBuilder.Entity("EChat.Core.Models.Contact", b =>
                 {
-                    b.Property<string>("AccountId")
-                        .HasColumnType("TEXT");
-
                     b.Property<string>("Email")
                         .HasColumnType("TEXT");
 
@@ -339,7 +341,7 @@ namespace EChat.Core.Data.Migrations
                     b.Property<bool>("Verified")
                         .HasColumnType("INTEGER");
 
-                    b.HasKey("AccountId", "Email");
+                    b.HasKey("Email");
 
                     b.HasIndex("Verified");
 
@@ -385,9 +387,6 @@ namespace EChat.Core.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("AddedBy")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("DisplayName")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("NameColor")
@@ -505,10 +504,17 @@ namespace EChat.Core.Data.Migrations
 
             modelBuilder.Entity("EChat.Core.Models.Chat", b =>
                 {
+                    b.HasOne("EChat.Core.Models.Contact", "Contact")
+                        .WithMany()
+                        .HasForeignKey("ContactEmail")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("EChat.Core.Models.ChatGroup", "Group")
                         .WithMany()
                         .HasForeignKey("GroupId")
                         .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Contact");
 
                     b.Navigation("Group");
                 });

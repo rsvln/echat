@@ -61,7 +61,9 @@ public partial class NewChatModal
             // Load contacts fresh every time modal opens
             using var scope = ScopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            allContacts = await db.Contacts.AsNoTracking().OrderBy(c => c.DisplayName).ToListAsync();
+            allContacts = await db.Contacts.AsNoTracking()
+                .Where(c => c.AccountId == ActiveAccountId)
+                .OrderBy(c => c.DisplayName).ToListAsync();
             await BuildMyInviteAsync();
         }
         else if (!IsVisible && _wasVisible)
@@ -261,7 +263,7 @@ public partial class NewChatModal
 
         using var scope = ScopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        var contact = await db.Contacts.FindAsync(email);
+        var contact = await db.Contacts.FindAsync(ActiveAccountId, email);
         string? publicKey = contact?.PublicKey;
 
         var displayName = contact?.DisplayName ?? email.Split('@')[0];
@@ -306,7 +308,7 @@ public partial class NewChatModal
 
             if (publicKey != null)
             {
-                var c = await DbContext.Contacts.FindAsync(email);
+                var c = await DbContext.Contacts.FindAsync(ActiveAccountId, email);
                 if (c != null && c.PublicKey != publicKey)
                     c.PublicKey = publicKey;
             }
@@ -321,11 +323,12 @@ public partial class NewChatModal
             return;
         }
 
-        var contact = await DbContext.Contacts.FindAsync(email);
+        var contact = await DbContext.Contacts.FindAsync(ActiveAccountId, email);
         if (contact == null)
         {
             contact = new Contact
             {
+                AccountId   = ActiveAccountId!,
                 Email       = email,
                 DisplayName = string.IsNullOrEmpty(displayName) ? email.Split('@')[0] : displayName,
                 Verified    = verified,
@@ -438,6 +441,22 @@ public partial class NewChatModal
             CreatedAt = DateTimeOffset.UtcNow
         });
 
+        // Resolve display names for all members (creator + invitees) for the protocol payload
+        var myAccount = await DbContext.Accounts.FindAsync(UserContext.AccountId);
+        var myDisplayName = myAccount?.DisplayName ?? UserContext.UserEmail;
+
+        // member_names: email → displayName, sent in group-create so recipients know everyone's name
+        var memberNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrEmpty(UserContext.UserEmail))
+            memberNameMap[UserContext.UserEmail] = myDisplayName;
+
+        foreach (var email in validEmails)
+        {
+            if (email.Equals(UserContext.UserEmail, StringComparison.OrdinalIgnoreCase)) continue;
+            var c = await DbContext.Contacts.FindAsync(ActiveAccountId, email);
+            memberNameMap[email] = c?.DisplayName ?? email;
+        }
+
         if (!string.IsNullOrEmpty(UserContext.UserEmail))
         {
             DbContext.GroupMembers.Add(new GroupMember
@@ -446,7 +465,8 @@ public partial class NewChatModal
                 MemberEmail = UserContext.UserEmail,
                 Role = GroupRole.Admin,
                 AddedAt = DateTimeOffset.UtcNow,
-                NameColor = GroupPalette.PickColor(UserContext.UserEmail!)
+                NameColor = GroupPalette.PickColor(UserContext.UserEmail!),
+                DisplayName = myDisplayName
             });
         }
 
@@ -462,7 +482,8 @@ public partial class NewChatModal
                 Role = GroupRole.Member,
                 AddedAt = DateTimeOffset.UtcNow,
                 AddedBy = UserContext.UserEmail,
-                NameColor = GroupPalette.PickColor(email)
+                NameColor = GroupPalette.PickColor(email),
+                DisplayName = memberNameMap.GetValueOrDefault(email)
             });
         }
 
@@ -477,7 +498,7 @@ public partial class NewChatModal
                 continue;
             }
 
-            var contact = await DbContext.Contacts.FindAsync(email);
+            var contact = await DbContext.Contacts.FindAsync(ActiveAccountId, email);
             FileLogger.Write("INFO", "CreateGroup", $"Contact lookup for {email}: found={contact != null}, hasKey={!string.IsNullOrEmpty(contact?.PublicKey)}");
             if (contact == null || string.IsNullOrEmpty(contact.PublicKey))
             {
@@ -485,16 +506,18 @@ public partial class NewChatModal
                 continue;
             }
 
+            var allMemberEmails = validEmails.Concat(new[] { UserContext.UserEmail }).Distinct().ToList();
             var groupCreatePayload = System.Text.Json.JsonSerializer.Serialize(new
             {
                 type = "group-create",
                 group_id = groupId,
                 group_name = name,
                 version = 1,
-                members = validEmails.Concat(new[] { UserContext.UserEmail }).ToList(),
+                members = allMemberEmails,
                 admins = new[] { UserContext.UserEmail },
                 group_public_key = groupPubKey,
-                group_private_key = groupPrivKey
+                group_private_key = groupPrivKey,
+                member_names = memberNameMap
             });
 
             try

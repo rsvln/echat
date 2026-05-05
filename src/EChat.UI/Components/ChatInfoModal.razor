@@ -775,15 +775,15 @@
             var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
             var member = await db.GroupMembers.FindAsync(groupId, targetEmail);
-            if (member != null) db.GroupMembers.Remove(member);
 
             // Increment version so stale group-create copies can't re-add this member
             var groupInfoR = await db.Groups.FindAsync(groupId);
             if (groupInfoR != null) groupInfoR.Version++;
 
-            var targetMemberRow = await db.GroupMembers.FindAsync(groupId, targetEmail); // before Remove
             var targetContact = await db.Contacts.FindAsync(ActiveAccountId, targetEmail);
-            var targetName = targetMemberRow?.DisplayName ?? targetContact?.DisplayName ?? targetEmail;
+            var targetName = member?.DisplayName ?? targetContact?.DisplayName ?? targetEmail;
+
+            if (member != null) db.GroupMembers.Remove(member);
 
             var removeNotifyMsgId = Guid.NewGuid().ToString();
 

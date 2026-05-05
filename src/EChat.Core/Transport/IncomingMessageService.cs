@@ -78,7 +78,7 @@ public class IncomingMessageService
 
         // Pre-load blocked senders so we can filter the entire batch in O(1)
         var blockedSenders = await db.Contacts
-            .Where(c => c.IsBlocked)
+            .Where(c => c.AccountId == accountId && c.IsBlocked)
             .Select(c => c.Email)
             .ToHashSetAsync(StringComparer.OrdinalIgnoreCase);
 
@@ -94,9 +94,8 @@ public class IncomingMessageService
 
         _fileLogger.Write("INFO", "SaveAsync", $"accountEmail={accountEmail}, accountId={accountId}");
 
-        // Short tag used as a prefix in every log message so interleaved multi-account
-        // logs are immediately readable: "yarustam", "avchatmail", etc.
-        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        // Full email used as log prefix so multi-account logs are immediately readable.
+        var logAcct = accountEmail ?? accountId[..Math.Min(8, accountId.Length)];
 
         var updatedChats = new HashSet<string>();
         // chatId → (chatName, senderName, preview) for incoming non-self, non-muted messages
@@ -453,7 +452,7 @@ public class IncomingMessageService
                         {
                             // 3. Fallback: find by display name or email prefix
                             if (!batchContacts.TryGetValue(chatPartner!, out var contact))
-                                contact = await db.Contacts.FindAsync(chatPartner);
+                                contact = await db.Contacts.FindAsync(accountId, chatPartner);
 
                             var chatName = contact?.DisplayName ?? chatPartner!.Split('@')[0];
 
@@ -473,6 +472,7 @@ public class IncomingMessageService
                                 {
                                     contact = new Contact
                                     {
+                                        AccountId = accountId,
                                         Email = chatPartner!,
                                         DisplayName = chatPartner!.Split('@')[0]
                                     };
@@ -701,11 +701,12 @@ public class IncomingMessageService
         if (!consumed || string.IsNullOrEmpty(senderKey) || string.IsNullOrEmpty(pm.Sender)) return;
 
         // Token is valid and burned — trust the sender's public key
-        var contact = await db.Contacts.FindAsync(pm.Sender);
+        var contact = await db.Contacts.FindAsync(accountId, pm.Sender);
         if (contact == null)
         {
             contact = new Contact
             {
+                AccountId   = accountId,
                 Email       = pm.Sender,
                 DisplayName = pm.Sender.Split('@')[0],
                 PublicKey   = senderKey,
@@ -731,7 +732,7 @@ public class IncomingMessageService
         HashSet<string> accountChatIdSet,
         List<string> accountChatIds)
     {
-        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        var logAcct = accountEmail ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] ENTERING: accountId={accountId}, sender={pm.Sender}, msgId={pm.Headers.MessageId}, groupId={pm.Headers.GroupId}, contentLength={pm.Content?.Length}");
@@ -751,6 +752,15 @@ public class IncomingMessageService
             var admins = root.TryGetProperty("admins", out var aEl)
                 ? aEl.EnumerateArray().Select(e => e.GetString()!).ToList()
                 : new List<string>();
+
+            // member_names: optional dict email→displayName sent by the group creator
+            var memberNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (root.TryGetProperty("member_names", out var mnEl) && mnEl.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var prop in mnEl.EnumerateObject())
+                    if (!string.IsNullOrEmpty(prop.Value.GetString()))
+                        memberNames[prop.Name] = prop.Value.GetString()!;
+            }
 
             _fileLogger.Write("INFO", "HandleGroupCreateAsync", $"[{logAcct}] Parsed: groupId={groupId}, groupName={groupName}, version={version}, " +
                 $"members=[{string.Join(",", members)}], admins=[{string.Join(",", admins)}], " +
@@ -882,11 +892,20 @@ public class IncomingMessageService
                 {
                     if (string.IsNullOrEmpty(email)) continue;
                     var existingMember = await db.GroupMembers.FindAsync(groupId, email);
-                    if (existingMember != null) continue;
 
                     var role = admins.Contains(email, StringComparer.OrdinalIgnoreCase)
                         ? GroupRole.Admin
                         : GroupRole.Member;
+
+                    memberNames.TryGetValue(email, out var displayName);
+
+                    if (existingMember != null)
+                    {
+                        // Update display name if we now have a better value
+                        if (!string.IsNullOrEmpty(displayName) && existingMember.DisplayName != displayName)
+                            existingMember.DisplayName = displayName;
+                        continue;
+                    }
 
                     db.GroupMembers.Add(new GroupMember
                     {
@@ -895,7 +914,8 @@ public class IncomingMessageService
                         Role = role,
                         AddedAt = pm.Headers.Timestamp,
                         AddedBy = pm.Sender,
-                        NameColor = GroupPalette.PickColor(email)
+                        NameColor = GroupPalette.PickColor(email),
+                        DisplayName = string.IsNullOrEmpty(displayName) ? null : displayName
                     });
                 }
             }
@@ -947,7 +967,7 @@ public class IncomingMessageService
         HashSet<string> accountChatIdSet,
         List<string> accountChatIds)
     {
-        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        var logAcct = accountEmail ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
@@ -1031,7 +1051,7 @@ public class IncomingMessageService
         HashSet<string> accountChatIdSet,
         List<string> accountChatIds)
     {
-        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        var logAcct = accountEmail ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
@@ -1051,8 +1071,9 @@ public class IncomingMessageService
                 db.GroupMembers.Remove(member);
             }
 
-            var leavingContact = leavingEmail != null ? await db.Contacts.FindAsync(leavingEmail) : null;
-            var leavingName = leavingContact?.DisplayName ?? leavingEmail?.Split('@')[0] ?? "Member";
+            var leavingMember = leavingEmail != null ? await db.GroupMembers.FindAsync(groupId, leavingEmail) : null;
+            var leavingContact = leavingEmail != null ? await db.Contacts.FindAsync(accountId, leavingEmail) : null;
+            var leavingName = leavingMember?.DisplayName ?? leavingContact?.DisplayName ?? leavingEmail ?? "Member";
 
             db.Messages.Add(new ChatMessage
             {
@@ -1083,13 +1104,14 @@ public class IncomingMessageService
         string? accountEmail,
         HashSet<string> updatedChats)
     {
-        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        var logAcct = accountEmail ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
             var root = payload.RootElement;
             var groupId = root.GetProperty("group_id").GetString() ?? pm.Headers.GroupId;
             var addedEmail = root.TryGetProperty("added_email", out var aEl) ? aEl.GetString() : null;
+            var addedName = root.TryGetProperty("added_name", out var nEl) ? nEl.GetString() : null;
             var addedBy = root.TryGetProperty("added_by", out var bEl) ? bEl.GetString() : pm.Sender;
 
             if (string.IsNullOrEmpty(groupId) || string.IsNullOrEmpty(addedEmail)) return;
@@ -1126,8 +1148,14 @@ public class IncomingMessageService
                     MemberEmail = addedEmail,
                     Role = GroupRole.Member,
                     AddedAt = pm.Headers.Timestamp,
-                    AddedBy = addedBy
+                    AddedBy = addedBy,
+                    NameColor = GroupPalette.PickColor(addedEmail),
+                    DisplayName = string.IsNullOrEmpty(addedName) ? null : addedName
                 });
+            }
+            else if (!string.IsNullOrEmpty(addedName) && existing.DisplayName != addedName)
+            {
+                existing.DisplayName = addedName;
             }
 
             // If I'm the one who added this member, ChatInfoModal already created a local system
@@ -1137,17 +1165,19 @@ public class IncomingMessageService
 
             if (!iSentThis)
             {
-                var addedContact = await db.Contacts.FindAsync(addedEmail);
-                var addedName = addedContact?.DisplayName ?? addedEmail.Split('@')[0];
-                var addedByContact = addedBy != null ? await db.Contacts.FindAsync(addedBy) : null;
-                var addedByName = addedByContact?.DisplayName ?? addedBy?.Split('@')[0] ?? "Admin";
+                // Use name from protocol first, then fallback to Contacts
+                var resolvedAddedName = !string.IsNullOrEmpty(addedName) ? addedName
+                    : (await db.Contacts.FindAsync(accountId, addedEmail))?.DisplayName ?? addedEmail;
+                var addedByContact = addedBy != null ? await db.Contacts.FindAsync(accountId, addedBy) : null;
+                var addedByMember = addedBy != null ? await db.GroupMembers.FindAsync(groupId, addedBy) : null;
+                var addedByName = addedByMember?.DisplayName ?? addedByContact?.DisplayName ?? addedBy ?? "Admin";
 
                 db.Messages.Add(new ChatMessage
                 {
                     MessageId = pm.Headers.MessageId ?? Guid.NewGuid().ToString(),
                     ChatId = chat.ChatId,
                     Sender = addedBy ?? pm.Sender,
-                    Content = $"{addedName} was added to the group by {addedByName}",
+                    Content = $"{resolvedAddedName} was added to the group by {addedByName}",
                     Timestamp = pm.Headers.Timestamp,
                     DisplayTimestamp = pm.Headers.Timestamp,
                     ReceivedAt = DateTimeOffset.UtcNow,
@@ -1172,13 +1202,14 @@ public class IncomingMessageService
         string? accountEmail,
         HashSet<string> updatedChats)
     {
-        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        var logAcct = accountEmail ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
             var root = payload.RootElement;
             var groupId = root.GetProperty("group_id").GetString() ?? pm.Headers.GroupId;
             var removedEmail = root.TryGetProperty("removed_email", out var rEl) ? rEl.GetString() : null;
+            var removedNameProto = root.TryGetProperty("removed_name", out var rnEl) ? rnEl.GetString() : null;
             var removedBy = root.TryGetProperty("removed_by", out var bEl) ? bEl.GetString() : pm.Sender;
 
             if (string.IsNullOrEmpty(groupId) || string.IsNullOrEmpty(removedEmail)) return;
@@ -1214,8 +1245,9 @@ public class IncomingMessageService
 
             if (!iSentThis)
             {
-                var removedContact = await db.Contacts.FindAsync(removedEmail);
-                var removedName = removedContact?.DisplayName ?? removedEmail.Split('@')[0];
+                var removedContact = await db.Contacts.FindAsync(accountId, removedEmail);
+                var removedName = !string.IsNullOrEmpty(removedNameProto) ? removedNameProto
+                    : member?.DisplayName ?? removedContact?.DisplayName ?? removedEmail;
 
                 db.Messages.Add(new ChatMessage
                 {
@@ -1247,7 +1279,7 @@ public class IncomingMessageService
         string? accountEmail,
         HashSet<string> updatedChats)
     {
-        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        var logAcct = accountEmail ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);
@@ -1273,8 +1305,9 @@ public class IncomingMessageService
 
             if (!iSentThis)
             {
-                var renamedByContact = await db.Contacts.FindAsync(renamedBy);
-                var actorName = renamedByContact?.DisplayName ?? renamedBy?.Split('@')[0] ?? "Someone";
+                var renamedByMember = renamedBy != null ? await db.GroupMembers.FindAsync(groupId, renamedBy) : null;
+                var renamedByContact = renamedBy != null ? await db.Contacts.FindAsync(accountId, renamedBy) : null;
+                var actorName = renamedByMember?.DisplayName ?? renamedByContact?.DisplayName ?? renamedBy ?? "Someone";
 
                 db.Messages.Add(new ChatMessage
                 {
@@ -1309,7 +1342,7 @@ public class IncomingMessageService
         HashSet<string> accountChatIdSet,
         List<string> accountChatIds)
     {
-        var logAcct = accountEmail?.Split('@')[0] ?? accountId[..Math.Min(8, accountId.Length)];
+        var logAcct = accountEmail ?? accountId[..Math.Min(8, accountId.Length)];
         try
         {
             var payload = System.Text.Json.JsonDocument.Parse(pm.Content);

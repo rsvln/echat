@@ -120,34 +120,50 @@ public class NtpTimeService
         await TrySyncNtpAsync(server);
     }
     
-    private async Task<DateTime> GetNetworkTimeAsync(string ntpServer)
+    private static async Task<DateTime> GetNetworkTimeAsync(string ntpServer)
     {
         var ntpData = new byte[48];
         ntpData[0] = 0x1B; // LI = 0, VN = 3, Mode = 3
-        
+
         var addresses = await Dns.GetHostAddressesAsync(ntpServer);
         var ipEndPoint = new IPEndPoint(addresses[0], 123);
-        
+
+        // Use CancellationTokenSource for the real async timeout —
+        // ReceiveTimeout only affects synchronous operations and is silently
+        // ignored by await ReceiveAsync, which would otherwise block forever.
+        using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-        socket.ReceiveTimeout = 5000;
-        
-        await socket.ConnectAsync(ipEndPoint);
-        await socket.SendAsync(ntpData, SocketFlags.None);
-        await socket.ReceiveAsync(ntpData, SocketFlags.None);
-        
-        var intPart = BitConverter.ToUInt32(ntpData, 40);
+
+        await socket.ConnectAsync(ipEndPoint, cts.Token);
+        await socket.SendAsync(ntpData.AsMemory(), SocketFlags.None, cts.Token);
+        int received = await socket.ReceiveAsync(ntpData.AsMemory(), SocketFlags.None, cts.Token);
+
+        if (received < 48)
+            throw new InvalidDataException($"NTP response too short: {received} bytes");
+
+        var intPart  = BitConverter.ToUInt32(ntpData, 40);
         var fractPart = BitConverter.ToUInt32(ntpData, 44);
-        
+
         if (BitConverter.IsLittleEndian)
         {
-            intPart = SwapEndianness(intPart);
+            intPart   = SwapEndianness(intPart);
             fractPart = SwapEndianness(fractPart);
         }
-        
-        var milliseconds = (intPart * 1000) + ((fractPart * 1000) / 0x100000000L);
+
+        if (intPart == 0)
+            throw new InvalidDataException("NTP server returned a zero timestamp");
+
+        var milliseconds = (intPart * 1000L) + ((fractPart * 1000L) / 0x100000000L);
         var networkDateTime = new DateTime(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc)
-            .AddMilliseconds((long)milliseconds);
-        
+            .AddMilliseconds(milliseconds);
+
+        // Sanity check: reject NTP responses that differ from the system clock by more
+        // than 10 years — this catches the "intPart=0 → year 1900" failure mode where
+        // the socket receive returned garbage or the wrong packet.
+        if (Math.Abs((networkDateTime - DateTime.UtcNow).TotalDays) > 3650)
+            throw new InvalidDataException(
+                $"NTP timestamp unreasonably far from system clock: {networkDateTime:u}");
+
         return networkDateTime;
     }
     

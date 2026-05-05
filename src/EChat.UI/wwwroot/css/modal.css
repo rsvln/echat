@@ -261,6 +261,21 @@
     margin-top: 4px;
 }
 
+/* ── Shared confirm-dialog button row ── */
+.delete-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 16px;
+}
+
+.delete-actions .new-chat-btn-danger,
+.delete-actions .new-chat-btn-cancel {
+    padding: 8px 18px;
+    font-size: 13px;
+    align-self: auto;
+}
+
 /* ── Contacts modal ── */
 .contacts-modal {
     width: 480px;
@@ -378,18 +393,23 @@
     display: flex;
     gap: 4px;
     flex-shrink: 0;
+    flex-wrap: nowrap;
+    align-items: center;
 }
 
 .contact-action-btn {
     background: none;
     border: 1px solid var(--divider);
     border-radius: 4px;
-    padding: 4px 8px;
+    padding: 0;
+    width: 28px;
+    height: 28px;
     cursor: pointer;
     color: var(--text-secondary, #888);
-    font-size: 12px;
     display: flex;
     align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
     transition: color 0.15s, border-color 0.15s;
 }
 
@@ -406,4 +426,9 @@
 .contact-action-unblock {
     color: var(--primary, #5BA642);
     border-color: var(--primary, #5BA642);
+}
+
+.contact-action-delete:hover {
+    color: var(--danger, #d9534f);
+    border-color: var(--danger, #d9534f);
 }

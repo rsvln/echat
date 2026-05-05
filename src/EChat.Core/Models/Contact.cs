@@ -2,6 +2,7 @@ namespace EChat.Core.Models;
 
 public class Contact
 {
+    public required string AccountId { get; set; }
     public required string Email { get; set; }
     public string? DisplayName { get; set; }
     public string? PublicKey { get; set; }

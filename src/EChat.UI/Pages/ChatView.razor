@@ -356,16 +356,29 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _instance = this;
-        AndroidBackHandler.Register(() => InvokeAsync(GoBack));
-        sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        allContacts = await db.Contacts.AsNoTracking().OrderBy(c => c.DisplayName).ToListAsync();
-        contactNames = allContacts.ToDictionary(c => c.Email, c => c.DisplayName ?? c.Email.Split('@')[0], StringComparer.OrdinalIgnoreCase);
-        chats = await db.Chats.AsNoTracking().Where(c => !c.Deleted).ToListAsync();
-        ChatEvents.ChatUpdated += OnChatUpdated;
-        ChatEvents.AccountSwitched += OnAccountSwitched;
+        try
+        {
+            _instance = this;
+            AndroidBackHandler.Register(() => InvokeAsync(GoBack));
+            sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            allContacts = await db.Contacts.AsNoTracking()
+                .Where(c => c.AccountId == UserContext.AccountId)
+                .OrderBy(c => c.DisplayName)
+                .ToListAsync();
+            contactNames = allContacts.ToDictionary(c => c.Email, c => c.DisplayName ?? c.Email.Split('@')[0], StringComparer.OrdinalIgnoreCase);
+            chats = await db.Chats.AsNoTracking().Where(c => !c.Deleted).ToListAsync();
+            ChatEvents.ChatUpdated += OnChatUpdated;
+            ChatEvents.AccountSwitched += OnAccountSwitched;
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ChatView.OnInitialized", $"Failed to initialize: {ex.Message}");
+            allContacts = new List<Contact>();
+            contactNames = new Dictionary<string, string>();
+            chats = new List<Chat>();
+        }
     }
 
     public void Dispose()
@@ -408,32 +421,41 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (!string.IsNullOrEmpty(ChatId))
+        try
         {
-            using var scope = ScopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            selectedChat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.ChatId == ChatId);
-            if (selectedChat != null)
+            if (!string.IsNullOrEmpty(ChatId))
             {
-                if (selectedChat.Type == ChatType.Group && !string.IsNullOrEmpty(selectedChat.GroupId))
+                using var scope = ScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                selectedChat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.ChatId == ChatId);
+                if (selectedChat != null)
                 {
-                    memberColors = await db.GroupMembers.AsNoTracking()
-                        .Where(m => m.GroupId == selectedChat.GroupId)
-                        .Where(m => m.NameColor != null)
-                        .ToDictionaryAsync(m => m.MemberEmail, m => m.NameColor!, StringComparer.OrdinalIgnoreCase);
+                    if (selectedChat.Type == ChatType.Group && !string.IsNullOrEmpty(selectedChat.GroupId))
+                    {
+                        memberColors = await db.GroupMembers.AsNoTracking()
+                            .Where(m => m.GroupId == selectedChat.GroupId)
+                            .Where(m => m.NameColor != null)
+                            .ToDictionaryAsync(m => m.MemberEmail, m => m.NameColor!, StringComparer.OrdinalIgnoreCase);
+                    }
+                    else
+                    {
+                        memberColors.Clear();
+                    }
+                    await LoadMessagesAsync();
+                    await LoadRecipientsAsync();
+                    await LoadReactionsAsync();
+                    await ClearUnreadAsync(ChatId);
+                    _ = SendReadReceiptsAsync(ChatId);  // fire-and-forget: notify sender their messages were read
+                    _scrollToBottom = true;
+                    StateHasChanged();
                 }
-                else
-                {
-                    memberColors.Clear();
-                }
-                await LoadMessagesAsync();
-                await LoadRecipientsAsync();
-                await LoadReactionsAsync();
-                await ClearUnreadAsync(ChatId);
-                _ = SendReadReceiptsAsync(ChatId);  // fire-and-forget: notify sender their messages were read
-                _scrollToBottom = true;
-                StateHasChanged();
             }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ChatView.OnParametersSet", $"Failed to load chat {ChatId}: {ex.Message}");
+            // Navigate back to chat list on error
+            Navigation.NavigateTo("/");
         }
     }
 
@@ -463,51 +485,68 @@
 
     private async Task LoadMessagesAsync()
     {
-        if (string.IsNullOrEmpty(ChatId)) return;
-        var gen = ++_loadGeneration;
+        try
+        {
+            if (string.IsNullOrEmpty(ChatId)) return;
+            var gen = ++_loadGeneration;
 
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
-        var list = await db.Messages
-            .AsNoTracking()
-            .Where(m => m.ChatId == ChatId)
-            .ToListAsync();
+            var list = await db.Messages
+                .AsNoTracking()
+                .Where(m => m.ChatId == ChatId)
+                .ToListAsync();
 
-        if (gen != _loadGeneration) return; // superseded by a newer load
+            if (gen != _loadGeneration) return; // superseded by a newer load
 
-        messages = list.OrderBy(m => m.DisplayTimestamp).ToList();
-        messagesById = messages.ToDictionary(m => m.MessageId, StringComparer.OrdinalIgnoreCase);
+            messages = list.OrderBy(m => m.DisplayTimestamp).ToList();
+            messagesById = messages.ToDictionary(m => m.MessageId, StringComparer.OrdinalIgnoreCase);
 
-        var msgIds = messages.Select(m => m.MessageId).ToList();
-        var atts = await db.Attachments
-            .AsNoTracking()
-            .Where(a => msgIds.Contains(a.MessageId))
-            .ToListAsync();
-        var uniqueAtts = atts
-            .GroupBy(a => new { a.MessageId, a.FileName })
-            .Select(g => g.First())
-            .ToList();
-        _messageAttachments = uniqueAtts.GroupBy(a => a.MessageId)
-            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+            var msgIds = messages.Select(m => m.MessageId).ToList();
+            var atts = await db.Attachments
+                .AsNoTracking()
+                .Where(a => msgIds.Contains(a.MessageId))
+                .ToListAsync();
+            var uniqueAtts = atts
+                .GroupBy(a => new { a.MessageId, a.FileName })
+                .Select(g => g.First())
+                .ToList();
+            _messageAttachments = uniqueAtts.GroupBy(a => a.MessageId)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ChatView.LoadMessages", $"Failed to load messages for {ChatId}: {ex.Message}");
+            messages = new List<ChatMessage>();
+            _messageAttachments = new Dictionary<string, List<Attachment>>();
+        }
     }
 
     private async Task LoadRecipientsAsync()
     {
-        if (selectedChat == null) return;
-        if (selectedChat.Type == ChatType.Group)
+        try
         {
-            using var scope = ScopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            recipients = await db.GroupMembers
-                .AsNoTracking()
-                .Where(m => m.GroupId == selectedChat.GroupId && m.MemberEmail != UserContext.UserEmail)
-                .Select(m => m.MemberEmail)
-                .ToListAsync();
+            if (selectedChat == null) return;
+            if (selectedChat.Type == ChatType.Group)
+            {
+                using var scope = ScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                recipients = await db.GroupMembers
+                    .AsNoTracking()
+                    .Where(m => m.GroupId == selectedChat.GroupId && m.MemberEmail != UserContext.UserEmail)
+                    .Select(m => m.MemberEmail)
+                    .ToListAsync();
+            }
+            else
+            {
+                recipients = await GetRecipientsForChatAsync(selectedChat);
+            }
         }
-        else
+        catch (Exception ex)
         {
-            recipients = await GetRecipientsForChatAsync(selectedChat);
+            FileLogger.Write("ERROR", "ChatView.LoadRecipients", $"Failed to load recipients for {selectedChat?.ChatId}: {ex.Message}");
+            recipients = new List<string>();
         }
     }
 
@@ -1183,20 +1222,30 @@
 
     private async Task<List<string>> GetRecipientsForChatAsync(Chat chat)
     {
-        if (chat.Type == ChatType.Group)
+        try
         {
-            return await DbContext.GroupMembers
-                .AsNoTracking()
-                .Where(m => m.GroupId == chat.GroupId && m.MemberEmail != UserContext.UserEmail)
-                .Select(m => m.MemberEmail)
-                .ToListAsync();
+            if (chat.Type == ChatType.Group)
+            {
+                return await DbContext.GroupMembers
+                    .AsNoTracking()
+                    .Where(m => m.GroupId == chat.GroupId && m.MemberEmail != UserContext.UserEmail)
+                    .Select(m => m.MemberEmail)
+                    .ToListAsync();
+            }
+            var otherName = chat.Name;
+            var contact = allContacts.FirstOrDefault(c => c.DisplayName == otherName || c.Email == otherName);
+            return contact != null ? new List<string> { contact.Email } : new List<string>();
         }
-        var otherName = chat.Name;
-        var contact = allContacts.FirstOrDefault(c => c.DisplayName == otherName || c.Email == otherName);
-        return contact != null ? new List<string> { contact.Email } : new List<string>();
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ChatView.GetRecipientsForChat", $"Failed to get recipients for {chat.ChatId}: {ex.Message}");
+            return new List<string>();
+        }
     }
 
     private void GoBack() => Navigation.NavigateTo("/chats");
+
+    private void NewChat() => Navigation.NavigateTo("/chats");
 
     private static readonly System.Text.RegularExpressions.Regex _urlRegex = new(
         @"(?<!href="")(?<!src="")((?:https?://|www\.)[^\s<>""]+)",

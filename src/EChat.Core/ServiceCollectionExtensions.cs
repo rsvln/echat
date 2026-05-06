@@ -209,6 +209,12 @@ public static class ServiceCollectionExtensions
                 cmd.CommandText = "ALTER TABLE Chats ADD COLUMN TombstoneVersion INTEGER";
                 await cmd.ExecuteNonQueryAsync();
             }
+            if (!cols.Contains("PendingOutgoingInviteToken"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Chats ADD COLUMN PendingOutgoingInviteToken TEXT";
+                await cmd.ExecuteNonQueryAsync();
+            }
 
             // Discover existing Messages columns
             var msgCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -223,6 +229,28 @@ public static class ServiceCollectionExtensions
             {
                 using var cmd = conn.CreateCommand();
                 cmd.CommandText = "ALTER TABLE Messages ADD COLUMN IsSystem INTEGER NOT NULL DEFAULT 0";
+                await cmd.ExecuteNonQueryAsync();
+            }
+            if (!msgCols.Contains("FormattedContent"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Messages ADD COLUMN FormattedContent TEXT";
+                await cmd.ExecuteNonQueryAsync();
+            }
+
+            // Discover existing GroupMembers columns
+            var gmCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT name FROM pragma_table_info('GroupMembers')";
+                using var rdr = await cmd.ExecuteReaderAsync();
+                while (await rdr.ReadAsync()) gmCols.Add(rdr.GetString(0));
+            }
+
+            if (!gmCols.Contains("DisplayName"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE GroupMembers ADD COLUMN DisplayName TEXT";
                 await cmd.ExecuteNonQueryAsync();
             }
 
@@ -276,6 +304,52 @@ public static class ServiceCollectionExtensions
                 await cmd.ExecuteNonQueryAsync();
             }
 
+            // Discover existing Contacts columns
+            var contactCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT name FROM pragma_table_info('Contacts')";
+                using var rdr = await cmd.ExecuteReaderAsync();
+                while (await rdr.ReadAsync()) contactCols.Add(rdr.GetString(0));
+            }
+
+            if (!contactCols.Contains("AddedAt"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN AddedAt TEXT";
+                await cmd.ExecuteNonQueryAsync();
+            }
+            if (!contactCols.Contains("BlockedAt"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN BlockedAt TEXT";
+                await cmd.ExecuteNonQueryAsync();
+            }
+            if (!contactCols.Contains("IsBlocked"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN IsBlocked INTEGER NOT NULL DEFAULT 0";
+                await cmd.ExecuteNonQueryAsync();
+            }
+            if (!contactCols.Contains("LocalKeyRevokedAt"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalKeyRevokedAt TEXT";
+                await cmd.ExecuteNonQueryAsync();
+            }
+            if (!contactCols.Contains("LocalPrivateKey"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalPrivateKey TEXT";
+                await cmd.ExecuteNonQueryAsync();
+            }
+            if (!contactCols.Contains("LocalPublicKey"))
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalPublicKey TEXT";
+                await cmd.ExecuteNonQueryAsync();
+            }
+
             // Mark migrations as applied so they are never retried
             foreach (var migId in new[]
             {
@@ -284,6 +358,14 @@ public static class ServiceCollectionExtensions
                 "20260425120000_AddIsSystemToMessages",
                 "20260426160000_AddChatTombstoneVersion",
                 "20260427221822_RemoveIsImageIsVideoFromAttachments",
+                "20260430203838_AddFormattedContentToMessages",
+                "20260501180907_AddImapFolderSyncState",
+                "20260502061435_DropGroupOperations",
+                "20260502062326_DropChatPriority",
+                "20260504053759_AddPendingInvitesAndChatToken",
+                "20260504055434_AddContactManagementFields",
+                "20260504194832_ContactPerAccount",
+                "20260505081802_GroupMemberDisplayName",
             })
             {
                 using var cmd = conn.CreateCommand();

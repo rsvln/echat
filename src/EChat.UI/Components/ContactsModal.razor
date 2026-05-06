@@ -188,7 +188,7 @@
         using var scope = ScopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
         _contacts = await db.Contacts.AsNoTracking()
-            .Where(c => db.Chats.Any(ch => ch.ContactEmail == c.Email && ch.AccountId == ActiveAccountId))
+            .Where(c => c.AccountId == ActiveAccountId)
             .OrderBy(c => c.DisplayName)
             .ToListAsync();
     }

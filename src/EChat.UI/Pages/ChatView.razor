@@ -463,8 +463,15 @@
     {
         if (firstRender)
         {
-            await JS.InvokeVoidAsync("setupTextareaResize");
-            await JS.InvokeVoidAsync("setupMobileFormatBar");
+            try
+            {
+                await JS.InvokeVoidAsync("setupTextareaResize");
+                await JS.InvokeVoidAsync("setupMobileFormatBar");
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Write("ERROR", "ChatView.OnAfterRender", $"JS setup failed: {ex.Message}");
+            }
         }
         if (_scrollToBottom)
         {
@@ -579,45 +586,53 @@
 
     private async Task SendReadReceiptsAsync(string chatId)
     {
-        // Read receipts are only sent for 1-to-1 chats (not groups)
-        if (selectedChat?.Type == ChatType.Group) return;
-        var myEmail = UserContext.UserEmail;
-        if (string.IsNullOrEmpty(myEmail)) return;
-
-        var allReceived = await DbContext.Messages
-            .AsNoTracking()
-            .Where(m => m.ChatId == chatId && m.Sender != myEmail)
-            .Select(m => new { m.MessageId, m.Sender })
-            .ToListAsync();
-
-        var receivedIds = allReceived
-            .Where(m => !_sentReceiptIds.Contains(m.MessageId))
-            .ToList();
-
-        if (receivedIds.Count == 0) return;
-
-        foreach (var m in receivedIds)
-            _sentReceiptIds.Add(m.MessageId);
-
-        foreach (var grp in receivedIds.GroupBy(m => m.Sender))
+        try
         {
-            try
+            // Read receipts are only sent for 1-to-1 chats (not groups)
+            if (selectedChat?.Type == ChatType.Group) return;
+            var myEmail = UserContext.UserEmail;
+            if (string.IsNullOrEmpty(myEmail)) return;
+
+            var allReceived = await DbContext.Messages
+                .AsNoTracking()
+                .Where(m => m.ChatId == chatId && m.Sender != myEmail)
+                .Select(m => new { m.MessageId, m.Sender })
+                .ToListAsync();
+
+            var receivedIds = allReceived
+                .Where(m => !_sentReceiptIds.Contains(m.MessageId))
+                .ToList();
+
+            if (receivedIds.Count == 0) return;
+
+            foreach (var m in receivedIds)
+                _sentReceiptIds.Add(m.MessageId);
+
+            foreach (var grp in receivedIds.GroupBy(m => m.Sender))
             {
-                var contact = await DbContext.Contacts.FindAsync(grp.Key);
-                await TransportService.SendMessageAsync(new OutgoingMessage
+                try
                 {
-                    MessageId = Guid.NewGuid().ToString(),
-                    Content = "read-notification",
-                    Recipients = new List<string> { grp.Key },
-                    RecipientPublicKey = contact?.PublicKey,
-                    Timestamp = DateTimeOffset.UtcNow,
-                    Type = MessageType.ReadReceipt,
-                    ReadOf = grp.Select(m => m.MessageId).ToList(),
-                    Tier = BatchTier.System,
-                    Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
-                });
+                    // Contacts uses composite PK (AccountId, Email)
+                    var contact = await DbContext.Contacts.FindAsync(UserContext.AccountId, grp.Key);
+                    await TransportService.SendMessageAsync(new OutgoingMessage
+                    {
+                        MessageId = Guid.NewGuid().ToString(),
+                        Content = "read-notification",
+                        Recipients = new List<string> { grp.Key },
+                        RecipientPublicKey = contact?.PublicKey,
+                        Timestamp = DateTimeOffset.UtcNow,
+                        Type = MessageType.ReadReceipt,
+                        ReadOf = grp.Select(m => m.MessageId).ToList(),
+                        Tier = BatchTier.System,
+                        Encrypt = !string.IsNullOrEmpty(contact?.PublicKey)
+                    });
+                }
+                catch { }
             }
-            catch { }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("WARN", "ChatView.SendReadReceipts", $"Failed: {ex.Message}");
         }
     }
 

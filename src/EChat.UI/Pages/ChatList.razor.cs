@@ -137,26 +137,36 @@ public partial class ChatList
     protected override async Task OnInitializedAsync()
     {
         _instance = this;
-        await LoadAccountsAsync();
-        await LoadChatsAsync();
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        var contacts = await db.Contacts.AsNoTracking()
-            .Where(c => c.AccountId == activeAccountId)
-            .OrderBy(c => c.DisplayName).ToListAsync();
-        contactNames = contacts.ToDictionary(c => c.Email, c => c.DisplayName ?? c.Email.Split('@')[0], StringComparer.OrdinalIgnoreCase);
+        // Event subscriptions must happen before any await so they're not missed.
         ChatEvents.ChatUpdated += OnChatUpdated;
         TransportService.RateLimitStarted += OnRateLimitStarted;
         TransportService.RateLimitCleared += OnRateLimitCleared;
-        // Reflect current state in case rate-limit was already active before this page loaded
-        if (TransportService.IsRateLimited && activeAccountId != null)
-            _rateLimitedAccounts[activeAccountId] = TransportService.RateLimitedUntil ?? DateTimeOffset.UtcNow.AddMinutes(5);
-        sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
+        try
+        {
+            await LoadAccountsAsync();
+            await LoadChatsAsync();
+            using var scope = ScopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+            var contacts = await db.Contacts.AsNoTracking()
+                .Where(c => c.AccountId == activeAccountId)
+                .OrderBy(c => c.DisplayName).ToListAsync();
+            contactNames = contacts.ToDictionary(c => c.Email, c => c.DisplayName ?? c.Email.Split('@')[0], StringComparer.OrdinalIgnoreCase);
+            // Reflect current state in case rate-limit was already active before this page loaded
+            if (TransportService.IsRateLimited && activeAccountId != null)
+                _rateLimitedAccounts[activeAccountId] = TransportService.RateLimitedUntil ?? DateTimeOffset.UtcNow.AddMinutes(5);
+            sendOnEnter = bool.Parse(Prefs.Get("send_on_enter", "True"));
 
-        // Apply saved log level to FileLogger on every startup
-        var savedLogLevel = Prefs.Get("log_level", EChat.Core.Services.AppLogLevel.Info.ToString());
-        if (Enum.TryParse<EChat.Core.Services.AppLogLevel>(savedLogLevel, out var lvl))
-            FileLogger.MinLevel = lvl;
+            // Apply saved log level to FileLogger on every startup
+            var savedLogLevel = Prefs.Get("log_level", EChat.Core.Services.AppLogLevel.Info.ToString());
+            if (Enum.TryParse<EChat.Core.Services.AppLogLevel>(savedLogLevel, out var lvl))
+                FileLogger.MinLevel = lvl;
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ChatList.OnInitialized", $"Failed to initialize: {ex.Message}");
+            chats ??= new List<Chat>();
+            contactNames ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     private bool _firstRender = true;
@@ -166,7 +176,14 @@ public partial class ChatList
     {
         if (!_firstRender)
         {
-            await LoadChatsAsync();
+            try
+            {
+                await LoadChatsAsync();
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Write("ERROR", "ChatList.OnParametersSet", $"Failed to reload chats: {ex.Message}");
+            }
         }
         // First render: JS not available yet during prerendering.
         // Saved chat restoration is handled in OnAfterRenderAsync(firstRender: true).
@@ -271,27 +288,34 @@ public partial class ChatList
     {
         InvokeAsync(async () =>
         {
-            await LoadChatsAsync();
-            if (selectedChatId == chatId)
+            try
             {
-                // Check if the currently selected chat was deleted
-                var chatStillExists = chats?.Any(c => c.ChatId == chatId) == true;
-                if (!chatStillExists)
+                await LoadChatsAsync();
+                if (selectedChatId == chatId)
                 {
-                    selectedChatId = null;
-                    selectedChat = null;
-                    messages = null;
-                    recipients = null;
-                    await JS.InvokeVoidAsync("localStorage.removeItem", "echat_selected_chat");
-                    StateHasChanged();
-                    return;
+                    // Check if the currently selected chat was deleted
+                    var chatStillExists = chats?.Any(c => c.ChatId == chatId) == true;
+                    if (!chatStillExists)
+                    {
+                        selectedChatId = null;
+                        selectedChat = null;
+                        messages = null;
+                        recipients = null;
+                        try { await JS.InvokeVoidAsync("localStorage.removeItem", "echat_selected_chat"); } catch { }
+                        StateHasChanged();
+                        return;
+                    }
+                    await LoadMessagesAsync();
+                    await ClearUnreadAsync(chatId);
+                    _ = SendReadReceiptsAsync(chatId);
+                    _scrollToBottom = true;
                 }
-                await LoadMessagesAsync();
-                await ClearUnreadAsync(chatId);
-                _ = SendReadReceiptsAsync(chatId);
-                _scrollToBottom = true;
+                StateHasChanged();
             }
-            StateHasChanged();
+            catch (Exception ex)
+            {
+                FileLogger.Write("ERROR", "ChatList.OnChatUpdated", $"Failed to update chat {chatId}: {ex.Message}");
+            }
         });
     }
 

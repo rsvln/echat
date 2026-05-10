@@ -322,4 +322,121 @@ public class PlatformService : IPlatformService
         // Users restart the app manually via the app switcher.
 #endif
     }
+
+    // ── In-app update ─────────────────────────────────────────────────────
+
+#if WINDOWS || ANDROID
+    public bool SupportsInAppUpdate => true;
+#else
+    public bool SupportsInAppUpdate => false;
+#endif
+
+    public async Task ApplyUpdateAsync(string downloadUrl, string version, Action<double>? onProgress = null)
+    {
+#if WINDOWS
+        var tempDir    = Path.Combine(Path.GetTempPath(), "echat-update");
+        var zipPath    = Path.Combine(tempDir, "EChat-win.zip");
+        var extractDir = Path.Combine(tempDir, "extracted");
+        Directory.CreateDirectory(tempDir);
+
+        // Download with progress
+        using var http = new System.Net.Http.HttpClient();
+        using var response = await http.GetAsync(downloadUrl, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+
+        var total = response.Content.Headers.ContentLength ?? -1L;
+        await using var src  = await response.Content.ReadAsStreamAsync();
+        await using var dest = File.Create(zipPath);
+        var buf        = new byte[81920];
+        long downloaded = 0;
+        int  read;
+        while ((read = await src.ReadAsync(buf)) > 0)
+        {
+            await dest.WriteAsync(buf.AsMemory(0, read));
+            downloaded += read;
+            if (total > 0) onProgress?.Invoke((double)downloaded / total);
+        }
+        dest.Close();
+        onProgress?.Invoke(1.0);
+
+        // Extract
+        if (Directory.Exists(extractDir)) Directory.Delete(extractDir, true);
+        System.IO.Compression.ZipFile.ExtractToDirectory(zipPath, extractDir);
+
+        // The ZIP packs files under an "echat\" inner folder (see publish.bat)
+        var innerDir = Directory.GetDirectories(extractDir).FirstOrDefault() ?? extractDir;
+        var appDir   = Path.GetDirectoryName(
+            System.Diagnostics.Process.GetCurrentProcess().MainModule!.FileName)!;
+
+        // Write and launch an updater script that replaces files after the app exits
+        var script = Path.Combine(tempDir, "update.bat");
+        File.WriteAllText(script,
+            $"""
+            @echo off
+            timeout /t 2 /nobreak >nul
+            robocopy "{innerDir}" "{appDir}" /e /is /it /r:3 /w:1 >nul 2>&1
+            start "" "{Path.Combine(appDir, "echat.exe")}"
+            del "%~f0"
+            """);
+
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c \"{script}\"")
+        {
+            CreateNoWindow  = true,
+            UseShellExecute = false
+        });
+
+        Microsoft.Maui.Controls.Application.Current?.Quit();
+
+#elif ANDROID
+        var context = Android.App.Application.Context;
+        var pm      = context.PackageManager!;
+
+        // If the user hasn't allowed installs from this source, open the settings page
+        if (!pm.CanRequestPackageInstalls())
+        {
+            var settingsIntent = new Android.Content.Intent(
+                Android.Provider.Settings.ActionManageUnknownAppSources,
+                Android.Net.Uri.Parse("package:" + context.PackageName));
+            settingsIntent.AddFlags(Android.Content.ActivityFlags.NewTask);
+            context.StartActivity(settingsIntent);
+            return; // user will come back and tap Install again
+        }
+
+        // Download APK with progress
+        var apkPath = Path.Combine(FileSystem.CacheDirectory, $"EChat-{version}.apk");
+        using var http = new System.Net.Http.HttpClient();
+        using var response = await http.GetAsync(downloadUrl, System.Net.Http.HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+
+        var total = response.Content.Headers.ContentLength ?? -1L;
+        await using var src  = await response.Content.ReadAsStreamAsync();
+        await using var dest = File.Create(apkPath);
+        var buf        = new byte[81920];
+        long downloaded = 0;
+        int  read;
+        while ((read = await src.ReadAsync(buf)) > 0)
+        {
+            await dest.WriteAsync(buf.AsMemory(0, read));
+            downloaded += read;
+            if (total > 0) onProgress?.Invoke((double)downloaded / total);
+        }
+        dest.Close();
+        onProgress?.Invoke(1.0);
+
+        // Fire install intent via FileProvider
+        var apkUri = AndroidX.Core.Content.FileProvider.GetUriForFile(
+            context,
+            context.PackageName + ".update.provider",
+            new Java.IO.File(apkPath));
+
+        var intent = new Android.Content.Intent(Android.Content.Intent.ActionView);
+        intent.SetDataAndType(apkUri, "application/vnd.android.package-archive");
+        intent.AddFlags(
+            Android.Content.ActivityFlags.GrantReadUriPermission |
+            Android.Content.ActivityFlags.NewTask);
+        context.StartActivity(intent);
+#else
+        await Task.CompletedTask;
+#endif
+    }
 }

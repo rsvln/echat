@@ -1,121 +1,122 @@
 # εChat — Technical Design
 
-Документ для разработчиков и AI-агентов. Описывает архитектуру, протокол, ключевые паттерны и инварианты кодовой базы.
+Reference document for developers and AI agents. Describes architecture, protocol, key patterns, and codebase invariants.
 
 ---
 
-## Структура проекта
+## Project structure
 
 ```
 src/
-├── EChat.Core/          # Бизнес-логика, независимая от платформы
-│   ├── Models/          # EF-модели (ChatMessage, Chat, Account, ...)
-│   ├── Data/            # ChatDbContext + миграции EF Core
-│   ├── Protocol/        # Парсинг/сборка писем, ChatHeaders, OutgoingMessage
+├── EChat.Core/          # Platform-independent business logic
+│   ├── Models/          # EF models (ChatMessage, Chat, Account, ...)
+│   ├── Data/            # ChatDbContext + EF Core migrations
+│   ├── Protocol/        # Email parsing/building, ChatHeaders, OutgoingMessage
 │   ├── Transport/       # IMAP/SMTP (MailKit), BatchQueue, IncomingMessageService
 │   ├── Sync/            # SyncEngine, NtpTimeService, DeviceSyncService
 │   ├── Groups/          # GroupStateManager, GroupMergeEngine
 │   ├── Crypto/          # PgpService (PgpCore/BouncyCastle)
-│   └── Services/        # FileLogger, ChatEventService, BackupService, VersionInfo
-├── EChat.UI/            # Razor-компоненты (платформонезависимые)
+│   └── Services/        # FileLogger, ChatEventService, BackupService,
+│                        # UpdateService, VersionInfo
+├── EChat.UI/            # Razor components (platform-independent)
 │   ├── Pages/           # Index, AccountSetup, ChatList, ChatList.razor.cs,
 │   │                    # ChatView, Settings, AccountSettings, About
 │   ├── Components/      # MessageBubble, ChatListItem, ChatInfoModal, NewChatModal
 │   └── Services/        # UserContextService, IAppPreferences, IPlatformService,
 │                        # AndroidBackHandler
-├── EChat.MAUI/          # .NET MAUI хост (Windows + Android)
-│   ├── MauiProgram.cs   # DI-сборка, платформенные пути, VersionInfo.VersionOverride
-│   ├── App.xaml.cs      # Инициализация, запуск транспорта и foreground-сервиса
+├── EChat.MAUI/          # .NET MAUI host (Windows + Android)
+│   ├── MauiProgram.cs   # DI setup, platform paths, VersionInfo.VersionOverride
+│   ├── App.xaml.cs      # Initialisation, transport start, foreground service
 │   └── Platforms/
 │       ├── Android/     # MainActivity, MainApplication, AndroidManifest.xml,
 │       │                # EmailSyncService, MessageNotificationHelper
 │       └── Windows/     # TaskbarBadgeHelper, TaskbarFlashHelper
-├── EChat.Web/           # ASP.NET Core Blazor Server (Docker-деплой)
-│   ├── Program.cs       # Настройка, авто-старт транспорта, VersionInfo.VersionOverride
+├── EChat.Web/           # ASP.NET Core Blazor Server (Docker deployment)
+│   ├── Program.cs       # Setup, auto-start transport, VersionInfo.VersionOverride
 │   └── Dockerfile       # Alpine multi-stage build
 └── scripts/
-    └── bump-versions.ps1 # Умная инкрементация версий перед публикацией
+    └── bump-versions.ps1 # Smart version increment before publishing
 ```
 
 ---
 
-## Зависимости между проектами
+## Project dependencies
 
 ```
 EChat.MAUI → EChat.UI → EChat.Core
 EChat.Web  → EChat.UI → EChat.Core
 ```
 
-`EChat.Core` не знает ни о Blazor, ни о MAUI.
+`EChat.Core` has no knowledge of Blazor or MAUI.
 
 ---
 
-## Модели данных
+## Data models
 
 ### ChatMessage
 ```csharp
-MessageId        // Глобально уникальный ID письма (Chat-Message-ID header)
+MessageId        // Globally unique email message ID (Chat-Message-ID header)
 ChatId           // FK → Chat
-Sender           // email отправителя
-Content          // Текст (расшифрованный)
-Timestamp        // Время из Chat-Timestamp header
-DisplayTimestamp // С коррекцией NTP-скева
-ReceivedAt       // Время сохранения в БД
+Sender           // Sender email address
+Content          // Message text (decrypted)
+Timestamp        // Time from Chat-Timestamp header
+DisplayTimestamp // NTP-skew-corrected timestamp
+ReceivedAt       // Time the message was saved to DB
 Status           // Sending | Sent | Read | Failed
-ImapUid          // UID в IMAP-папке (для удаления)
-ImapFolder       // Папка в IMAP ("eChat", "INBOX")
-IsEdited         // Было ли редактировано
-InReplyTo        // MessageId цитируемого сообщения
+ImapUid          // UID in the IMAP folder (for deletion)
+ImapFolder       // IMAP folder name ("eChat", "INBOX")
+IsEdited         // Whether the message has been edited
+InReplyTo        // MessageId of the quoted message
 ```
 
 **`MessageStatus` enum**:
-- `Sending (0)` — сохранено локально, SMTP ещё не подтвердил
-- `Sent (1)` — SMTP успешно отправил
-- `Read (2)` — получатель открыл чат (пришёл read-receipt)
-- `Failed (3)` — постоянная ошибка 5xx, повтор не нужен
+- `Sending (0)` — saved locally, SMTP not yet confirmed
+- `Sent (1)` — SMTP delivery confirmed
+- `Read (2)` — recipient opened the chat (read receipt received)
+- `Failed (3)` — permanent 5xx error, no retry
 
 ### Chat
 ```csharp
-ChatId           // PK — случайный UUID, независимый от GroupId
+ChatId           // PK — random UUID, independent of GroupId
 Type             // OneToOne | Group
-AccountId        // Владелец чата
-ContactEmail     // FK → Contact.Email — только для 1:1: email собеседника
-GroupId          // FK → ChatGroup.GroupId — только для Group: ссылка на группу
-Deleted          // Tombstone — не удалять строку, иначе group-create пересоздаст чат
-UnreadCount      // Инкрементируется атомарно через ExecuteUpdateAsync
+AccountId        // Chat owner
+ContactEmail     // FK → Contact.Email — 1:1 chats only: the other party's email
+GroupId          // FK → ChatGroup.GroupId — group chats only
+Deleted          // Tombstone — do not delete the row, otherwise group-create will recreate the chat
+UnreadCount      // Incremented atomically via ExecuteUpdateAsync
 Muted / Archived
 LastActivityAt
 ```
 
-**Tombstone-паттерн**: удалённые чаты помечаются `Deleted=true` и остаются в БД. Это предотвращает повторное создание группы при ресинке IMAP-папки.
+**Tombstone pattern**: deleted chats are marked `Deleted=true` and kept in the database. This prevents a group chat from being recreated when the eChat IMAP folder is re-synced.
 
 ### Attachment
 ```csharp
 Id           // Guid
-MessageId    // НЕ FK (без каскадного удаления — намеренно)
-FilePath     // Имя файла относительно AttachmentsDir (новые записи)
-             // или абсолютный путь (старые записи — ResolveFilePath умеет оба формата)
+MessageId    // NOT a FK (no cascade delete — intentional)
+FilePath     // File name relative to AttachmentsDir (new records)
+             // or absolute path (legacy records — ResolveFilePath handles both)
 FileName / ContentType / Size / Caption / IsImage
 ```
 
-Файлы хранятся по пути: `{AppDir}/attachments/{MessageId}_{FileName}`
+Files are stored at: `{AppDir}/attachments/{MessageId}_{FileName}`
 
-`DatabasePathInfo.ResolveFilePath(stored)` — всегда используй этот метод для получения абсолютного пути из `att.FilePath`. Обрабатывает оба формата (относительный и абсолютный).
+`DatabasePathInfo.ResolveFilePath(stored)` — always use this method to get an absolute path from `att.FilePath`. Handles both relative and absolute formats.
 
 ### Contact
 ```csharp
-AccountId       // PK part 1 — владелец контакта
-Email           // PK part 2 — email контакта
-DisplayName     // Имя, редактируемое пользователем
-PublicKey       // PGP-ключ контакта (для шифрования исходящих)
-KeyFingerprint  // Fingerprint для отображения в ChatInfoModal
-Verified        // Верифицирован через invite-flow
-IsBlocked       // Заблокирован
-BlockedAt       // Время блокировки
-Notes           // Заметки пользователя
+AccountId       // PK part 1 — contact owner
+Email           // PK part 2 — contact's email
+DisplayName     // User-editable display name
+PublicKey       // Contact's PGP key (for encrypting outgoing messages)
+KeyFingerprint  // Fingerprint shown in ChatInfoModal
+Verified        // Verified through the invite flow
+IsBlocked       // Blocked
+BlockedAt       // Time of blocking
+Notes           // User notes
 ```
 
-**Изоляция по аккаунту**: PK — `(AccountId, Email)`. Контакт из ящика A не виден из ящика B.
+**Account isolation**: PK is `(AccountId, Email)`. Contacts from account A are invisible from account B.
 
 ### GroupMember
 ```csharp
@@ -123,417 +124,439 @@ GroupId      // PK part 1
 MemberEmail  // PK part 2
 Role         // Admin | Member
 AddedAt / AddedBy
-NameColor    // Цвет имени в чате
-DisplayName  // Имя участника — приходит в протоколе (group-create/group-member-add)
-             // Fallback-цепочка: GroupMember.DisplayName → Contact.DisplayName → полный email
+NameColor    // Display name colour in the chat
+DisplayName  // Member name — comes from the protocol (group-create/group-member-add)
+             // Fallback chain: GroupMember.DisplayName → Contact.DisplayName → full email
 ```
 
 ### Account / AccountConfig
-- `Account` — персистентная запись в БД (credentials, PGP-ключи)
-- `AccountConfig` — мутабельный синглтон в DI, обновляется при `ReconnectAsync`
+- `Account` — persistent DB record (credentials, PGP keys)
+- `AccountConfig` — mutable singleton in DI, updated on `ReconnectAsync`
 
 ---
 
-## Платформенные пути
+## Platform paths
 
-| Платформа | AppDir | DB |
+| Platform | AppDir | DB |
 |---|---|---|
 | Windows | `%LocalAppData%\echat\` | `{AppDir}/db/echat.db` |
 | Android | `/storage/emulated/0/Android/data/com.echat.app/files/` | `{AppDir}/db/echat.db` |
-| Web | `/app/data/` (монтируется в Docker) | `{AppDir}/echat.db` |
+| Web | `/app/data/` (Docker volume mount) | `{AppDir}/echat.db` |
 
-`FileLogger.AppDir` — канонический способ получить `AppDir` внутри `EChat.Core`. Всегда используй его для записи файлов (вложения, логи), а не `Environment.SpecialFolder.LocalApplicationData` — последнее возвращает **неверный** путь на Android.
+`FileLogger.AppDir` — the canonical way to get `AppDir` inside `EChat.Core`. Always use it for writing files (attachments, logs) instead of `Environment.SpecialFolder.LocalApplicationData`, which returns the **wrong** path on Android.
 
 ---
 
-## Транспортный слой
+## Transport layer
 
-### Жизненный цикл соединения
+### Connection lifecycle
 
 ```
 App.xaml.cs (Task.Run) → TransportService.ReconnectAsync(account)
   → StopOldIdle()
   → ImapService.DisconnectAsync() + SmtpService.DisconnectAsync()
-  → AccountConfig обновляется (email, keys, credentials)
+  → AccountConfig updated (email, keys, credentials)
   → ConnectAsync(imap + smtp)
   → StartSyncLoopAsync()
-      → RetryStuckSendingAsync()   // переотправить Sending-сообщения
-      → SyncEchatFolderAsync()     // синхронизировать eChat IMAP-папку
-      → StartIdleAsync() или polling loop
+      → RetryStuckSendingAsync()   // retry Sending messages
+      → SyncEchatFolderAsync()     // sync eChat IMAP folder
+      → StartIdleAsync() or polling loop
 ```
 
-`ReconnectAsync` вызывается при:
-- Старте приложения (из `App.xaml.cs`, не из Blazor)
-- Переключении аккаунта
-- Сохранении настроек аккаунта
+`ReconnectAsync` is called on:
+- App start (from `App.xaml.cs`, not from Blazor)
+- Account switch
+- Account settings saved
 
-### Получение сообщений
+### Receiving messages
 
 ```
 ImapService.MessageReceived (event)
   → EmailTransportService.OnMessageReceivedAsync()
-      → ChatMessageParser.Parse()          // заголовки + контент
-      → ApplyDecryptedContent() если pgp-inline
+      → ChatMessageParser.Parse()          // headers + content
+      → ApplyDecryptedContent() if pgp-inline
       → Deduplicator.IsDuplicate()
       → MessagesReceived (event)
           → IncomingMessageService.SaveAsync()
 ```
 
-`AccountImapWorker` — аналогичный пайплайн для фоновых аккаунтов (не активных).
+`AccountImapWorker` — identical pipeline for background (non-active) accounts.
 
-### Отправка сообщений
+### Sending messages
 
 ```
 ChatList/ChatView → TransportService.SendMessageAsync(OutgoingMessage)
-  → Lookup RecipientPublicKey (группа → GroupKeyPairs, 1:1 → Contacts)
+  → Lookup RecipientPublicKey (group → GroupKeyPairs, 1:1 → Contacts)
   → BatchQueue.Enqueue(message)
-      Tier=Immediate → SendSingleAsync() напрямую
-      Tier!=Immediate → накапливается, flush по таймеру или при 10+ сообщениях
+      Tier=Immediate → SendSingleAsync() directly
+      Tier!=Immediate → accumulated, flushed on timer or at 10+ messages
           → ChatMessageBuilder.BuildSingleAsync() / BuildBatch()
           → SmtpService.SendAsync()
               → SmtpSendResult: Sent | RateLimited | Permanent | TransientError
           → UpdateMessageStatusAsync()
 ```
 
-### SmtpSendResult и обработка ошибок
+### SmtpSendResult and error handling
 
-| Ситуация | Код | Результат | Статус в DB |
+| Situation | Code | Result | DB status |
 |---|---|---|---|
-| Успех | — | `Sent` | `Sent` |
-| Rate limit | 421 / 429 / 452 | `RateLimited` | остаётся `Sending` |
-| Прочие 4xx | — | `TransientError` (3 попытки) | остаётся `Sending` |
-| Постоянная ошибка | 5xx | `Permanent` | `Failed` |
-| Обрыв после DATA | — | `TransientError` | остаётся `Sending` |
+| Success | — | `Sent` | `Sent` |
+| Rate limit | 421 / 429 / 452 | `RateLimited` | stays `Sending` |
+| Other 4xx | — | `TransientError` (3 retries) | stays `Sending` |
+| Permanent error | 5xx | `Permanent` | `Failed` |
+| Connection drop after DATA | — | `TransientError` | stays `Sending` |
 
-`RetryStuckSendingAsync` при старте берёт все `Status=Sending` и переотправляет. `Failed` не трогает.
+`RetryStuckSendingAsync` picks up all `Status=Sending` messages at startup and retries them. `Failed` messages are not touched.
 
 ---
 
-## Протокол сообщений
+## Protocol
 
-### Chat-* заголовки
+### Chat-* headers
 
 ```
 Chat-Version: 2.0
 Chat-Message-ID: <uuid>@localhost
 Chat-Timestamp: 2026-04-11T10:00:00+03:00
-Chat-Group-ID: <group-uuid>          # только для группы
-Chat-Encryption: pgp-inline          # если зашифровано
+Chat-Group-ID: <group-uuid>          # group messages only
+Chat-Encryption: pgp-inline          # if encrypted
 Chat-Reaction: 👍
 Chat-Reaction-To: <target-msg-id>
 Chat-Edit-Of: <target-msg-id>
 Chat-Edit-Version: 2
 Chat-Delete-Of: <target-msg-id>
 Chat-Read-Of: id1,id2,id3
-Chat-System-Type: group-create       # системное сообщение
-Chat-Sync-Type: read-state           # синхронизация между устройствами
-Chat-Invite-Token: <raw-token>       # только в invite-сообщениях
-Initial-Contact-Key-Exchange: <base64>  # зашифрованный pubKey (только в invite)
-Autocrypt: addr=user@example.com; keydata=<base64-pubkey>  # не в invite-сообщениях
+Chat-System-Type: group-create       # system message
+Chat-Sync-Type: read-state           # cross-device sync
+Chat-Invite-Token: <raw-token>       # invite messages only
+Initial-Contact-Key-Exchange: <base64>  # encrypted pubKey (invite messages only)
+Autocrypt: addr=user@example.com; keydata=<base64-pubkey>  # not in invite messages
 In-Reply-To: <target-msg-id>
 ```
 
-### Шифрование (pgp-inline)
+### Invite and key exchange
 
-**Незашифрованное письмо**: все Chat-* заголовки снаружи, тело = plaintext.
+Token — 30 Base32 characters (`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`), generated by `InviteService`.
+Invite URL: `echat://invite?e={email}&n={name}&t={rawToken}`.
 
-**Зашифрованное письмо**: внешние заголовки только `Chat-Version`, `Chat-Group-ID`, `Autocrypt`. Всё остальное — внутри PGP-зашифрованного тела:
-
-```
-Chat-Message-ID: <uuid>
-Chat-Timestamp: ...
-<прочие метаданные>
-                           ← пустая строка-разделитель
-Текст сообщения
-
---echat-att--              ← блок вложения (если есть)
-Content-Type: image/jpeg
-Content-Filename: photo.jpg
-Content-Size: 12345
-
-<base64-данные файла>
---echat-att-end--
-```
-
-**Важно**: `email.Attachments` (MimeKit) содержит только вложения с `Content-Disposition: attachment` — для зашифрованных писем они недоступны. Поэтому вложения кодируются в текстовый блок внутри шифрограммы.
-
-### Invite и обмен ключами (key exchange)
-
-Токен — 30 символов Base32 (`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`), генерируется `InviteService`.  
-URL инвайта: `echat://invite?e={email}&n={name}&t={rawToken}`.
-
-**Первое письмо (Bob → Alice):**
+**First message (Bob → Alice):**
 
 ```
 Chat-Invite-Token: <rawToken>
 Initial-Contact-Key-Exchange: <base64(nonce[12] + tag[16] + AES-GCM(pubKeyBob))>
 ```
 
-Ключ AES-256-GCM = `SHA-256(Normalize(rawToken))`. Nonce — случайные 12 байт. Autocrypt-заголовок в invite-сообщениях **не добавляется** — pubKey никогда не передаётся открыто.
+AES-256-GCM key = `SHA-256(Normalize(rawToken))`. Nonce is 12 random bytes. The Autocrypt header is **not added** to invite messages — the public key is never transmitted in plaintext.
 
-**Alice при получении:**
+**Alice on receipt:**
 
-1. Берёт `headers.EncryptedContactKey` и `headers.InviteToken`
-2. `InviteService.DecryptPubKey(encrypted, token)` — расшифровывает pubKey Bob'а
-3. Только после успешной расшифровки — `VerifyAndConsumeAsync()` (токен сжигается)
+1. Takes `headers.EncryptedContactKey` and `headers.InviteToken`
+2. `InviteService.DecryptPubKey(encrypted, token)` — decrypts Bob's public key
+3. Only after successful decryption — `VerifyAndConsumeAsync()` (token is burned)
 4. `contact.PublicKey = senderPubKey`, `contact.Verified = true`
 
-Токен сжигается только при успешной расшифровке — защита от replay без знания plaintext-токена.
+The token is burned only on successful decryption — protects against replay without knowledge of the plaintext token.
+
+### Encryption (pgp-inline)
+
+**Unencrypted message**: all Chat-* headers on the outside, body = plaintext.
+
+**Encrypted message**: only `Chat-Version`, `Chat-Group-ID`, `Autocrypt` as outer headers. Everything else is inside the PGP-encrypted body:
+
+```
+Chat-Message-ID: <uuid>
+Chat-Timestamp: ...
+<other metadata>
+                           ← blank line separator
+Message text
+
+--echat-att--              ← attachment block (if any)
+Content-Type: image/jpeg
+Content-Filename: photo.jpg
+Content-Size: 12345
+
+<base64 data>
+--echat-att-end--
+```
+
+**Important**: `email.Attachments` (MimeKit) only contains parts with `Content-Disposition: attachment` — for encrypted messages this is always empty. Attachments are encoded as text blocks inside the ciphertext.
+
+### Batching
+
+`BatchKey = {Recipients (HashSet), GroupId, Tier}`. Tiers:
+- `Immediate` — sent immediately, no batching (all user-initiated messages)
+- `System` — fast batch (system messages)
+- `LowPriority` — slow batch (rate limit conservation)
 
 ---
 
-### Батчинг
+## Database
 
-`BatchKey = {Recipients (HashSet), GroupId, Tier}`. Тиры:
-- `Immediate` — немедленная отправка, без батча (все пользовательские сообщения)
-- `System` — быстрый батч (системные сообщения)
-- `LowPriority` — медленный батч (экономия лимитов)
+**Engine**: SQLite with WAL mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`).
 
----
-
-## База данных
-
-**СУБД**: SQLite с WAL-mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`).
-
-**EF Core scoped context**: `ChatDbContext` — scoped, не singleton. Используй `IServiceScopeFactory.CreateScope()` в синглтонах:
+**EF Core scoped context**: `ChatDbContext` is scoped, not singleton. Use `IServiceScopeFactory.CreateScope()` inside singletons:
 ```csharp
 using var scope = _scopeFactory.CreateScope();
 var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 ```
 
-**Инкремент UnreadCount**: только через `ExecuteUpdateAsync` — атомарно:
+**Atomic UnreadCount increment** — always via `ExecuteUpdateAsync`:
 ```csharp
 await db.Chats
     .Where(c => c.ChatId == chatId)
     .ExecuteUpdateAsync(s => s.SetProperty(c => c.UnreadCount, c => c.UnreadCount + 1));
 ```
 
-**DateTimeOffset и SQLite**: EF Core не умеет транслировать сравнения `DateTimeOffset` в WHERE-условия на SQLite. Паттерн: загружай строки в память (`.ToListAsync()`), фильтруй в C#. ORDER BY работает нормально.
+**DateTimeOffset and SQLite**: EF Core cannot translate `DateTimeOffset` comparisons into WHERE clauses on SQLite. Pattern: load rows into memory (`.ToListAsync()`), filter in C#. ORDER BY works fine.
 
 ---
 
 ## UI
 
-### Разделение платформ
+### Platform split
 
-`IPlatformService.IsDesktop` — единственный способ разветвления UI. На Windows — трёхколоночный layout (ChatList слева, чат справа). На Android — последовательная навигация через Blazor Router.
+`IPlatformService.IsDesktop` — the only branching mechanism for UI layout. On Windows — three-column layout (ChatList left, chat right). On Android — sequential navigation via Blazor Router.
 
-`ChatList.razor` содержит оба layout внутри одного файла, переключение через `@if (Platform.IsDesktop)`.
+`ChatList.razor` contains both layouts in a single file, switched via `@if (Platform.IsDesktop)`.
 
-Вся логика `ChatList` вынесена в code-behind файл `ChatList.razor.cs` (partial class).
+All `ChatList` logic is in the code-behind file `ChatList.razor.cs` (partial class).
 
-### Компоненты
+### Components
 
-| Компонент | Описание |
+| Component | Description |
 |---|---|
-| `MessageBubble` | Рендер одного сообщения. Используется и на десктопе, и на мобиле |
-| `ChatListItem` | Элемент списка чатов |
-| `ChatInfoModal` | Информация о чате / участниках группы |
-| `NewChatModal` | Модальное окно создания чата (3 вкладки: My Invite, Add Contact, New Group) |
+| `MessageBubble` | Renders a single message. Used on both desktop and mobile |
+| `ChatListItem` | Chat list row item |
+| `ChatInfoModal` | Chat / group member info |
+| `NewChatModal` | New chat modal (3 tabs: My Invite, Add Contact, New Group) |
 
 ### IPlatformService
 
-Интерфейс для платформенных операций. Реализации: `PlatformService` (MAUI) и `WebPlatformService` (Web).
+Interface for platform-specific operations. Implementations: `PlatformService` (MAUI) and `WebPlatformService` (Web).
 
 ```csharp
-bool IsDesktop                          // Windows = true, остальные = false
+bool IsDesktop                          // Windows = true, others = false
 bool SupportsMauiFilePicker             // MAUI = true, Web = false
-bool SupportsPickFolder                 // Android = true (SAF), остальные = false
-bool SupportsBackgroundNotificationToggle // Android = true, остальные = false
+bool SupportsPickFolder                 // Android = true (SAF), others = false
+bool SupportsBackgroundNotificationToggle // Android = true, others = false
+bool SupportsInAppUpdate                // Windows + Android = true, iOS + Web = false
 
-Task SaveFileAsync(...)                 // Нативный диалог сохранения
-Task<Stream?> PickFileAsync(...)        // Нативный файловый пикер
-Task OpenAttachmentAsync(...)           // Открыть файл через нативное приложение
-Task<bool> SaveToDownloadsAsync(...)    // Сохранить в папку Загрузки (Android/Windows)
-Task<bool> SaveToPickedFolderAsync(...) // SAF диалог (Android)
-void UpdateBadge(int totalUnread)       // Счётчик на иконке (Windows taskbar)
-void RestartApp()                       // Перезапуск приложения
-Task SetBackgroundNotificationVisibleAsync(bool) // BG уведомление (Android)
-Task OpenBatteryOptimizationSettingsAsync()      // Диалог батареи (Android)
+Task SaveFileAsync(...)                 // Native save dialog
+Task<Stream?> PickFileAsync(...)        // Native file picker
+Task OpenAttachmentAsync(...)           // Open file with native app
+Task<bool> SaveToDownloadsAsync(...)    // Save to Downloads folder (Android/Windows)
+Task<bool> SaveToPickedFolderAsync(...) // SAF dialog (Android)
+void UpdateBadge(int totalUnread)       // Taskbar badge (Windows)
+void RestartApp()                       // Restart the app
+Task SetBackgroundNotificationVisibleAsync(bool) // BG notification (Android)
+Task OpenBatteryOptimizationSettingsAsync()      // Battery dialog (Android)
+Task ApplyUpdateAsync(url, version, onProgress)  // Download and install update
 ```
 
-На Web все методы-no-op возвращают `Task.CompletedTask` / `false`.
+On Web all methods are no-ops returning `Task.CompletedTask` / `false`.
 
-### Мобильная кнопка "Назад" (Android)
+### In-app update
 
-`AndroidBackHandler` (static класс в `EChat.UI/Services/`):
-- `ChatView.razor` при инициализации регистрирует callback
-- `ChatView.razor.Dispose()` отменяет регистрацию
-- `MainActivity` использует `OnBackPressedDispatcher.AddCallback()` (не `override OnBackPressed()` — не работает с жестовой навигацией на Android 13+)
+`UpdateService` (singleton in `EChat.Core`) checks the GitHub Releases API:
+
+```
+GET https://api.github.com/repos/rsvln/echat/releases/latest
+```
+
+Compares `tag_name` with `VersionInfo.AppVersion`. Result is cached for the session; `InvalidateCache()` forces a re-check.
+
+**Windows flow**: download ZIP → extract to `%TEMP%\echat-update\` → write `update.bat` (robocopy + restart) → launch script → `Application.Quit()`.
+
+**Android flow**: check `CanRequestPackageInstalls()` → if denied, open system settings → download APK to cache dir → `FileProvider` URI → install intent. The FileProvider authority is `{packageName}.update.provider`, declared in `AndroidManifest.xml` with `update_file_paths.xml`.
+
+### Android back button
+
+`AndroidBackHandler` (static class in `EChat.UI/Services/`):
+- `ChatView.razor` registers a callback on init
+- `ChatView.razor.Dispose()` unregisters it
+- `MainActivity` uses `OnBackPressedDispatcher.AddCallback()` (not `override OnBackPressed()` — doesn't fire with gesture navigation on Android 13+)
 
 ### MessageBubble
 
-- `GetAttachmentUrl(att)` — читает файл по `DbPathInfo.ResolveFilePath(att.FilePath)`, возвращает `data:{contentType};base64,...`
-- **Лайтбокс**: открывается по клику на картинку. На мобиле поддерживает pinch-to-zoom (×1–×6), двойной тап (переключение ×1/×2.5), pan одним пальцем. JS-функции: `initLightboxZoom`, `isLightboxZoomed`, `resetLightboxZoom` в `index.html`
-- Тап по фону при zoom > 1 — сначала сбрасывает zoom; при zoom = 1 — закрывает
-- `MobileMode` prop отключает контекстное меню (на мобиле — action bar вверху)
+- `GetAttachmentUrl(att)` — reads the file via `DbPathInfo.ResolveFilePath(att.FilePath)`, returns `data:{contentType};base64,...`
+- **Lightbox**: opens on image tap. On mobile supports pinch-to-zoom (×1–×6), double-tap (toggle ×1/×2.5), single-finger pan. JS functions: `initLightboxZoom`, `isLightboxZoomed`, `resetLightboxZoom` in `index.html`
+- Tap on background at zoom > 1 — resets zoom first; at zoom = 1 — closes
+- `MobileMode` prop disables the context menu (mobile uses a top action bar instead)
 
 ### CSS
 
-Глобальные стили: `src/EChat.MAUI/wwwroot/css/app.css` и `src/EChat.UI/wwwroot/css/app.css`.
+Global styles: `src/EChat.MAUI/wwwroot/css/app.css` and `src/EChat.UI/wwwroot/css/app.css`.
 
-**Важно**: inline `<style>` в компонентах инжектируются только при рендере. Общие стили (`.ctx-menu`, etc.) — только в `app.css`, иначе не загрузятся в пустом чате.
-
----
-
-## Многоаккаунтность
-
-- Один аккаунт — `IsActive=true` — обслуживается `EmailTransportService`
-- Остальные — фоновые воркеры `AccountImapWorker`, управляемые `MultiAccountImapManager`
-- При переключении: `ChatEventService.NotifyAccountSwitched()` → воркеры перезапускаются
+**Important**: inline `<style>` in components is only injected when the component renders. Shared styles (`.ctx-menu`, etc.) must live in `app.css`, otherwise they won't load in an empty chat.
 
 ---
 
-## Синхронизация устройств
+## Multi-account
 
-При отправке сообщения отправитель добавляет себя в CC. Другое устройство с тем же ящиком получает письмо, парсит его как `isSentSync=true` (sender == accountEmail) и сохраняет со статусом `Sent` без инкремента UnreadCount.
-
-Дедупликация — по `MessageId` (UUID@localhost). `IncomingMessageService` проверяет наличие `MessageId` в БД перед сохранением. DeviceId не используется.
-
-`DeviceSyncService` отправляет sync-сообщения (`Chat-Sync-Type: read-state`), которые `IncomingMessageService` обрабатывает отдельно.
+- One account has `IsActive=true` — handled by `EmailTransportService`
+- All others run as background workers `AccountImapWorker` managed by `MultiAccountImapManager`
+- On switch: `ChatEventService.NotifyAccountSwitched()` → workers restart
 
 ---
 
-## Версионирование
+## Cross-device sync
 
-### Файлы версий
+When a message is sent, the sender adds themselves as CC. Another device on the same mailbox receives the email, parses it as `isSentSync=true` (sender == accountEmail), and saves it with status `Sent` without incrementing `UnreadCount`.
 
-Каждый проект имеет свой `version.txt` (отслеживается в git):
+Deduplication is by `MessageId` (UUID@localhost). `IncomingMessageService` checks for the `MessageId` in the database before saving. No DeviceId is used.
+
+`DeviceSyncService` sends sync messages (`Chat-Sync-Type: read-state`), which `IncomingMessageService` processes separately.
+
+---
+
+## Versioning
+
+### Version files
+
+Each project has its own `version.txt` (tracked in git):
 ```
-src/EChat.Core/version.txt    # Например: 0.2.17
+src/EChat.Core/version.txt    # e.g. 0.2.17
 src/EChat.UI/version.txt
 src/EChat.MAUI/version.txt
 src/EChat.Web/version.txt
 ```
 
-Версия читается в `.csproj` через MSBuild: `$([System.IO.File]::ReadAllText('version.txt'))`.  
-`InformationalVersion` формируется как `{version}+{yyyyMMddHHmm}` — каждая сборка уникально штампована.
+The version is read in `.csproj` via MSBuild: `$([System.IO.File]::ReadAllText('version.txt'))`.
+`InformationalVersion` is formed as `{version}+{yyyyMMddHHmm}` — every build is uniquely stamped.
 
-`UpToDateCheckInput` в каждом `.csproj` гарантирует пересборку при изменении `version.txt`.
+`UpToDateCheckInput` in each `.csproj` ensures a rebuild when `version.txt` changes.
 
-### Отображение версии
+### Version display
 
-`VersionInfo.VersionOverride` (static) — устанавливается хост-проектом при старте:
-- `MauiProgram.cs` — из `AssemblyInformationalVersionAttribute` MAUI-сборки
-- `Web/Program.cs` — из `Assembly.GetExecutingAssembly()`
+`VersionInfo.VersionOverride` (static) — set by the host project at startup:
+- `MauiProgram.cs` — from `AssemblyInformationalVersionAttribute` of the MAUI assembly
+- `Web/Program.cs` — from `Assembly.GetExecutingAssembly()`
 
-Это гарантирует, что экран About показывает версию хоста, а не `EChat.Core`.
+This ensures the About screen shows the host version, not `EChat.Core`'s.
 
-`VersionInfo.BuildDate` парсит `yyyyMMddHHmm` суффикс и форматирует как `"20260424 15:23"`.
+`VersionInfo.BuildDate` parses the `yyyyMMddHHmm` suffix and formats it as `"20260424|1523"`.
 
-### Скрипт bump-versions.ps1
+### bump-versions.ps1
 
-`scripts/bump-versions.ps1` — умная инкрементация перед публикацией:
+`scripts/bump-versions.ps1` — smart increment before publishing:
 
 ```powershell
-# Режимы:
-bump-versions.ps1            # all: Core/UI если изменились + MAUI + Web
-bump-versions.ps1 -Mode win  # Core/UI если изменились + MAUI
-bump-versions.ps1 -Mode web  # Core/UI если изменились + Web
-bump-versions.ps1 -Diagnose  # Показать изменённые файлы без бампа
+# Modes:
+bump-versions.ps1            # all: Core/UI if changed + MAUI + Web
+bump-versions.ps1 -Mode win  # Core/UI if changed + MAUI
+bump-versions.ps1 -Mode web  # Core/UI if changed + Web
+bump-versions.ps1 -Diagnose  # Show changed files without bumping
 ```
 
-Обнаружение изменений: SHA256-хэш всех `.cs`, `.razor`, `.csproj` файлов проекта (кроме `bin/` и `obj/`) хранится в `.src-hash` рядом с проектом. При следующем запуске хэши сравниваются.
+Change detection: SHA-256 hash of all `.cs`, `.razor`, `.csproj` files in the project (excluding `bin/` and `obj/`) is stored in `.src-hash` next to the project. On the next run the hashes are compared.
 
-`.src-hash` добавлен в `.gitignore`.
+`.src-hash` is in `.gitignore`.
 
 ---
 
-## Android — Фоновая работа
+## Android — Background operation
 
 ### EmailSyncService
 
-Foreground-сервис (`ForegroundService.TypeDataSync`). Запускается из `App.xaml.cs` после `ReconnectAsync`. Держит процесс живым пока Android не убьёт его принудительно.
+Foreground service (`ForegroundService.TypeDataSync`). Started from `App.xaml.cs` after `ReconnectAsync`. Keeps the process alive until Android forcefully kills it.
 
-`StartCommandResult.Sticky` — Android перезапускает сервис после убийства. При перезапуске `IPlatformApplication.Current` может быть `null` пока MAUI не инициализировался. Сервис ждёт до 10 секунд с ретраями.
+`StartCommandResult.Sticky` — Android restarts the service after a kill. On restart, `IPlatformApplication.Current` may be `null` while MAUI initialises. The service waits up to 10 seconds with retries.
 
-**Видимость уведомления**: после `StartForeground()` (обязательного) читается `bg_notification_visible` из `IAppPreferences`. Если `false` — сразу вызывается `StopForeground(StopForegroundFlags.Remove)`. Сервис продолжает работать, уведомление исчезает.
+**Notification visibility**: after the mandatory `StartForeground()` call, `bg_notification_visible` is read from `IAppPreferences`. If `false`, `StopForeground(StopForegroundFlags.Remove)` is called immediately. The service continues running; only the notification is removed.
 
-### Жизненный цикл Activity
+### Activity lifecycle
 
-`MainActivity` содержит статический флаг `_processProperlyStarted`. При восстановлении Activity после убийства процесса Android'ом (`savedInstanceState != null && !_processProperlyStarted`) — Activity перезапускается чисто через `StartActivity + Finish`. Это предотвращает пустой экран: Blazor WebView не умеет восстанавливать состояние из `savedInstanceState`.
+`MainActivity` has a static flag `_processProperlyStarted`. When the Activity is restored after an Android process kill (`savedInstanceState != null && !_processProperlyStarted`), the Activity restarts cleanly via `StartActivity + Finish`. This prevents a blank screen: the Blazor WebView cannot restore state from `savedInstanceState`.
 
-### Глобальная обработка исключений
+### Global exception handling
 
-`MainApplication.cs` регистрирует:
-- `TaskScheduler.UnobservedTaskException` — `SetObserved()` + лог в `Android.Util.Log`. Без этого необработанные исключения в `Task.Run` убивают процесс
-- `AppDomain.CurrentDomain.UnhandledException` — лог перед крашем
+`MainApplication.cs` registers:
+- `TaskScheduler.UnobservedTaskException` — `SetObserved()` + log to `Android.Util.Log`. Without this, unhandled exceptions in `Task.Run` kill the process during GC
+- `AppDomain.CurrentDomain.UnhandledException` — log before crash
 
 ---
 
-## Логирование
+## Logging
 
-`FileLogger` — синглтон. Уровни: `None | Error | Warn | Info | Debug`. Настраивается в Settings UI.
+`FileLogger` — singleton. Levels: `None | Error | Warn | Info | Debug`. Configurable in the Settings UI.
 
 ```csharp
 _fileLogger.Write("INFO", "MyService", $"Something happened: {detail}");
 ```
 
-На Android дополнительно: `Android.Util.Log.Debug/Error("eChat", message)` — видно в logcat.
+On Android additionally: `Android.Util.Log.Debug/Error("eChat", message)` — visible in logcat.
 
 ---
 
-## Сборка и публикация
+## Build and publish
 
-### Разработка
+### Development
 
 ```bash
 # Windows desktop
 dotnet run --project src/EChat.MAUI -f net10.0-windows10.0.19041.0
 
-# Android (нужен эмулятор или устройство)
+# Android (requires emulator or device)
 dotnet build src/EChat.MAUI -f net10.0-android -c Release -t:SignAndroidPackage
 ```
 
-### Публикация
+### Publishing
 
 ```bat
-publish.bat       # Все платформы: Core/UI (если изменились) + MAUI + Web
-publish-win.bat   # Только Windows: Core/UI (если изменились) + MAUI
+publish.bat       # All platforms: Core/UI (if changed) + MAUI + Web
+publish-win.bat   # Windows only: Core/UI (if changed) + MAUI
 ```
 
-`publish.bat` выполняет:
-1. `scripts/bump-versions.ps1` — инкрементирует версии
-2. Собирает Windows desktop → `pub/win/`, создаёт `pub/distr/EChat-win.zip`
-3. Запускает Inno Setup → `pub/distr/EChat-Setup-x.x.x.exe`
-4. Собирает Android APK → `pub/distr/EChat.apk`
-5. Собирает и пушит Docker-образ, генерирует `pub/distr/docker-compose.yml`
-6. Копирует дистрибутивы в `e:\YandexDisk\share\echat\`
+`publish.bat` does:
+1. `scripts/bump-versions.ps1` — increments versions
+2. Builds Windows desktop → `pub/win/`, creates `pub/distr/EChat-win.zip`
+3. Builds Android APK → `pub/distr/EChat.apk`
+4. Builds and pushes the Docker image to GHCR, generates `pub/distr/docker-compose.yml`
+5. Copies distributables to `e:\YandexDisk\share\echat\`
 
-Папки `pub/` и `.claude/` исключены из git через `.gitignore`.
+`pub/` and `.claude/` directories are excluded from git via `.gitignore`.
+
+### GitHub Actions
+
+On every push to `master`:
+1. Reads the version from `src/EChat.MAUI/version.txt`
+2. If the tag `v{version}` already exists — skips the build
+3. If new — builds Windows ZIP, Android APK, and Docker image in parallel
+4. Creates the git tag, uploads artifacts to a GitHub Release, pushes the Docker image to GHCR (`ghcr.io/rsvln/echatweb`)
 
 ### Docker (EChat.Web)
 
 `Dockerfile` (multi-stage, Alpine):
-- Копирует `*.csproj` **и** `version.txt` каждого проекта перед `dotnet restore` (MSBuild читает `version.txt` при вычислении свойств проекта)
+- Copies `*.csproj` **and** `version.txt` for each project before `dotnet restore` (MSBuild reads `version.txt` when parsing `.csproj`)
 - Data dir: `ECHAT_DATA_DIR` env var → `EChat:DataDir` config → `{ContentRoot}/data`
-- SSL не используется — ожидается termination на nginx/Traefik
+- No SSL — termination is expected at nginx/Traefik
 
 ---
 
-## Безопасность credentials
+## Credential security
 
 ### ICredentialProtector
-Интерфейс для шифрования/дешифрования чувствительных полей (пароль IMAP, приватный PGP-ключ) в SQLite.
+
+Interface for encrypting/decrypting sensitive fields (IMAP password, private PGP key) in SQLite.
 
 ```csharp
-string Protect(string plaintext)      // идемпотентно: уже зашифрованное возвращает as-is
-string Unprotect(string ciphertext)   // legacy plaintext (без префикса) возвращает as-is
-bool IsProtected(string storedValue)  // true если несёт платформенный префикс
+string Protect(string plaintext)      // idempotent: already-encrypted values returned as-is
+string Unprotect(string ciphertext)   // legacy plaintext (no prefix) returned as-is
+bool IsProtected(string storedValue)  // true if it carries a platform prefix
 ```
 
-Реализации:
-- `DpapiCredentialProtector` (Windows) — префикс `dpapi:`, entropy `"echat-cred-v1"`
-- `SecureStorageCredentialProtector` (Android) — префикс `aes:`, AES-256-GCM через Android Keystore
-- `PlaintextCredentialProtector` — no-op, для Web и разработки
+Implementations:
+- `DpapiCredentialProtector` (Windows) — prefix `dpapi:`, entropy `"echat-cred-v1"`
+- `SecureStorageCredentialProtector` (Android) — prefix `aes:`, AES-256-GCM via Android Keystore
+- `PlaintextCredentialProtector` — no-op, for Web and development
 
-**Step 3d при старте**: читает сырые значения из БД через прямой `SqliteConnection` (минуя EF Value Converter), проверяет `IsProtected()`. Если все уже зашифрованы — SaveChanges не вызывается.
+**Startup step**: reads raw values from the database via a direct `SqliteConnection` (bypassing EF Value Converters), checks `IsProtected()`. If all values are already encrypted — `SaveChanges` is not called.
 
 ---
 
-## Группы — протокол передачи DisplayName
+## Groups — DisplayName protocol
 
-В сообщениях типа `group-create`, `group-member-add`, `group-member-remove` передаются имена участников:
+`group-create`, `group-member-add`, `group-member-remove` messages carry member names:
 
 ```json
 // group-create
@@ -551,61 +574,61 @@ bool IsProtected(string storedValue)  // true если несёт платфор
 { "type": "group-member-remove", "removed_email": "b@x.com", "removed_name": "Bob", "removed_by": "a@x.com" }
 ```
 
-`IncomingMessageService` сохраняет `DisplayName` в `GroupMember` при создании; обновляет если пришло лучшее имя.
+`IncomingMessageService` saves `DisplayName` in `GroupMember` on creation; updates it if a better name arrives.
 
-Fallback-цепочка при отображении: `GroupMember.DisplayName` → `Contact.DisplayName` → полный email (никогда `email.Split('@')[0]`).
+Fallback chain for display: `GroupMember.DisplayName` → `Contact.DisplayName` → full email (never `email.Split('@')[0]`).
 
 ---
 
-## NTP синхронизация времени
+## NTP time sync
 
-`NtpTimeService` корректирует `DateTimeOffset.UtcNow` через атомарный `_offsetTicks`.
+`NtpTimeService` corrects `DateTimeOffset.UtcNow` via an atomic `_offsetTicks`.
 
-**Важно**: `socket.ReceiveTimeout` игнорируется `await ReceiveAsync`. Таймаут реализован через `CancellationTokenSource(5s)`, переданный в `ConnectAsync` / `SendAsync` / `ReceiveAsync`.
+**Important**: `socket.ReceiveTimeout` is ignored by `await ReceiveAsync`. The timeout is implemented via `CancellationTokenSource(5s)` passed to `ConnectAsync` / `SendAsync` / `ReceiveAsync`.
 
-Валидация NTP-ответа:
+NTP response validation:
 1. `received < 48` → `InvalidDataException`
-2. `intPart == 0` → `InvalidDataException` (нулевой timestamp = мусор)
-3. `|networkDateTime - UtcNow| > 3650 дней` → `InvalidDataException` (санитарная проверка)
+2. `intPart == 0` → `InvalidDataException` (zero timestamp = garbage)
+3. `|networkDateTime - UtcNow| > 3650 days` → `InvalidDataException` (sanity check)
 
-При сбое NTP — HTTP HEAD fallback к mail-доменам подключённых аккаунтов (из заголовка `Date`).
+On NTP failure — HTTP HEAD fallback to the mail domains of connected accounts (from the `Date` response header).
 
 ---
 
-## Инварианты и ловушки
+## Invariants and pitfalls
 
-1. **Никогда не используй `Environment.SpecialFolder.LocalApplicationData` для путей к файлам** — на Android это внутреннее хранилище. Используй `_fileLogger.AppDir` или `DatabasePathInfo.AttachmentsDir`.
+1. **Never use `Environment.SpecialFolder.LocalApplicationData` for file paths** — returns the internal storage path on Android. Use `_fileLogger.AppDir` or `DatabasePathInfo.AttachmentsDir`.
 
-2. **`DatabasePathInfo.ResolveFilePath()`** — всегда используй этот метод для получения абсолютного пути вложения. Обрабатывает как старые (абсолютные) пути, так и новые (относительные имена файлов).
+2. **`DatabasePathInfo.ResolveFilePath()`** — always use this method to get the absolute path of an attachment. Handles both legacy (absolute) paths and new (relative filename) records.
 
-3. **DateTimeOffset в WHERE-условиях EF Core + SQLite** — не работает. Загружай строки, фильтруй в C#.
+3. **`DateTimeOffset` in EF Core + SQLite WHERE clauses** — does not work. Load rows, filter in C#.
 
-4. **`email.Attachments` (MimeKit) для зашифрованных писем** — возвращает пустой список. Вложения кодируются в `--echat-att--` блоки внутри шифрограммы.
+4. **`email.Attachments` (MimeKit) for encrypted messages** — returns an empty list. Attachments are encoded in `--echat-att--` blocks inside the ciphertext.
 
-5. **`OnBackPressed()` override в Android 13+** — не срабатывает при жестовой навигации. Использовать только `OnBackPressedDispatcher.AddCallback()`.
+5. **`OnBackPressed()` override on Android 13+** — does not fire with gesture navigation. Use only `OnBackPressedDispatcher.AddCallback()`.
 
-6. **CSS inline `<style>` в компонентах** — инжектируется только при рендере компонента. Если компонент не рендерится (пустой чат), стили не загружаются. Общие стили — только в `app.css`.
+6. **Inline `<style>` in components** — only injected when the component renders. If the component doesn't render (empty chat), styles don't load. Shared styles go only in `app.css`.
 
-7. **`MessageId` для дедупликации** — глобально уникален (UUID@localhost). Проверяется в `IncomingMessageService` перед сохранением.
+7. **`MessageId` for deduplication** — globally unique (UUID@localhost). Checked in `IncomingMessageService` before saving.
 
-8. **UnreadCount** — инкрементируется только при `!isSentSync`. Не обновляй напрямую через EF-трекинг — используй `ExecuteUpdateAsync` для атомарности.
+8. **`UnreadCount`** — incremented only when `!isSentSync`. Do not update directly via EF tracking — use `ExecuteUpdateAsync` for atomicity.
 
-9. **Tombstone при удалении чата** — устанавливай `Deleted=true`, не удаляй строку `Chat`. Иначе при ресинке eChat-папки `group-create` пересоздаст чат.
+9. **Tombstone on chat delete** — set `Deleted=true`, do not delete the `Chat` row. Otherwise `group-create` from an IMAP re-sync will recreate the chat.
 
-10. **Шифрование группы** — при `group-create` приватный ключ группы отправляется каждому участнику персонально (зашифрован его публичным ключом). Последующие сообщения шифруются публичным ключом группы.
+10. **Group encryption** — on `group-create` the group's private key is sent to each member individually (encrypted with their public key). Subsequent messages are encrypted with the group's public key.
 
-11. **`BatchTier.Immediate`** — единственный тир без задержки. Все пользовательские сообщения используют `Immediate`.
+11. **`BatchTier.Immediate`** — the only tier with no delay. All user-initiated messages use `Immediate`.
 
-12. **Оптимистичный UI при отправке с вложением** — после записи файла на диск и до `StateHasChanged()` нужно добавить attachment entities в `_messageAttachments[msgId]`. Иначе картинка не появится до перезапуска (актуально для обоих путей: `ChatList.razor.cs` и `ChatView.razor`).
+12. **Optimistic UI on send with attachment** — after writing the file to disk and before `StateHasChanged()`, add attachment entities to `_messageAttachments[msgId]`. Otherwise the image won't appear until restart (applies to both `ChatList.razor.cs` and `ChatView.razor`).
 
-13. **`version.txt` в Dockerfile** — должен копироваться вместе с `.csproj` перед `dotnet restore`. MSBuild вычисляет `<Version>` из `version.txt` при парсинге `.csproj`, а не при компиляции.
+13. **`version.txt` in Dockerfile** — must be copied alongside `.csproj` before `dotnet restore`. MSBuild computes `<Version>` from `version.txt` when parsing `.csproj`, not at compile time.
 
-14. **`TaskScheduler.UnobservedTaskException` на Android** — без `SetObserved()` необработанное исключение в `Task.Run` через некоторое время убивает процесс во время GC. Обязательно регистрируй в `MainApplication`.
+14. **`TaskScheduler.UnobservedTaskException` on Android** — without `SetObserved()`, an unhandled exception in `Task.Run` eventually kills the process during GC. Always register in `MainApplication`.
 
-15. **`PRAGMA foreign_keys` внутри транзакции EF** — SQLite молча игнорирует `PRAGMA foreign_keys = OFF/ON` внутри активной транзакции. Для миграций, требующих пересборки таблиц с FK, используй `migrationBuilder.Sql("PRAGMA ...", suppressTransaction: true)` — EF коммитит транзакцию перед выполнением.
+15. **`PRAGMA foreign_keys` inside an EF transaction** — SQLite silently ignores `PRAGMA foreign_keys = OFF/ON` inside an active transaction. For migrations that need to reconstruct tables with FKs, use `migrationBuilder.Sql("PRAGMA ...", suppressTransaction: true)` — EF commits the transaction before execution.
 
-16. **`Contact.Split('@')[0]` — никогда** — префикс email не является именем пользователя. Для отображения используй `DisplayName ?? полный_email`. Fallback `Split('@')[0]` удалён из всего кодовой базы.
+16. **`email.Split('@')[0]` — never** — the email prefix is not a user name. Use `DisplayName ?? full_email` for display. The `Split('@')[0]` fallback has been removed from the entire codebase.
 
-17. **EF Value Converter не срабатывает при чтении через `SELECT`** — конвертеры (например, шифрование паролей) применяются только при записи через EF. Чтение raw-значений для проверки `IsProtected()` требует прямого `SqliteConnection`, не `DbContext`.
+17. **EF Value Converter does not fire on raw `SELECT`** — converters (e.g. credential encryption) are only applied when writing through EF. Reading raw values to check `IsProtected()` requires a direct `SqliteConnection`, not a `DbContext`.
 
-18. **`GroupMember.DisplayName` — источник правды для имён в группе** — не делай лукап в `Contacts` когда нужно имя участника группы. Contacts может не знать о человеке (добавлен другим участником). `GroupMember.DisplayName` заполняется из протокола и всегда актуален.
+18. **`GroupMember.DisplayName` — source of truth for group member names** — do not look up `Contacts` when you need a group member's name. The contact may not be known (added by another member). `GroupMember.DisplayName` is populated from the protocol and is always up to date.

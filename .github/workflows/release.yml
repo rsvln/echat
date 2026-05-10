@@ -179,8 +179,8 @@ jobs:
           body: |
             ## εChat v${{ env.VERSION }}
 
-            **Windows** → скачай `EChat-win.zip`, распакуй, запусти `echat.exe`
-            **Android** → скачай `EChat.apk`, разреши установку из неизвестных источников
+            **Windows** → download `EChat-win.zip`, extract, run `echat.exe`
+            **Android** → download `EChat.apk`, allow installation from unknown sources
             **Docker**:
             ```bash
             docker run -d --name echat --restart unless-stopped \

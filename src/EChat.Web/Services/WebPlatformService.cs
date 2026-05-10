@@ -34,4 +34,9 @@ public class WebPlatformService : IPlatformService
     public bool SupportsBackgroundNotificationToggle => false;
     public Task SetBackgroundNotificationVisibleAsync(bool visible) => Task.CompletedTask;
     public Task OpenBatteryOptimizationSettingsAsync() => Task.CompletedTask;
+
+    // Updates — Web users pull a new Docker image manually; no in-app install
+    public bool SupportsInAppUpdate => false;
+    public Task ApplyUpdateAsync(string downloadUrl, string version, Action<double>? onProgress = null)
+        => Task.CompletedTask;
 }

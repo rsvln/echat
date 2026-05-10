@@ -1,0 +1,183 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write   # создавать теги и Release
+  packages: write   # пушить в GitHub Container Registry
+
+jobs:
+
+  # ── Читаем версию из version.txt, проверяем нужна ли сборка ──────────────
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: read
+        run: |
+          VERSION=$(cat src/EChat.MAUI/version.txt | tr -d '[:space:]')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Check if tag already exists
+        id: check
+        run: |
+          VERSION=${{ steps.read.outputs.version }}
+          if git tag | grep -qx "v$VERSION"; then
+            echo "Tag v$VERSION already exists — skipping build"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version v$VERSION — building"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  # ── Windows desktop ───────────────────────────────────────────────────────
+  build-windows:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install MAUI workload
+        run: dotnet workload install maui-windows
+
+      - name: Publish
+        run: >
+          dotnet publish src/EChat.MAUI/EChat.MAUI.csproj
+          -f net10.0-windows10.0.19041.0
+          -c Release
+          -p:WindowsPackageType=None
+          -o pub/win
+
+      - name: ZIP
+        run: Compress-Archive -Path pub/win/* -DestinationPath EChat-win.zip
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: EChat-win.zip
+
+  # ── Android APK ───────────────────────────────────────────────────────────
+  build-android:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install MAUI workload
+        run: dotnet workload install maui-android
+
+      - name: Decode keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > echat.jks
+
+      - name: Publish APK
+        run: >
+          dotnet publish src/EChat.MAUI/EChat.MAUI.csproj
+          -f net10.0-android
+          -c Release
+          -p:AndroidSigningKeyStore=${{ github.workspace }}/echat.jks
+          -p:AndroidSigningKeyAlias=${{ secrets.KEY_ALIAS }}
+          -p:AndroidSigningKeyPass=${{ secrets.KEY_PASSWORD }}
+          -p:AndroidSigningStorePass=${{ secrets.KEYSTORE_PASSWORD }}
+          -o pub/android
+
+      - name: Rename APK
+        run: find pub/android -name "*.apk" | head -1 | xargs -I{} cp {} EChat.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: EChat.apk
+
+  # ── Docker → GitHub Container Registry (ghcr.io) ─────────────────────────
+  build-docker:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/echatweb
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: src/EChat.Web/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── GitHub Release ────────────────────────────────────────────────────────
+  create-release:
+    needs: [check-version, build-windows, build-android, build-docker]
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag v${{ env.VERSION }}
+          git push origin v${{ env.VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: εChat v${{ env.VERSION }}
+          files: |
+            artifacts/EChat-win.zip
+            artifacts/EChat.apk
+          body: |
+            ## εChat v${{ env.VERSION }}
+
+            **Windows** → скачай `EChat-win.zip`, распакуй, запусти `echat.exe`
+            **Android** → скачай `EChat.apk`, разреши установку из неизвестных источников
+            **Docker**:
+            ```bash
+            docker run -d --name echat --restart unless-stopped \
+              -p 9999:8080 -v /your/data:/app/data \
+              ghcr.io/${{ github.repository_owner }}/echatweb:${{ env.VERSION }}
+            ```

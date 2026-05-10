@@ -365,6 +365,9 @@ FodyWeavers.xsd
 # EChat publish output
 pub/
 
+# Android signing keystore — never commit this
+*.jks
+
 # Source hash files used by bump-versions.ps1 to detect changes since last publish
 .src-hash
 

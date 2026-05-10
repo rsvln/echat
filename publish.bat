@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 chcp 65001 >nul
 
 set REGISTRY_LOCAL=192.168.11.44:5000
-set REGISTRY_HUB=rsvln
+set REGISTRY_GHCR=ghcr.io/rsvln
 set IMAGE_NAME=echatweb
 set MAUI_PROJ=src\EChat.MAUI\EChat.Maui.csproj
 set PUB=%~dp0pub
@@ -163,14 +163,14 @@ if errorlevel 1 (
     echo   OK: %REGISTRY_LOCAL%/%IMAGE_NAME%:latest
 )
 
-:: Tag and push to Docker Hub
-docker tag %IMAGE_NAME%:latest %REGISTRY_HUB%/%IMAGE_NAME%:latest
-docker push %REGISTRY_HUB%/%IMAGE_NAME%:latest
+:: Tag and push to GitHub Container Registry
+docker tag %IMAGE_NAME%:latest %REGISTRY_GHCR%/%IMAGE_NAME%:latest
+docker push %REGISTRY_GHCR%/%IMAGE_NAME%:latest
 if errorlevel 1 (
-    echo   FAILED: push to Docker Hub ^(%REGISTRY_HUB%/%IMAGE_NAME%^)
+    echo   FAILED: push to GHCR ^(%REGISTRY_GHCR%/%IMAGE_NAME%^)
     set /a ERRORS+=1
 ) else (
-    echo   OK: %REGISTRY_HUB%/%IMAGE_NAME%:latest
+    echo   OK: %REGISTRY_GHCR%/%IMAGE_NAME%:latest
 )
 
 :: -------------------------------------------
@@ -185,7 +185,7 @@ echo Writing docker-compose.yml to distr...
     echo.
     echo   echat-web:
     echo     restart: unless-stopped
-    echo     image: %REGISTRY_HUB%/%IMAGE_NAME%:latest
+    echo     image: %REGISTRY_GHCR%/%IMAGE_NAME%:latest
     echo     container_name: echat
     echo     privileged: true
     echo     volumes:

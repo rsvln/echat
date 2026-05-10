@@ -55,7 +55,7 @@ docker run -d \
   --restart unless-stopped \
   -p 9999:8080 \
   -v /your/data/path:/app/data \
-  rsvln/echatweb:latest
+  ghcr.io/rsvln/echatweb:latest
 ```
 
 Или используйте `docker-compose.yml` из Releases. Откройте `http://your-server:9999`.

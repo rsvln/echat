@@ -57,7 +57,7 @@ jobs:
 
       - name: Publish
         run: >
-          dotnet publish src/EChat.MAUI/EChat.MAUI.csproj
+          dotnet publish src/EChat.MAUI/EChat.Maui.csproj
           -f net10.0-windows10.0.19041.0
           -c Release
           -p:WindowsPackageType=None
@@ -92,7 +92,7 @@ jobs:
 
       - name: Publish APK
         run: >
-          dotnet publish src/EChat.MAUI/EChat.MAUI.csproj
+          dotnet publish src/EChat.MAUI/EChat.Maui.csproj
           -f net10.0-android
           -c Release
           -p:AndroidSigningKeyStore=${{ github.workspace }}/echat.jks

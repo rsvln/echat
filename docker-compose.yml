@@ -3,7 +3,7 @@ services:
 
   echat-web:
     restart: unless-stopped
-    image: rsvln/echatweb:latest
+    image: ghcr.io/rsvln/echatweb:latest
     container_name: echat
     privileged: true
     volumes:

@@ -1,51 +1,52 @@
 # εChat
 
-Мессенджер поверх обычной электронной почты. Никаких серверов, никакой регистрации — только ваши почтовые ящики.
+A messenger built on top of ordinary email. No servers, no registration — just your own mailboxes.
 
-## Как это работает
+## How it works
 
-εChat использует ваш обычный email-аккаунт как транспорт. Сообщения уходят как письма через SMTP и приходят через IMAP. Для получателя это обычное письмо с темой `[eChat]`, но εChat показывает их как чат. Опционально — сквозное шифрование PGP.
+εChat uses your regular email account as a transport layer. Messages are sent as emails via SMTP and received via IMAP. To any outside observer it's a normal email with subject `[eChat]`, but εChat displays them as a chat. End-to-end PGP encryption is optional and automatic.
 
-Ничего не хранится на сторонних серверах. Все данные — в SQLite-базе на вашем устройстве.
+Nothing is stored on third-party servers. All data lives in a SQLite database on your device.
 
-## Возможности
+## Features
 
-- Личные и групповые чаты
-- Сквозное шифрование PGP (ключи генерируются автоматически, обмен через зашифрованный invite-поток)
-- Вложения: фото и файлы
-- Ответы на сообщения, редактирование, удаление
-- Реакции emoji
-- Мульти-аккаунт (несколько почтовых ящиков)
-- Синхронизация между устройствами
-- Уведомления о прочтении
-- Поиск по чатам
-- Архив и mute чатов
-- Управление контактами: блокировка, заметки, редактирование имени
-- Контекстное меню (правая кнопка мыши на десктопе)
-- Профили синхронизации: Real-time / Balanced / PowerSaver / Manual
-- Тихие часы (Quiet Hours) с отдельным профилем синхронизации
-- Просмотр картинок с pinch-to-zoom и двойным тапом (мобильные платформы)
-- Резервное копирование и восстановление с поддержкой зашифрованных бэкапов
+- Direct and group chats
+- End-to-end PGP encryption (keys generated automatically, exchanged via encrypted invite flow)
+- Attachments: photos and files
+- Reply, edit, delete messages
+- Emoji reactions
+- Multi-account (multiple mailboxes)
+- Cross-device synchronisation
+- Read receipts
+- Chat search
+- Archive and mute chats
+- Contact management: block, notes, rename
+- Context menu (right-click on desktop)
+- Sync profiles: Real-time / Balanced / PowerSaver / Manual
+- Quiet Hours with a dedicated sync profile
+- Image viewer with pinch-to-zoom and double-tap (mobile)
+- Backup and restore with encrypted backup support
+- In-app update (Windows and Android)
 
-## Платформы
+## Platforms
 
-| Платформа | Статус |
+| Platform | Status |
 |---|---|
-| Windows 10/11 | ✅ Готово |
-| Android 7.0+ | ✅ Готово |
-| Web (Docker) | ✅ Готово |
-| iOS | 🔜 Планируется |
+| Windows 10/11 | ✅ Ready |
+| Android 7.0+ | ✅ Ready |
+| Web (Docker) | ✅ Ready |
+| iOS | 🔜 Planned |
 
-## Установка
+## Installation
 
 ### Windows
 
-1. Скачайте `EChat-win.zip` из раздела Releases
-2. Распакуйте, запустите `echat.exe`
+1. Download `EChat-win.zip` from the Releases page
+2. Extract and run `echat.exe`
 
 ### Android
 
-Скачайте `EChat.apk`, разрешите установку из неизвестных источников, установите.
+Download `EChat.apk`, allow installation from unknown sources, install.
 
 ### Web / Docker
 
@@ -58,49 +59,47 @@ docker run -d \
   ghcr.io/rsvln/echatweb:latest
 ```
 
-Или используйте `docker-compose.yml` из Releases. Откройте `http://your-server:9999`.
+Or use the `docker-compose.yml` from the Releases page. Open `http://your-server:9999`.
 
-## Быстрый старт
+## Quick start
 
-1. Откройте приложение → нажмите **+** (добавить аккаунт)
-2. Введите email и пароль (для Gmail — пароль приложения)
-3. IMAP/SMTP серверы определяются автоматически для популярных провайдеров
-4. Нажмите **Сохранить** — приложение подключится
-5. Нажмите **+** → вкладка **My Invite**: скопируйте инвайт-код и передайте собеседнику (или поделитесь ссылкой)
-6. Собеседник вводит код во вкладке **Add Contact** — εChat обменяется ключами и создаст чат
+1. Open the app → tap **+** (add account)
+2. Enter your email and password (for Gmail use an App Password)
+3. IMAP/SMTP servers are detected automatically for popular providers
+4. Tap **Save** — the app connects
+5. Tap **+** → **My Invite** tab: copy your invite code and share it with a contact
+6. Your contact enters the code in the **Add Contact** tab — εChat exchanges keys and creates the chat
 
-Собеседник получит ваше первое сообщение как обычное письмо. Если у него тоже εChat — увидит в чате. Если нет — сможет ответить обычным письмом.
+Your first message arrives as a normal email. If the recipient uses εChat they see it in the chat. If not, they can reply by regular email.
 
-## Поддерживаемые провайдеры
+## Supported providers
 
-Автоматическое определение настроек:
+Auto-detection is available for:
 
-- Gmail (нужен пароль приложения + IMAP включён)
-- Яндекс.Почта
+- Gmail (requires App Password + IMAP enabled)
+- Yandex Mail
 - Mail.ru
 - Outlook / Hotmail / Live
-- iCloud (нужен пароль приложения)
-- Любой провайдер с ручным вводом серверов
+- iCloud (requires App Password)
+- Any provider via manual server entry
 
-## Настройки (Settings → Appearance)
+## Android-specific settings (Settings → Appearance)
 
-На Android доступны дополнительные кнопки:
+- **BG notify** — show or hide the persistent "Running in background" notification in the status bar. Background sync is unaffected — only the notification visibility changes
+- **Battery** — opens the system dialog to disable battery optimisation for εChat (recommended for reliable background operation)
 
-- **BG notify** — включить / выключить постоянное уведомление «Running in background» в шторке. Фоновая работа не затрагивается — только видимость уведомления
-- **Battery** — открывает системный диалог для отключения оптимизации батареи для εChat (рекомендуется для надёжной фоновой работы)
+## Data and privacy
 
-## Данные и конфиденциальность
+- No εChat server — everything is stored locally on your device
+- Database: SQLite file on device (Windows: `%LocalAppData%\echat\`, Android: app external storage)
+- Logs: `log/` folder next to the database, up to 20 files × 5 MB each, level configurable in Settings
+- PGP keys are generated automatically and stored in the database
+- Key exchange during first contact uses an AES-256-GCM encrypted channel (key = SHA-256 of the invite token) — the public key is never transmitted in plaintext
+- Credentials (IMAP passwords, private PGP keys) are protected by DPAPI (Windows) or Android Keystore
+- Backup: Settings → Backup (encrypted backups supported)
 
-- Нет сервера εChat — всё хранится у вас
-- База данных: SQLite-файл на устройстве (Windows: `%LocalAppData%\echat\`, Android: внешнее хранилище приложения)
-- Логи: папка `log/` рядом с базой, до 20 файлов по 5 МБ, уровень настраивается в Settings
-- PGP-ключи генерируются автоматически, хранятся в базе
-- Обмен ключами при знакомстве — через зашифрованный AES-256-GCM канал (ключ = SHA-256 от invite-токена). Публичный ключ никогда не передаётся открыто
-- Credentials (пароли IMAP, приватные PGP-ключи) защищены DPAPI (Windows) или Android Keystore
-- Резервная копия: Settings → Backup (поддерживаются зашифрованные бэкапы)
+## Known limitations
 
-## Известные ограничения
-
-- Скорость доставки зависит от провайдера (обычно секунды при IMAP IDLE)
-- Лимиты отправки у публичных провайдеров: ~500 писем/день у Gmail. При превышении сообщения автоматически уйдут при следующем запуске
-- Групповые чаты: все участники должны использовать εChat
+- Delivery speed depends on the provider (typically seconds with IMAP IDLE)
+- Public provider sending limits apply: ~500 emails/day for Gmail. Messages that exceed the limit are retried automatically on the next launch
+- Group chats require all participants to use εChat

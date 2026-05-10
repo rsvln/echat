@@ -59,6 +59,9 @@ public static class ServiceCollectionExtensions
         // Invite / key-exchange
         services.AddSingleton<InviteService>();
 
+        // Updates
+        services.AddSingleton<UpdateService>();
+
         // Event bus & app-level services
         services.AddSingleton<ChatEventService>();
         services.AddSingleton<IncomingMessageService>();

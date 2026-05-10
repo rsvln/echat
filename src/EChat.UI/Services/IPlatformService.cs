@@ -74,8 +74,22 @@ public interface IPlatformService
     Task SetBackgroundNotificationVisibleAsync(bool visible);
 
     /// <summary>
-    /// Открывает системный диалог отключения оптимизации батареи для этого приложения (Android).
-    /// На других платформах — no-op.
+    /// Opens the system battery optimisation dialog for this app (Android).
+    /// No-op on other platforms.
     /// </summary>
     Task OpenBatteryOptimizationSettingsAsync();
+
+    /// <summary>
+    /// True on Windows and Android — the app can download and install its own update.
+    /// False on iOS (App Store policy) and Web (pull a new Docker image instead).
+    /// </summary>
+    bool SupportsInAppUpdate { get; }
+
+    /// <summary>
+    /// Downloads the update from <paramref name="downloadUrl"/> and installs it.
+    /// Windows: extracts the ZIP next to the running exe, launches an updater batch script, then quits.
+    /// Android: downloads the APK and fires the system install intent.
+    /// <paramref name="onProgress"/> receives a 0–1 fraction as bytes arrive.
+    /// </summary>
+    Task ApplyUpdateAsync(string downloadUrl, string version, Action<double>? onProgress = null);
 }

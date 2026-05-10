@@ -1,11 +1,12 @@
 @page "/about"
 @using EChat.Core.Services
 @using EChat.Core.Data
-@using Microsoft.EntityFrameworkCore
-@using Microsoft.Extensions.DependencyInjection
+@using EChat.UI.Services
 @inject NavigationManager Navigation
 @inject IServiceScopeFactory ScopeFactory
 @inject EChat.Core.ServiceCollectionExtensions.DatabasePathInfo DbPathInfo
+@inject UpdateService UpdateSvc
+@inject IPlatformService Platform
 
 <div class="settings-page">
     <div class="settings-page-header">
@@ -14,6 +15,93 @@
     </div>
 
     <div class="settings-body">
+
+        @* ── Updates ─────────────────────────────────────────────────────── *@
+        <div class="settings-section">
+            <h2>Updates</h2>
+
+            @if (!_checkDone)
+            {
+                <div class="settings-info-row">
+                    <span class="settings-info-label">Status</span>
+                    <span style="color:var(--text-secondary)">Checking…</span>
+                </div>
+            }
+            else if (_checkError != null)
+            {
+                <div class="settings-info-row">
+                    <span class="settings-info-label">Status</span>
+                    <span style="color:var(--text-secondary)">@_checkError</span>
+                </div>
+            }
+            else if (_updateInfo == null)
+            {
+                <div class="settings-info-row">
+                    <span class="settings-info-label">Status</span>
+                    <span style="color:#4caf50">Up to date (v@VersionInfo.AppVersion)</span>
+                </div>
+            }
+            else
+            {
+                <div class="settings-info-row">
+                    <span class="settings-info-label">Available</span>
+                    <span style="color:var(--primary); font-weight:600">v@(_updateInfo.Version)</span>
+                </div>
+
+                @if (_downloading)
+                {
+                    <div class="settings-info-row" style="flex-direction:column; align-items:stretch; gap:6px;">
+                        <span style="color:var(--text-secondary); font-size:13px;">
+                            Downloading… @((_downloadProgress * 100).ToString("F0", System.Globalization.CultureInfo.InvariantCulture))%
+                        </span>
+                        <div style="background:var(--surface); border-radius:4px; height:4px; overflow:hidden;">
+                            <div style="@_progressBarStyle"></div>
+                        </div>
+                    </div>
+                }
+                else if (_installError != null)
+                {
+                    <div class="settings-info-row" style="color:#f44336; font-size:13px;">
+                        @_installError
+                    </div>
+                }
+
+                @if (!_downloading)
+                {
+                    @if (Platform.SupportsInAppUpdate && _downloadUrl != null)
+                    {
+                        <div class="settings-info-row" style="margin-top:4px;">
+                            <button class="setup-btn-primary" @onclick="InstallUpdateAsync">
+                                Install v@(_updateInfo.Version)
+                            </button>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="settings-info-row" style="margin-top:4px;">
+                            <a href="@(VersionInfo.ProjectUrl)/releases/latest"
+                               target="_blank"
+                               style="color:var(--primary); text-decoration:none;">
+                                View release on GitHub →
+                            </a>
+                        </div>
+                    }
+                }
+            }
+
+            @if (_checkDone && !_downloading)
+            {
+                <div class="settings-info-row" style="margin-top:4px;">
+                    <button class="setup-btn-secondary"
+                            style="padding: 6px 14px; font-size:13px;"
+                            @onclick="ReCheckAsync">
+                        Check again
+                    </button>
+                </div>
+            }
+        </div>
+
+        @* ── App info ─────────────────────────────────────────────────────── *@
         <div class="settings-section">
             <h2>εChat (epsilon Chat)</h2>
 
@@ -56,11 +144,83 @@
             <div class="settings-info-row">
                 <a href="@VersionInfo.ProjectUrl" target="_blank" style="color:var(--primary);text-decoration:none;">@VersionInfo.ProjectUrl</a>
             </div>
-
         </div>
+
     </div>
 </div>
 
 @code {
+    private UpdateInfo? _updateInfo;
+    private bool        _checkDone;
+    private string?     _checkError;
+    private bool        _downloading;
+    private double      _downloadProgress;
+    private string?     _installError;
+    private string?     _downloadUrl;
+
+    private string _progressBarStyle =>
+        $"background:var(--primary); height:100%; " +
+        $"width:{(_downloadProgress * 100).ToString("F0", System.Globalization.CultureInfo.InvariantCulture)}%; " +
+        $"transition:width 0.15s;";
+
+    protected override void OnInitialized()
+    {
+        // Kick off the update check without blocking render
+        _ = CheckAsync();
+    }
+
+    private async Task CheckAsync()
+    {
+        _checkDone = false;
+        _checkError = null;
+        try
+        {
+            _updateInfo = await UpdateSvc.CheckAsync();
+            _downloadUrl = Platform.IsDesktop && Platform.SupportsMauiFilePicker
+                ? _updateInfo?.WindowsDownloadUrl
+                : _updateInfo?.AndroidDownloadUrl;
+        }
+        catch (Exception ex)
+        {
+            _checkError = $"Could not check for updates: {ex.Message}";
+        }
+        _checkDone = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ReCheckAsync()
+    {
+        UpdateSvc.InvalidateCache();
+        _updateInfo    = null;
+        _installError  = null;
+        await CheckAsync();
+    }
+
+    private async Task InstallUpdateAsync()
+    {
+        if (_downloadUrl == null) return;
+        _downloading      = true;
+        _downloadProgress = 0;
+        _installError     = null;
+        StateHasChanged();
+        try
+        {
+            await Platform.ApplyUpdateAsync(
+                _downloadUrl,
+                _updateInfo!.Version,
+                progress =>
+                {
+                    _downloadProgress = progress;
+                    _ = InvokeAsync(StateHasChanged);
+                });
+        }
+        catch (Exception ex)
+        {
+            _installError = $"Update failed: {ex.Message}";
+            _downloading  = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
     private void GoBack() => Navigation.NavigateTo("/chats");
 }

@@ -35,6 +35,7 @@ public partial class NewChatModal
     private string myInviteCode = string.Empty;
     private string myInviteLink = string.Empty;
     private MarkupString myInviteQr;
+    private bool _isGenerating;
 
     private IEnumerable<Contact> contactsWithKeys =>
         allContacts.Where(c =>
@@ -106,6 +107,13 @@ public partial class NewChatModal
         newChatError = string.Empty;
     }
 
+    private async Task RegenerateInviteAsync()
+    {
+        if (_isGenerating) return;
+        copied = string.Empty;
+        await BuildMyInviteAsync();
+    }
+
     /// <summary>
     /// Generates a fresh one-time invite token and builds the QR / link.
     /// Called every time the modal opens so each share produces a new token.
@@ -114,6 +122,8 @@ public partial class NewChatModal
     {
         if (ActiveAccount == null || string.IsNullOrEmpty(ActiveAccountId)) return;
 
+        _isGenerating = true;
+        StateHasChanged();
         try
         {
             var (formattedToken, _) = await InviteService.GenerateAsync(ActiveAccountId);
@@ -121,16 +131,14 @@ public partial class NewChatModal
         }
         catch
         {
-            myInviteCode = "?????-?????";
+            myInviteCode = "?????-?????-?????-?????-?????-?????";
         }
 
         var tokenRaw  = EChat.Core.Services.InviteService.Normalize(myInviteCode);
         var email     = Uri.EscapeDataString(ActiveAccount.Email);
         var name      = Uri.EscapeDataString(ActiveAccount.DisplayName);
-        // Include public key so recipient can encrypt their first message back
-        var pubKey    = Uri.EscapeDataString(ActiveAccount.PublicKey ?? "");
-        myInviteLink  = $"echat://invite?e={email}&n={name}&t={tokenRaw}"
-                      + (string.IsNullOrEmpty(pubKey) ? "" : $"&k={pubKey}");
+        // pubKey is no longer in the URL — it travels encrypted in the first email
+        myInviteLink  = $"echat://invite?e={email}&n={name}&t={tokenRaw}";
 
         try
         {
@@ -143,9 +151,13 @@ public partial class NewChatModal
         {
             myInviteQr = new MarkupString("<div style='color:#aaa;text-align:center;padding:20px'>QR unavailable</div>");
         }
+
+        _isGenerating = false;
     }
 
-    private async Task CopyToClipboard(string text)
+    private Task CopyToClipboard(string text) => CopyToClipboard(text, "link");
+
+    private async Task CopyToClipboard(string text, string what)
     {
         try
         {
@@ -157,7 +169,7 @@ public partial class NewChatModal
                 $"(function(){{var t=document.createElement('textarea');t.value={System.Text.Json.JsonSerializer.Serialize(text)};document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);}})()");
         }
 
-        copied = "link";
+        copied = what;
         StateHasChanged();
         await Task.Delay(1500);
         copied = string.Empty;
@@ -217,7 +229,7 @@ public partial class NewChatModal
                               StringComparer.OrdinalIgnoreCase);
             email           = pairs.GetValueOrDefault("e", string.Empty);
             displayName     = pairs.GetValueOrDefault("n", string.Empty);
-            invitePublicKey = pairs.GetValueOrDefault("k");
+            invitePublicKey = null; // pubKey no longer in URL — arrives encrypted in first email
 
             // Parse one-time invite token (t=) if present
             var rawToken = pairs.GetValueOrDefault("t");
@@ -242,12 +254,15 @@ public partial class NewChatModal
 
     private async Task CreateChatFromCodeAndEmail(string code, string email)
     {
-        if (!System.Text.RegularExpressions.Regex.IsMatch(code, @"^[A-Z0-9]{5}-[A-Z0-9]{5}$",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        // Accept both formatted (with dashes) and plain (no dashes) codes
+        var normalizedCode = EChat.Core.Services.InviteService.Normalize(code);
+        if (normalizedCode.Length != 30 ||
+            !normalizedCode.All(c => char.IsLetterOrDigit(c)))
         {
-            newChatError = "Invite code format: XXXXX-XXXXX (letters and digits).";
+            newChatError = "Invalid invite code (30 alphanumeric characters expected).";
             return;
         }
+        code = normalizedCode; // use normalized form for storage
 
         if (string.IsNullOrEmpty(email) || !email.Contains('@'))
         {

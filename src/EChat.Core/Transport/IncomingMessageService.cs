@@ -682,25 +682,38 @@ public class IncomingMessageService
     private async Task HandleInviteTokenAsync(ChatDbContext db, ParsedMessage pm,
         string accountId, string accountEmail, string logAcct)
     {
-        var token     = pm.Headers.InviteToken!;
-        var hmac      = pm.Headers.InviteHmac ?? "";
-        var senderKey = pm.Headers.SenderPublicKey;
+        var token        = pm.Headers.InviteToken!;
+        var encryptedKey = pm.Headers.EncryptedContactKey;
 
-        bool hmacValid = !string.IsNullOrEmpty(senderKey) &&
-            InviteService.VerifyHmac(token, hmac, senderKey, accountEmail);
+        if (string.IsNullOrEmpty(encryptedKey))
+        {
+            _fileLogger.Write("WARN", "HandleInvite",
+                $"[{logAcct}] InviteToken from {pm.Sender}: missing Initial-Contact-Key-Exchange header — invite ignored");
+            return;
+        }
 
-        _fileLogger.Write("INFO", "HandleInvite",
-            $"[{logAcct}] InviteToken from {pm.Sender}: hmacValid={hmacValid}, hasSenderKey={!string.IsNullOrEmpty(senderKey)}");
+        // Decrypt sender's public key using the token as symmetric key (AES-256-GCM).
+        // Decryption failure means wrong token or tampered data — do NOT consume the token.
+        string senderKey;
+        try
+        {
+            senderKey = InviteService.DecryptPubKey(encryptedKey, token);
+        }
+        catch (Exception ex)
+        {
+            _fileLogger.Write("WARN", "HandleInvite",
+                $"[{logAcct}] InviteToken from {pm.Sender}: failed to decrypt contact key: {ex.Message}");
+            return;
+        }
 
-        if (!hmacValid) return;
-
+        // Token validated + decryption OK — now burn the token (idempotent on replay).
         bool consumed = await _inviteService.VerifyAndConsumeAsync(token, accountId);
         _fileLogger.Write(consumed ? "INFO" : "WARN", "HandleInvite",
             $"[{logAcct}] Token consumed={consumed}");
 
-        if (!consumed || string.IsNullOrEmpty(senderKey) || string.IsNullOrEmpty(pm.Sender)) return;
+        if (!consumed || string.IsNullOrEmpty(pm.Sender)) return;
 
-        // Token is valid and burned — trust the sender's public key
+        // Token is valid and burned — trust the decrypted public key
         var contact = await db.Contacts.FindAsync(accountId, pm.Sender);
         if (contact == null)
         {
@@ -720,7 +733,7 @@ public class IncomingMessageService
             contact.Verified  = true;
         }
         _fileLogger.Write("INFO", "HandleInvite",
-            $"[{logAcct}] Contact {pm.Sender} marked Verified with sender's public key");
+            $"[{logAcct}] Contact {pm.Sender} marked Verified with decrypted public key");
     }
 
     private async Task HandleGroupCreateAsync(

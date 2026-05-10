@@ -58,10 +58,8 @@ public partial class App : Application
                 var account = accounts.FirstOrDefault(a => a.IsActive) ?? accounts.FirstOrDefault();
                 if (account == null) return;
 
-                var deviceId = Microsoft.Maui.Storage.Preferences.Get("device_id", string.Empty);
-
                 var userCtx = serviceProvider.GetRequiredService<UserContextService>();
-                userCtx.Initialize(account.AccountId, account.Email, deviceId);
+                userCtx.Initialize(account.AccountId, account.Email);
 
                 // Load sync settings for this account
                 var syncEngine = serviceProvider.GetRequiredService<EChat.Core.Sync.SyncEngine>();
@@ -111,7 +109,7 @@ public partial class App : Application
 
                 try
                 {
-                    await transport.ReconnectAsync(account, deviceId);
+                    await transport.ReconnectAsync(account);
                 }
                 catch (Exception ex)
                 {

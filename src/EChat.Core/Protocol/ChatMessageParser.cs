@@ -64,25 +64,12 @@ public class ChatMessageParser
         headers.ReadOf = ParseList(email.Headers["Chat-Read-Of"]);
 
         headers.SyncType = email.Headers["Chat-Sync-Type"];
-        headers.SyncDeviceId = email.Headers["Chat-Sync-Device-ID"];
 
         headers.SystemType = email.Headers["Chat-System-Type"];
 
-        // Autocrypt: extract sender's base64 public key for invite HMAC verification
-        var autocrypt = email.Headers["Autocrypt"];
-        if (!string.IsNullOrEmpty(autocrypt))
-        {
-            var km = System.Text.RegularExpressions.Regex.Match(
-                autocrypt, @"keydata=([A-Za-z0-9+/=\s]+)",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (km.Success)
-                headers.SenderPublicKey = km.Groups[1].Value
-                    .Replace(" ", "").Replace("\t", "").Replace("\r", "").Replace("\n", "");
-        }
-
         // Invite / key-exchange
-        headers.InviteToken = email.Headers["Chat-Invite-Token"];
-        headers.InviteHmac  = email.Headers["Chat-Invite-HMAC"];
+        headers.InviteToken        = email.Headers["Chat-Invite-Token"];
+        headers.EncryptedContactKey = email.Headers["Initial-Contact-Key-Exchange"];
 
         return headers;
     }
@@ -262,8 +249,6 @@ public class ChatMessageParser
 
         if (innerHeaders.TryGetValue("Chat-Sync-Type", out var syncType))
             msg.Headers.SyncType = syncType;
-        if (innerHeaders.TryGetValue("Chat-Sync-Device-ID", out var syncDevId))
-            msg.Headers.SyncDeviceId = syncDevId;
 
         // Body is everything after the blank separator line
         var fullBody = contentStart < lines.Length

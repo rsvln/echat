@@ -39,15 +39,10 @@ var dbDir = Path.Combine(dataDir, "db");
 Directory.CreateDirectory(dbDir);
 var dbPath = Path.Combine(dbDir, "echat.db");
 
-// Device ID — generated once and persisted in the Settings table via DbAppPreferences.
-// On first run before the DB is ready, generate a new ID and pass it to AddEChatCore;
-// InitializeEChatDatabaseAsync will seed it into the DB if absent.
-var deviceId = Guid.NewGuid().ToString();
-
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddEChatCore(dbPath, deviceId);
+builder.Services.AddEChatCore(dbPath);
 builder.Services.AddSingleton<UserContextService>();
 builder.Services.AddSingleton<IPlatformService, WebPlatformService>();
 
@@ -69,10 +64,6 @@ _ = Task.Run(async () =>
 {
     await app.Services.InitializeEChatDatabaseAsync();
 
-    // After DB init, device_id is seeded; read it back for transport use
-    var resolvedDeviceId = app.Services.GetRequiredService<EChat.Core.Services.IAppPreferences>()
-        .Get("device_id", deviceId);
-
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
     var accounts = await db.Accounts.ToListAsync();
@@ -80,7 +71,7 @@ _ = Task.Run(async () =>
     if (account == null) return;
 
     var userCtx = app.Services.GetRequiredService<UserContextService>();
-    userCtx.Initialize(account.AccountId, account.Email, resolvedDeviceId);
+    userCtx.Initialize(account.AccountId, account.Email);
 
     var syncEngine = app.Services.GetRequiredService<EChat.Core.Sync.SyncEngine>();
     await syncEngine.LoadSettingsAsync(account.AccountId);
@@ -102,7 +93,7 @@ _ = Task.Run(async () =>
         return Task.CompletedTask;
     };
 
-    try { await transport.ReconnectAsync(account, resolvedDeviceId); }
+    try { await transport.ReconnectAsync(account); }
     catch (Exception ex)
     {
         app.Services.GetRequiredService<EChat.Core.Services.FileLogger>()

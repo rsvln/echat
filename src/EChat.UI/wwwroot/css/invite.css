@@ -43,11 +43,59 @@
 .invite-code {
     flex: 1;
     font-family: "Courier New", Consolas, monospace;
-    font-size: 18px;
+    font-size: 13px;
     font-weight: 700;
-    letter-spacing: 2px;
+    letter-spacing: 0.5px;
     color: var(--text-primary);
     text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Regenerate button */
+.invite-regen-btn {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--divider);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    padding: 0;
+}
+
+.invite-regen-btn:hover:not(:disabled) {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+}
+
+.invite-regen-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.invite-regen-spin {
+    display: inline-block;
+    font-size: 16px;
+    line-height: 1;
+    animation: invite-spin 0.8s linear infinite;
+}
+
+@keyframes invite-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+
+.invite-qr-loading svg {
+    opacity: 0.35;
+    transition: opacity 0.2s;
 }
 
 /* Invite link row */

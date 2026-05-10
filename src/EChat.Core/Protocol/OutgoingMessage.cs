@@ -30,7 +30,6 @@ public class OutgoingMessage
 
     // Device sync headers
     public string? SyncType { get; set; }
-    public string? SyncDeviceId { get; set; }
 
     // ── Invite / key-exchange ─────────────────────────────────────────────────
     /// <summary>

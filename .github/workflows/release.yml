@@ -100,6 +100,7 @@ jobs:
           dotnet publish src/EChat.MAUI/EChat.Maui.csproj \
             -f net10.0-android \
             -c Release \
+            -p:EnableWindowsTargeting=true \
             -p:AndroidSigningKeyStore="$SIGNING_STORE" \
             -p:AndroidSigningKeyAlias="$SIGNING_ALIAS" \
             -p:AndroidSigningKeyPass="$SIGNING_KEY_PASS" \

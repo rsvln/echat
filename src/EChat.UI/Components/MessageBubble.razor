@@ -41,7 +41,7 @@
             </div>
         }
 
-        <div class="message-content" style="white-space:pre-wrap;word-break:break-word;">@((MarkupString)(!string.IsNullOrEmpty(Message.FormattedContent) ? Message.FormattedContent : HtmlFormatter.Format(Message.Content)))</div>
+        <div class="message-content" style="white-space:pre-wrap;word-break:break-word;">@((MarkupString)Linkify(!string.IsNullOrEmpty(Message.FormattedContent) ? Message.FormattedContent : HtmlFormatter.Format(Message.Content)))</div>
 
         @* ── Attachments ───────────────────────────────────────────────── *@
         @if (Attachments != null && Attachments.Count > 0)
@@ -437,6 +437,34 @@
 
     private IEnumerable<Attachment> FileAttachments =>
         Attachments?.Where(a => !IsImageAttachment(a) && !IsVideoAttachment(a)) ?? Enumerable.Empty<Attachment>();
+
+    private static readonly System.Text.RegularExpressions.Regex UrlRegex =
+        new(@"https?://[^\s<>""']+", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// Wraps bare URLs in the already-HTML-formatted string with &lt;a&gt; tags.
+    /// Skips URLs that are already inside an HTML attribute (preceded by =").
+    /// Strips trailing punctuation that is likely not part of the URL.
+    /// </summary>
+    private static string Linkify(string html)
+    {
+        if (!html.Contains("http", StringComparison.OrdinalIgnoreCase)) return html;
+        return UrlRegex.Replace(html, m =>
+        {
+            // Already inside an HTML attribute — leave it alone
+            var before = html[..m.Index];
+            var lastLt  = before.LastIndexOf('<');
+            var lastGt  = before.LastIndexOf('>');
+            if (lastLt > lastGt) return m.Value;  // inside a tag
+
+            var url = m.Value;
+            // Strip trailing punctuation that is unlikely to be part of the URL
+            while (url.Length > 0 && ".,!?);:".Contains(url[^1]))
+                url = url[..^1];
+            var tail = m.Value[url.Length..];
+            return $"<a href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"msg-link\">{url}</a>{tail}";
+        });
+    }
 
     private static bool IsImageAttachment(Attachment a) =>
         a.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ?? false;

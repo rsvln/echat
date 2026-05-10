@@ -40,9 +40,8 @@
 
 ### Windows
 
-1. Скачайте `EChat-Setup-x.x.x.exe` из раздела Releases
-2. Установщик сам подтянет .NET 10 и Windows App SDK если нужно
-3. Или возьмите `EChat-win.zip`, распакуйте, запустите `echat.exe`
+1. Скачайте `EChat-win.zip` из раздела Releases
+2. Распакуйте, запустите `echat.exe`
 
 ### Android
 

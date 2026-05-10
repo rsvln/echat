@@ -215,7 +215,7 @@ if errorlevel 1 (
 )
 
 :: -------------------------------------------
-:: Git: commit version bump + push → triggers GitHub Actions release
+:: Git: commit version bump + push в†’ triggers GitHub Actions release
 :: -------------------------------------------
 echo.
 echo Pushing to GitHub (triggers CI release)...
@@ -233,7 +233,7 @@ if errorlevel 1 (
             echo   FAILED: git push
             set /a ERRORS+=1
         ) else (
-            echo   OK: pushed v%MAUI_VER% to master — GitHub Actions will build the release
+            echo   OK: pushed v%MAUI_VER% to master вЂ” GitHub Actions will build the release
         )
     )
 ) else (

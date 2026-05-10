@@ -215,6 +215,32 @@ if errorlevel 1 (
 )
 
 :: -------------------------------------------
+:: Git: commit version bump + push → triggers GitHub Actions release
+:: -------------------------------------------
+echo.
+echo Pushing to GitHub (triggers CI release)...
+set /p MAUI_VER=<src\EChat.MAUI\version.txt
+git add src\EChat.Core\version.txt src\EChat.UI\version.txt src\EChat.Web\version.txt src\EChat.MAUI\version.txt
+git diff --cached --quiet
+if errorlevel 1 (
+    git commit -m "chore: release v%MAUI_VER%"
+    if errorlevel 1 (
+        echo   FAILED: git commit
+        set /a ERRORS+=1
+    ) else (
+        git push origin master
+        if errorlevel 1 (
+            echo   FAILED: git push
+            set /a ERRORS+=1
+        ) else (
+            echo   OK: pushed v%MAUI_VER% to master — GitHub Actions will build the release
+        )
+    )
+) else (
+    echo   SKIPPED: no version changes to commit
+)
+
+:: -------------------------------------------
 :summary
 echo.
 echo ===========================================

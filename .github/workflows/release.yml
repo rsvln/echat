@@ -91,15 +91,20 @@ jobs:
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > echat.jks
 
       - name: Publish APK
-        run: >
-          dotnet publish src/EChat.MAUI/EChat.Maui.csproj
-          -f net10.0-android
-          -c Release
-          -p:AndroidSigningKeyStore=${{ github.workspace }}/echat.jks
-          -p:AndroidSigningKeyAlias=${{ secrets.KEY_ALIAS }}
-          -p:AndroidSigningKeyPass=${{ secrets.KEY_PASSWORD }}
-          -p:AndroidSigningStorePass=${{ secrets.KEYSTORE_PASSWORD }}
-          -o pub/android
+        env:
+          SIGNING_STORE: ${{ github.workspace }}/echat.jks
+          SIGNING_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SIGNING_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+          SIGNING_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          dotnet publish src/EChat.MAUI/EChat.Maui.csproj \
+            -f net10.0-android \
+            -c Release \
+            -p:AndroidSigningKeyStore="$SIGNING_STORE" \
+            -p:AndroidSigningKeyAlias="$SIGNING_ALIAS" \
+            -p:AndroidSigningKeyPass="$SIGNING_KEY_PASS" \
+            -p:AndroidSigningStorePass="$SIGNING_STORE_PASS" \
+            -o pub/android
 
       - name: Rename APK
         run: find pub/android -name "*.apk" | head -1 | xargs -I{} cp {} EChat.apk

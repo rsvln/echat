@@ -55,12 +55,16 @@ jobs:
       - name: Install MAUI workload
         run: dotnet workload install maui-windows
 
+      - name: Restore (Windows TFM only)
+        run: dotnet restore src/EChat.MAUI/EChat.Maui.csproj -f net10.0-windows10.0.19041.0
+
       - name: Publish
         run: >
           dotnet publish src/EChat.MAUI/EChat.Maui.csproj
           -f net10.0-windows10.0.19041.0
           -c Release
           -p:WindowsPackageType=None
+          --no-restore
           -o pub/win
 
       - name: ZIP

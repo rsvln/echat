@@ -55,7 +55,7 @@ public class PlatformService : IPlatformService
         savePicker.FileTypeChoices.Add(resolvedMime.Split('/').Last(), [ext]);
         savePicker.SuggestedFileName = filename;
 
-        // Привязываем к окну (обязательно для unpackaged приложений)
+        // Bind to the window (required for unpackaged apps)
         var platformWindow = (Microsoft.UI.Xaml.Window)
             Microsoft.Maui.Controls.Application.Current!.Windows[0].Handler.PlatformView!;
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(platformWindow);
@@ -65,7 +65,7 @@ public class PlatformService : IPlatformService
         if (file != null)
             await Windows.Storage.FileIO.WriteBytesAsync(file, content);
 #else
-        // Android / iOS — системный диалог шаринга/сохранения
+        // Android / iOS — system share/save dialog
         var tempPath = Path.Combine(FileSystem.CacheDirectory, filename);
         await File.WriteAllBytesAsync(tempPath, content, ct);
         await Share.Default.RequestAsync(new ShareFileRequest

@@ -10,66 +10,66 @@ public interface IPlatformService
     bool IsMobile { get; }
 
     /// <summary>
-    /// true на MAUI (FileSaver + FilePicker доступны).
-    /// false на Web (экспорт через JS download, импорт через &lt;InputFile&gt;).
+    /// true on MAUI (FileSaver + FilePicker are available).
+    /// false on Web (export via JS download, import via &lt;InputFile&gt;).
     /// </summary>
     bool SupportsMauiFilePicker { get; }
 
-    /// <summary>Сохраняет байты как файл через нативный диалог (MAUI).</summary>
+    /// <summary>Saves bytes as a file via the native save dialog (MAUI).</summary>
     Task SaveFileAsync(string filename, byte[] content, CancellationToken ct = default, string? mimeType = null, string? title = null);
 
     /// <summary>
-    /// Открывает нативный файловый пикер для выбора .zip (MAUI).
-    /// На Web возвращает null — импорт ведётся через &lt;InputFile&gt; в UI.
+    /// Opens the native file picker to select a .zip file (MAUI).
+    /// On Web returns null — import is handled via &lt;InputFile&gt; in the UI.
     /// </summary>
     Task<Stream?> PickFileAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Перезапускает приложение (MAUI).
-    /// На Web — no-op; компонент должен вызвать NavigationManager.NavigateTo("/", forceLoad:true).
+    /// Restarts the application (MAUI).
+    /// On Web — no-op; the component should call NavigationManager.NavigateTo("/", forceLoad:true).
     /// </summary>
     void RestartApp();
 
     /// <summary>
-    /// Открывает файл через нативное приложение (MAUI).
-    /// На Android показывает системный шаринг/открытие.
-    /// На Web — no-op (используй JS download в компоненте).
+    /// Opens a file with the native application (MAUI).
+    /// On Android shows the system share/open dialog.
+    /// On Web — no-op (use JS download in the component).
     /// </summary>
     Task OpenAttachmentAsync(string filePath, string fileName, string mimeType);
 
     /// <summary>
-    /// Сохраняет файл в папку Загрузки (Android) или через диалог (Windows).
-    /// На Web — no-op.
+    /// Saves a file to the Downloads folder (Android) or via a save dialog (Windows).
+    /// On Web — no-op.
     /// </summary>
     Task<bool> SaveToDownloadsAsync(string fileName, byte[] content, string mimeType);
 
     /// <summary>
-    /// true на Android (SAF ACTION_CREATE_DOCUMENT доступен).
-    /// false на Windows (там SaveFileAsync уже показывает диалог) и Web.
+    /// true on Android (SAF ACTION_CREATE_DOCUMENT is available).
+    /// false on Windows (SaveFileAsync already shows a dialog there) and Web.
     /// </summary>
     bool SupportsPickFolder { get; }
 
     /// <summary>
-    /// Открывает системный диалог выбора папки/имени файла (Android SAF) и сохраняет байты туда.
-    /// Возвращает true при успехе, false при отмене или ошибке.
+    /// Opens the system folder/filename picker (Android SAF) and saves bytes there.
+    /// Returns true on success, false on cancel or error.
     /// </summary>
     Task<bool> SaveToPickedFolderAsync(string filename, byte[] content, string mimeType, CancellationToken ct = default);
 
     /// <summary>
-    /// Обновляет счётчик непрочитанных на иконке приложения.
-    /// Windows: overlay-иконка на кнопке таскбара.
-    /// Другие платформы и Web: no-op (пока).
+    /// Updates the unread badge on the app icon.
+    /// Windows: overlay icon on the taskbar button.
+    /// Other platforms and Web: no-op (for now).
     /// </summary>
     void UpdateBadge(int totalUnread);
 
     /// <summary>
-    /// true только на Android — там есть постоянное уведомление foreground-сервиса.
+    /// true only on Android — it has a persistent foreground-service notification.
     /// </summary>
     bool SupportsBackgroundNotificationToggle { get; }
 
     /// <summary>
-    /// Показывает или скрывает уведомление "Running in background" (Android).
-    /// Сервис продолжает работать в любом случае.
+    /// Shows or hides the "Running in background" notification (Android).
+    /// The service keeps running either way.
     /// </summary>
     Task SetBackgroundNotificationVisibleAsync(bool visible);
 

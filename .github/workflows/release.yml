@@ -5,12 +5,12 @@ on:
     branches: [master]
 
 permissions:
-  contents: write   # создавать теги и Release
-  packages: write   # пушить в GitHub Container Registry
+  contents: write   # create tags and releases
+  packages: write   # push to GitHub Container Registry
 
 jobs:
 
-  # ── Читаем версию из version.txt, проверяем нужна ли сборка ──────────────
+  # ── Read version from version.txt, decide whether to build ───────────────
   check-version:
     runs-on: ubuntu-latest
     outputs:

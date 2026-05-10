@@ -536,7 +536,7 @@
 
         backupStatus = "Import successful. Restarting…";
         StateHasChanged();
-        await Task.Delay(800); // дать время показать сообщение
+        await Task.Delay(800); // give the UI time to show the message
 
         if (Platform.SupportsMauiFilePicker)
         {

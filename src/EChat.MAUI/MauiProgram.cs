@@ -13,9 +13,9 @@ public static class MauiProgram
     public static MauiApp CreateMauiApp()
     {
 #if WINDOWS
-        // WebView2 по умолчанию пишет данные рядом с exe-шником.
-        // Если приложение установлено в Program Files — нет прав.
-        // Явно перенаправляем в %LocalAppData%\echat\WebView2.
+        // By default WebView2 writes its data next to the exe.
+        // If the app is installed in Program Files that folder is read-only.
+        // Redirect explicitly to %LocalAppData%\echat\WebView2.
         Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER",
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

@@ -360,14 +360,14 @@
                 @if (showFormatMenu)
                 {
                     <div class="format-menu" style="left:@(formatMenuX)px;top:@(formatMenuY)px;">
-                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("**", "**"))' title="Bold ( жирный)"><strong>B</strong></button>
-                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("*", "*"))' title="Italic (курсив)"><em>I</em></button>
-                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("~~", "~~"))' title="Strikethrough (зачеркнутый)"><del>S</del></button>
-                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("--", "--"))' title="Underline (подчеркнутый)"><u>U</u></button>
-                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("`", "`"))' title="Inline Code (код)"><code>&lt;/&gt;</code></button>
-                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("```\n", "\n```"))' title="Code Block (блок кода)"><span style="font-size:9px;">{ }</span></button>
-                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("||", "||"))' title="Spoiler (скрытый)"><span style="background:black;color:white;padding:0 2px;font-size:10px;">S</span></button>
-                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("> ", ""))' title="Quote (цитата)"><span style="font-size:14px;">&gt;</span></button>
+                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("**", "**"))' title="Bold"><strong>B</strong></button>
+                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("*", "*"))' title="Italic"><em>I</em></button>
+                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("~~", "~~"))' title="Strikethrough"><del>S</del></button>
+                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("--", "--"))' title="Underline"><u>U</u></button>
+                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("`", "`"))' title="Inline Code"><code>&lt;/&gt;</code></button>
+                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("```\n", "\n```"))' title="Code Block"><span style="font-size:9px;">{ }</span></button>
+                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("||", "||"))' title="Spoiler"><span style="background:black;color:white;padding:0 2px;font-size:10px;">S</span></button>
+                        <button class="format-menu-btn" @onclick='@(() => InsertFormat("> ", ""))' title="Quote"><span style="font-size:14px;">&gt;</span></button>
                     </div>
                 }
 

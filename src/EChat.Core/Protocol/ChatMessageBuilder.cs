@@ -49,22 +49,20 @@ public class ChatMessageBuilder
             email.To.Add(new MailboxAddress("", recipient));
         email.Subject = "[eChat]";
 
-        // Autocrypt key advertisement — always in outer headers
-        if (_accountConfig.PublicKey != null)
+        // Autocrypt key advertisement — skip for invite messages (pubKey is encrypted instead)
+        bool isInviteMessage = !string.IsNullOrEmpty(message.InviteToken);
+        if (_accountConfig.PublicKey != null && !isInviteMessage)
             email.Headers.Add("Autocrypt", $"addr={_accountConfig.Email}; keydata={_accountConfig.PublicKey}");
 
         email.Headers.Add("Chat-Version", "2.0");
 
-        // Invite token — outer headers so Alice can verify BEFORE decrypting
-        if (!string.IsNullOrEmpty(message.InviteToken) && !string.IsNullOrEmpty(_accountConfig.PublicKey))
+        // Invite token — outer headers so Alice can verify BEFORE decrypting.
+        // pubKey is encrypted with AES-256-GCM(key=SHA256(token)) — only Alice can decrypt.
+        if (isInviteMessage && !string.IsNullOrEmpty(_accountConfig.PublicKey))
         {
-            var recipientEmail = message.Recipients
-                .FirstOrDefault(r => !r.Equals(_accountConfig.Email, StringComparison.OrdinalIgnoreCase))
-                ?? message.Recipients.FirstOrDefault() ?? "";
-            var hmac = InviteService.ComputeHmac(
-                message.InviteToken, _accountConfig.PublicKey, recipientEmail);
-            email.Headers.Add("Chat-Invite-Token", message.InviteToken);
-            email.Headers.Add("Chat-Invite-HMAC",  hmac);
+            var enc = InviteService.EncryptPubKey(_accountConfig.PublicKey, message.InviteToken!);
+            email.Headers.Add("Chat-Invite-Token",           message.InviteToken);
+            email.Headers.Add("Initial-Contact-Key-Exchange", enc);
         }
 
         // Chat-Group-ID must stay in outer headers so the receiver knows
@@ -200,8 +198,6 @@ public class ChatMessageBuilder
 
         if (!string.IsNullOrEmpty(message.SyncType))
             sb.Append("Chat-Sync-Type: ").AppendLine(message.SyncType);
-        if (!string.IsNullOrEmpty(message.SyncDeviceId))
-            sb.Append("Chat-Sync-Device-ID: ").AppendLine(message.SyncDeviceId);
 
         sb.AppendLine(); // blank line — MIME-style separator between headers and body
         sb.Append(bodyText);
@@ -241,8 +237,6 @@ public class ChatMessageBuilder
 
         if (!string.IsNullOrEmpty(message.SyncType))
             email.Headers.Add("Chat-Sync-Type", message.SyncType);
-        if (!string.IsNullOrEmpty(message.SyncDeviceId))
-            email.Headers.Add("Chat-Sync-Device-ID", message.SyncDeviceId);
 
         switch (message.Type)
         {

@@ -201,8 +201,7 @@
         if (account == null) return;
         await DbContext.SaveChangesAsync();
 
-        var deviceId = Prefs.Get("device_id", string.Empty);
-        UserContext.Initialize(account.AccountId, account.Email, deviceId);
+        UserContext.Initialize(account.AccountId, account.Email);
         Prefs.Set("user_email", account.Email);
 
         // Save sync settings via SyncEngine (persists to DB + updates engine)
@@ -234,7 +233,7 @@
         // Hot-reconnect transport with updated credentials
         _ = Task.Run(async () =>
         {
-            try { await TransportService.ReconnectAsync(account, deviceId); }
+            try { await TransportService.ReconnectAsync(account); }
             catch { /* non-fatal */ }
         });
 

@@ -70,12 +70,11 @@ public class DbAppPreferences : IAppPreferences
 
     public IDictionary<string, string> ExportAll() =>
         new Dictionary<string, string>(
-            _cache.Where(kv => kv.Key != "device_id" && !kv.Key.StartsWith("imap_sync_")));
+            _cache.Where(kv => !kv.Key.StartsWith("imap_sync_")));
 
     public void ImportAll(IDictionary<string, string> data)
     {
         foreach (var (key, value) in data)
-            if (key != "device_id")
-                Set(key, value);
+            Set(key, value);
     }
 }

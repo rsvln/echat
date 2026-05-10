@@ -18,8 +18,7 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddEChatCore(
         this IServiceCollection services,
-        string dbPath,
-        string deviceId)
+        string dbPath)
     {
         // Credential protector — platform-specific code can register a stronger implementation
         // (e.g. DpapiCredentialProtector) BEFORE calling AddEChatCore; TryAdd skips this default.
@@ -31,7 +30,7 @@ public static class ServiceCollectionExtensions
                 o => o.CommandTimeout(30)));
 
         // AccountConfig — mutable singleton; Email filled later via ReconnectAsync
-        services.AddSingleton(new AccountConfig { DeviceId = deviceId });
+        services.AddSingleton(new AccountConfig());
 
         // Protocol
         services.AddSingleton<ChatMessageParser>();
@@ -190,31 +189,16 @@ public static class ServiceCollectionExtensions
                 while (await rdr.ReadAsync()) cols.Add(rdr.GetString(0));
             }
 
-            // Add columns introduced by the failed migration
+            // Add columns — each wrapped individually: ALTER TABLE is not transactional on SQLite,
+            // a duplicate column error would abort the whole block otherwise.
             if (!cols.Contains("ContactEmail"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Chats ADD COLUMN ContactEmail TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Chats ADD COLUMN ContactEmail TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!cols.Contains("GroupId"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Chats ADD COLUMN GroupId TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Chats ADD COLUMN GroupId TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!cols.Contains("TombstoneVersion"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Chats ADD COLUMN TombstoneVersion INTEGER";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Chats ADD COLUMN TombstoneVersion INTEGER"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!cols.Contains("PendingOutgoingInviteToken"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Chats ADD COLUMN PendingOutgoingInviteToken TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Chats ADD COLUMN PendingOutgoingInviteToken TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
 
             // Discover existing Messages columns
             var msgCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -226,17 +210,9 @@ public static class ServiceCollectionExtensions
             }
 
             if (!msgCols.Contains("IsSystem"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Messages ADD COLUMN IsSystem INTEGER NOT NULL DEFAULT 0";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Messages ADD COLUMN IsSystem INTEGER NOT NULL DEFAULT 0"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!msgCols.Contains("FormattedContent"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Messages ADD COLUMN FormattedContent TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Messages ADD COLUMN FormattedContent TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
 
             // Discover existing GroupMembers columns
             var gmCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -248,28 +224,22 @@ public static class ServiceCollectionExtensions
             }
 
             if (!gmCols.Contains("DisplayName"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE GroupMembers ADD COLUMN DisplayName TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE GroupMembers ADD COLUMN DisplayName TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
 
             // Backfill: group chats → GroupId = ChatId; 1:1 chats → ContactEmail from Contacts
-            using (var cmd = conn.CreateCommand())
+            try { using var cmd = conn.CreateCommand(); cmd.CommandText = "UPDATE Chats SET GroupId = ChatId WHERE Type = 1 AND GroupId IS NULL"; await cmd.ExecuteNonQueryAsync(); } catch { }
+            try
             {
-                cmd.CommandText = "UPDATE Chats SET GroupId = ChatId WHERE Type = 1 AND GroupId IS NULL";
-                await cmd.ExecuteNonQueryAsync();
-            }
-            using (var cmd = conn.CreateCommand())
-            {
+                using var cmd = conn.CreateCommand();
                 cmd.CommandText =
                     "UPDATE Chats SET ContactEmail = " +
                     "(SELECT c.Email FROM Contacts c WHERE c.DisplayName = Chats.Name OR c.Email = Chats.Name LIMIT 1) " +
                     "WHERE Type = 0 AND ContactEmail IS NULL";
                 await cmd.ExecuteNonQueryAsync();
             }
+            catch { }
 
-            // Create indexes introduced by the migration (IF NOT EXISTS = idempotent)
+            // Create indexes (IF NOT EXISTS = idempotent, but wrap anyway for safety)
             foreach (var idxSql in new[]
             {
                 "CREATE INDEX IF NOT EXISTS IX_Chats_AccountId_ContactEmail ON Chats (AccountId, ContactEmail)",
@@ -277,9 +247,7 @@ public static class ServiceCollectionExtensions
                 "CREATE INDEX IF NOT EXISTS IX_Chats_GroupId ON Chats (GroupId)",
             })
             {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = idxSql;
-                await cmd.ExecuteNonQueryAsync();
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = idxSql; await cmd.ExecuteNonQueryAsync(); } catch { }
             }
 
             // Discover existing Attachments columns
@@ -291,17 +259,27 @@ public static class ServiceCollectionExtensions
                 while (await rdr.ReadAsync()) attCols.Add(rdr.GetString(0));
             }
 
+            // DROP COLUMN requires SQLite ≥ 3.35 (Android may have older).
+            // Failure is non-fatal: extra columns are harmless — just skip.
             if (attCols.Contains("IsImage"))
             {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Attachments DROP COLUMN IsImage";
-                await cmd.ExecuteNonQueryAsync();
+                try
+                {
+                    using var cmd = conn.CreateCommand();
+                    cmd.CommandText = "ALTER TABLE Attachments DROP COLUMN IsImage";
+                    await cmd.ExecuteNonQueryAsync();
+                }
+                catch { /* old SQLite — column stays, harmless */ }
             }
             if (attCols.Contains("IsVideo"))
             {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Attachments DROP COLUMN IsVideo";
-                await cmd.ExecuteNonQueryAsync();
+                try
+                {
+                    using var cmd = conn.CreateCommand();
+                    cmd.CommandText = "ALTER TABLE Attachments DROP COLUMN IsVideo";
+                    await cmd.ExecuteNonQueryAsync();
+                }
+                catch { /* old SQLite — column stays, harmless */ }
             }
 
             // Discover existing Contacts columns
@@ -314,43 +292,21 @@ public static class ServiceCollectionExtensions
             }
 
             if (!contactCols.Contains("AddedAt"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN AddedAt TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN AddedAt TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!contactCols.Contains("BlockedAt"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN BlockedAt TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN BlockedAt TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!contactCols.Contains("IsBlocked"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN IsBlocked INTEGER NOT NULL DEFAULT 0";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN IsBlocked INTEGER NOT NULL DEFAULT 0"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!contactCols.Contains("LocalKeyRevokedAt"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalKeyRevokedAt TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalKeyRevokedAt TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!contactCols.Contains("LocalPrivateKey"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalPrivateKey TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalPrivateKey TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
             if (!contactCols.Contains("LocalPublicKey"))
-            {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalPublicKey TEXT";
-                await cmd.ExecuteNonQueryAsync();
-            }
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = "ALTER TABLE Contacts ADD COLUMN LocalPublicKey TEXT"; await cmd.ExecuteNonQueryAsync(); } catch { }
 
-            // Mark migrations as applied so they are never retried
+            // Mark ALL migrations as applied — must always reach this block even if DDL above
+            // partially failed (e.g. DROP COLUMN on old Android SQLite).
+            // INSERT OR IGNORE is idempotent — safe to repeat on subsequent launches.
             foreach (var migId in new[]
             {
                 "20260411204537_ReplacePartnerEmailWithContactEmailAndGroupId",
@@ -368,11 +324,15 @@ public static class ServiceCollectionExtensions
                 "20260505081802_GroupMemberDisplayName",
             })
             {
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText =
-                    "INSERT OR IGNORE INTO __EFMigrationsHistory (MigrationId, ProductVersion) " +
-                    $"VALUES ('{migId}', '9.0.4')";
-                await cmd.ExecuteNonQueryAsync();
+                try
+                {
+                    using var cmd = conn.CreateCommand();
+                    cmd.CommandText =
+                        "INSERT OR IGNORE INTO __EFMigrationsHistory (MigrationId, ProductVersion) " +
+                        $"VALUES ('{migId}', '9.0.4')";
+                    await cmd.ExecuteNonQueryAsync();
+                }
+                catch { /* best-effort */ }
             }
         } // raw connection disposed
 
@@ -541,10 +501,6 @@ public static class ServiceCollectionExtensions
                         fileLogger.MinLevel = level;
                 }
 
-                // Seed device_id from AccountConfig if not already in preferences
-                var accountConfig = serviceProvider.GetRequiredService<AccountConfig>();
-                if (string.IsNullOrEmpty(prefs.Get("device_id", "")))
-                    prefs.Set("device_id", accountConfig.DeviceId);
             }
         }
         catch { /* preferences are best-effort */ }

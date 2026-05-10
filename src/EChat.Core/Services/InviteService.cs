@@ -12,17 +12,19 @@ namespace EChat.Core.Services;
 ///
 /// Flow:
 ///   Alice generates a token → shares it out-of-band with Bob.
-///   Bob includes the token (+ HMAC) in his first email to Alice.
-///   Alice verifies the token against her DB, burns it, trusts Bob's public key.
+///   Bob encrypts his public key with AES-256-GCM(key=SHA256(token)) and includes
+///   the ciphertext in the Initial-Contact-Key-Exchange email header.
+///   Alice decrypts the pubKey using the token, verifies it against her DB, burns it.
 ///
 /// Only SHA-256(token) is stored in the DB — the plaintext token is shown once
 /// and never persisted, so a DB leak cannot be used to forge invites.
+/// The pubKey is never transmitted in plaintext, eliminating passive observation attacks.
 /// </summary>
 public class InviteService
 {
     // Unambiguous base32: no 0, 1, O, I
     private const string Alphabet   = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    private const int    RawLength  = 10;   // → XXXXX-XXXXX (50 bits entropy)
+    private const int    RawLength  = 30;   // → XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX (150 bits entropy)
     private static readonly TimeSpan DefaultTtl = TimeSpan.FromDays(7);
 
     private readonly IServiceScopeFactory _scopeFactory;
@@ -113,35 +115,53 @@ public class InviteService
         await db.PendingInvites.Where(i => i.TokenId == tokenId).ExecuteDeleteAsync();
     }
 
-    // ── HMAC helpers (static — used by builder and incoming service) ──────────
+    // ── AES-256-GCM key exchange (static — used by builder and incoming service) ─
 
     /// <summary>
-    /// HMAC-SHA256(key=rawToken, data="echat-invite-v1:" + pubKey + ":" + recipientEmail).
-    /// Binds the token to a specific public key, preventing key-substitution attacks.
+    /// Encrypts <paramref name="pubKey"/> using AES-256-GCM with a key derived from
+    /// SHA-256(<paramref name="rawToken"/>). Returns base64(nonce[12] + tag[16] + cipher).
+    /// Only the holder of the plaintext token can decrypt — the token itself never travels.
     /// </summary>
-    public static string ComputeHmac(string rawToken, string senderPublicKey, string recipientEmail)
+    public static string EncryptPubKey(string pubKey, string rawToken)
     {
-        var key  = Encoding.UTF8.GetBytes(Normalize(rawToken));
-        var data = Encoding.UTF8.GetBytes(
-            $"echat-invite-v1:{senderPublicKey}:{recipientEmail.Trim().ToLowerInvariant()}");
-        return Convert.ToHexString(HMACSHA256.HashData(key, data)).ToLowerInvariant();
+        var key    = SHA256.HashData(Encoding.UTF8.GetBytes(Normalize(rawToken)));
+        var plain  = Encoding.UTF8.GetBytes(pubKey);
+        var nonce  = RandomNumberGenerator.GetBytes(12);
+        var cipher = new byte[plain.Length];
+        var tag    = new byte[16];
+        using var aes = new AesGcm(key, 16);
+        aes.Encrypt(nonce, plain, cipher, tag);
+        // layout: nonce(12) + tag(16) + ciphertext
+        var result = new byte[28 + cipher.Length];
+        nonce.CopyTo(result, 0);
+        tag.CopyTo(result, 12);
+        cipher.CopyTo(result, 28);
+        return Convert.ToBase64String(result);
     }
 
-    /// <summary>Constant-time HMAC verification.</summary>
-    public static bool VerifyHmac(string rawToken, string hmac,
-                                   string senderPublicKey, string recipientEmail)
+    /// <summary>
+    /// Decrypts a value produced by <see cref="EncryptPubKey"/>.
+    /// Throws <see cref="CryptographicException"/> if the token is wrong or data is tampered.
+    /// </summary>
+    public static string DecryptPubKey(string encryptedBase64, string rawToken)
     {
-        var expected = ComputeHmac(rawToken, senderPublicKey, recipientEmail);
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(expected),
-            Encoding.UTF8.GetBytes(hmac.Trim().ToLowerInvariant()));
+        var key    = SHA256.HashData(Encoding.UTF8.GetBytes(Normalize(rawToken)));
+        var data   = Convert.FromBase64String(encryptedBase64);
+        var nonce  = data[..12];
+        var tag    = data[12..28];
+        var cipher = data[28..];
+        var plain  = new byte[cipher.Length];
+        using var aes = new AesGcm(key, 16);
+        aes.Decrypt(nonce, cipher, tag, plain);
+        return Encoding.UTF8.GetString(plain);
     }
 
     // ── Token formatting helpers (public so UI can reformat pasted codes) ─────
 
     public static string FormatToken(string raw) =>
         raw.Length >= RawLength
-            ? raw[..5] + "-" + raw[5..RawLength]
+            ? raw[..5]  + "-" + raw[5..10]  + "-" + raw[10..15] + "-"
+            + raw[15..20] + "-" + raw[20..25] + "-" + raw[25..30]
             : raw;
 
     public static string Normalize(string token) =>

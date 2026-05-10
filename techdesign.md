@@ -154,7 +154,7 @@ DisplayName  // Имя участника — приходит в протоко
 App.xaml.cs (Task.Run) → TransportService.ReconnectAsync(account)
   → StopOldIdle()
   → ImapService.DisconnectAsync() + SmtpService.DisconnectAsync()
-  → AccountConfig обновляется (email, keys, deviceId)
+  → AccountConfig обновляется (email, keys, credentials)
   → ConnectAsync(imap + smtp)
   → StartSyncLoopAsync()
       → RetryStuckSendingAsync()   // переотправить Sending-сообщения
@@ -227,8 +227,9 @@ Chat-Delete-Of: <target-msg-id>
 Chat-Read-Of: id1,id2,id3
 Chat-System-Type: group-create       # системное сообщение
 Chat-Sync-Type: read-state           # синхронизация между устройствами
-Chat-Sync-Device-ID: <device-uuid>
-Autocrypt: addr=user@example.com; keydata=<base64-pubkey>
+Chat-Invite-Token: <raw-token>       # только в invite-сообщениях
+Initial-Contact-Key-Exchange: <base64>  # зашифрованный pubKey (только в invite)
+Autocrypt: addr=user@example.com; keydata=<base64-pubkey>  # не в invite-сообщениях
 In-Reply-To: <target-msg-id>
 ```
 
@@ -255,6 +256,31 @@ Content-Size: 12345
 ```
 
 **Важно**: `email.Attachments` (MimeKit) содержит только вложения с `Content-Disposition: attachment` — для зашифрованных писем они недоступны. Поэтому вложения кодируются в текстовый блок внутри шифрограммы.
+
+### Invite и обмен ключами (key exchange)
+
+Токен — 30 символов Base32 (`XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX`), генерируется `InviteService`.  
+URL инвайта: `echat://invite?e={email}&n={name}&t={rawToken}`.
+
+**Первое письмо (Bob → Alice):**
+
+```
+Chat-Invite-Token: <rawToken>
+Initial-Contact-Key-Exchange: <base64(nonce[12] + tag[16] + AES-GCM(pubKeyBob))>
+```
+
+Ключ AES-256-GCM = `SHA-256(Normalize(rawToken))`. Nonce — случайные 12 байт. Autocrypt-заголовок в invite-сообщениях **не добавляется** — pubKey никогда не передаётся открыто.
+
+**Alice при получении:**
+
+1. Берёт `headers.EncryptedContactKey` и `headers.InviteToken`
+2. `InviteService.DecryptPubKey(encrypted, token)` — расшифровывает pubKey Bob'а
+3. Только после успешной расшифровки — `VerifyAndConsumeAsync()` (токен сжигается)
+4. `contact.PublicKey = senderPubKey`, `contact.Verified = true`
+
+Токен сжигается только при успешной расшифровке — защита от replay без знания plaintext-токена.
+
+---
 
 ### Батчинг
 
@@ -361,6 +387,8 @@ Task OpenBatteryOptimizationSettingsAsync()      // Диалог батареи 
 ## Синхронизация устройств
 
 При отправке сообщения отправитель добавляет себя в CC. Другое устройство с тем же ящиком получает письмо, парсит его как `isSentSync=true` (sender == accountEmail) и сохраняет со статусом `Sent` без инкремента UnreadCount.
+
+Дедупликация — по `MessageId` (UUID@localhost). `IncomingMessageService` проверяет наличие `MessageId` в БД перед сохранением. DeviceId не используется.
 
 `DeviceSyncService` отправляет sync-сообщения (`Chat-Sync-Type: read-state`), которые `IncomingMessageService` обрабатывает отдельно.
 

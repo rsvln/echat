@@ -329,10 +329,7 @@ public partial class ChatList
         activeAccountId = activeAccount?.AccountId;
 
         if (activeAccount != null && string.IsNullOrEmpty(UserContext.AccountId))
-        {
-            var deviceId = Prefs.Get("device_id", string.Empty);
-            UserContext.Initialize(activeAccount.AccountId, activeAccount.Email, deviceId);
-        }
+            UserContext.Initialize(activeAccount.AccountId, activeAccount.Email);
 
     }
 
@@ -788,8 +785,7 @@ public partial class ChatList
         editingMessage = null;
         sendError = string.Empty;
 
-        var deviceId = Prefs.Get("device_id", string.Empty);
-        UserContext.Initialize(activeAccount.AccountId, activeAccount.Email, deviceId);
+        UserContext.Initialize(activeAccount.AccountId, activeAccount.Email);
         Prefs.Set("user_email", activeAccount.Email);
         Prefs.Set("active_account_id", activeAccount.AccountId);
 
@@ -801,7 +797,7 @@ public partial class ChatList
 
         _ = Task.Run(async () =>
         {
-            try { await TransportService.ReconnectAsync(activeAccount, deviceId); }
+            try { await TransportService.ReconnectAsync(activeAccount); }
             catch { /* non-fatal */ }
         });
 

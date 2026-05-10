@@ -36,7 +36,6 @@ public class ChatHeaders
 
     // Sync
     public string? SyncType { get; set; }
-    public string? SyncDeviceId { get; set; }
 
     // System messages
     public string? SystemType { get; set; }
@@ -52,14 +51,9 @@ public class ChatHeaders
     public string? InviteToken { get; set; }
 
     /// <summary>
-    /// HMAC-SHA256(token, "echat-invite-v1:" + senderPubKey + ":" + recipientEmail).
-    /// Binds the token to the sender's specific public key, preventing key substitution.
+    /// AES-256-GCM(key=SHA256(rawToken)) encrypted pubKey of the sender.
+    /// Format: base64(nonce[12] + tag[16] + ciphertext).
+    /// Only the token holder (Alice) can decrypt — the token itself is never in transit.
     /// </summary>
-    public string? InviteHmac { get; set; }
-
-    /// <summary>
-    /// Sender's PGP public key extracted from the Autocrypt header of the incoming email.
-    /// Not persisted — used transiently during message processing.
-    /// </summary>
-    public string? SenderPublicKey { get; set; }
+    public string? EncryptedContactKey { get; set; }
 }

@@ -142,7 +142,7 @@
                         @(importBusy ? "Importing…" : "Import")
                     </button>
                     <button class="setup-btn-secondary"
-                            style="flex:0 0 auto; padding: 0 16px;"
+                            style="flex:1;"
                             @onclick="CancelImport"
                             disabled="@importBusy">
                         Cancel
@@ -442,13 +442,12 @@
         Prefs.Set("active_account_id", account.AccountId);
 
         // Update context for the current session
-        var deviceId = Prefs.Get("device_id", string.Empty);
-        UserContext.Initialize(account.AccountId, account.Email, deviceId);
+        UserContext.Initialize(account.AccountId, account.Email);
 
         // Hot-connect transport with new account credentials (fire-and-forget, non-fatal)
         _ = Task.Run(async () =>
         {
-            try { await TransportService.ReconnectAsync(account, deviceId); }
+            try { await TransportService.ReconnectAsync(account); }
             catch { /* connection errors are non-fatal; user can retry via Account Settings */ }
         });
 

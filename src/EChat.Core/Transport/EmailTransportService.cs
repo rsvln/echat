@@ -235,7 +235,7 @@ public class EmailTransportService
         IsConnected = true;
     }
 
-    public async Task ReconnectAsync(Account account, string deviceId)
+    public async Task ReconnectAsync(Account account)
     {
         _fileLogger.Write("INFO", "EmailTransportService", $"Reconnecting transport for account {account.Email}");
 
@@ -263,7 +263,6 @@ public class EmailTransportService
 
         _accountConfig.AccountId = account.AccountId;
         _accountConfig.Email = account.Email;
-        _accountConfig.DeviceId = deviceId;
         _accountConfig.PublicKey = account.PublicKey;
         _accountConfig.PrivateKey = account.PrivateKey;
         _accountConfig.KeyPassword = account.Password;

@@ -53,32 +53,65 @@ public partial class NewChatModal
 
     protected override async Task OnParametersSetAsync()
     {
+        // Nothing in here may throw: an unhandled exception in a lifecycle method
+        // tears down the Blazor renderer, which on MAUI leaves the WebView on screen
+        // but permanently deaf to input — the user can only kill the app.
         if (IsVisible && !_wasVisible)
         {
             // Modal just opened
             _wasVisible = true;
-            await JS.InvokeVoidAsync("lockBodyScroll");
+            await SafeJsAsync("lockBodyScroll");
 
-            // Load contacts fresh every time modal opens
-            using var scope = ScopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-            allContacts = await db.Contacts.AsNoTracking()
-                .Where(c => c.AccountId == ActiveAccountId)
-                .OrderBy(c => c.DisplayName).ToListAsync();
+            // Load contacts fresh every time modal opens.
+            // Microsoft.Data.Sqlite has no real async I/O — ToListAsync() runs
+            // synchronously on the caller, so this must not run on the UI thread.
+            try
+            {
+                var accountId = ActiveAccountId;
+                allContacts = await Task.Run(async () =>
+                {
+                    using var scope = ScopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                    return await db.Contacts.AsNoTracking()
+                        .Where(c => c.AccountId == accountId)
+                        .OrderBy(c => c.DisplayName).ToListAsync();
+                });
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Write("ERROR", "NewChatModal", $"Contact load failed: {ex}");
+                allContacts = new List<Contact>();
+            }
+
             await BuildMyInviteAsync();
         }
         else if (!IsVisible && _wasVisible)
         {
             // Modal just closed from outside (parent set IsVisible=false)
             _wasVisible = false;
-            await JS.InvokeVoidAsync("unlockBodyScroll");
+            await SafeJsAsync("unlockBodyScroll");
+        }
+    }
+
+    /// <summary>
+    /// JS interop that can never take the renderer down with it.
+    /// </summary>
+    private async Task SafeJsAsync(string fn)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(fn);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("WARN", "NewChatModal", $"JS '{fn}' failed: {ex.Message}");
         }
     }
 
     private async Task HandleClose()
     {
         _wasVisible = false;
-        await JS.InvokeVoidAsync("unlockBodyScroll");
+        await SafeJsAsync("unlockBodyScroll");
         Reset();
         await OnClose.InvokeAsync();
     }
@@ -120,39 +153,88 @@ public partial class NewChatModal
     /// </summary>
     private async Task BuildMyInviteAsync()
     {
-        if (ActiveAccount == null || string.IsNullOrEmpty(ActiveAccountId)) return;
+        if (ActiveAccount == null || string.IsNullOrEmpty(ActiveAccountId))
+        {
+            myInviteQr = new MarkupString(QrPlaceholder("No active account"));
+            return;
+        }
 
         _isGenerating = true;
         StateHasChanged();
-        try
-        {
-            var (formattedToken, _) = await InviteService.GenerateAsync(ActiveAccountId);
-            myInviteCode = formattedToken;
-        }
-        catch
-        {
-            myInviteCode = "?????-?????-?????-?????-?????-?????";
-        }
+        // Let the spinner actually paint before we start working.
+        await Task.Yield();
 
-        var tokenRaw  = EChat.Core.Services.InviteService.Normalize(myInviteCode);
-        var email     = Uri.EscapeDataString(ActiveAccount.Email);
-        var name      = Uri.EscapeDataString(ActiveAccount.DisplayName);
-        // pubKey is no longer in the URL — it travels encrypted in the first email
-        myInviteLink  = $"echat://invite?e={email}&n={name}&t={tokenRaw}";
+        var accountId = ActiveAccountId;
+        var accEmail  = ActiveAccount.Email       ?? string.Empty;
+        var accName   = ActiveAccount.DisplayName ?? string.Empty;
 
         try
         {
-            var qr  = QrCode.EncodeText(myInviteLink, QrCode.Ecc.Medium);
-            var svg = qr.ToSvgString(3);
-            // No inline style — CSS .invite-qr-box svg controls size.
-            myInviteQr = new MarkupString(svg);
-        }
-        catch
-        {
-            myInviteQr = new MarkupString("<div style='color:#aaa;text-align:center;padding:20px'>QR unavailable</div>");
-        }
+            // Token generation writes to SQLite and QR encoding is pure CPU —
+            // both run synchronously, so keep them off the Blazor UI thread.
+            // A locked DB would otherwise freeze the whole WebView.
+            var (code, link, svg) = await Task.Run(async () =>
+            {
+                string tokenCode;
+                try
+                {
+                    var (formattedToken, _) = await InviteService.GenerateAsync(accountId);
+                    tokenCode = formattedToken;
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Write("ERROR", "NewChatModal", $"Invite token generation failed: {ex}");
+                    tokenCode = "?????-?????-?????-?????-?????-?????";
+                }
 
-        _isGenerating = false;
+                var tokenRaw = EChat.Core.Services.InviteService.Normalize(tokenCode);
+                // pubKey is no longer in the URL — it travels encrypted in the first email
+                var inviteLink = $"echat://invite?e={Uri.EscapeDataString(accEmail)}" +
+                                 $"&n={Uri.EscapeDataString(accName)}&t={tokenRaw}";
+
+                string markup;
+                try
+                {
+                    var qr = QrCode.EncodeText(inviteLink, QrCode.Ecc.Medium);
+                    // No inline style — CSS .invite-qr-box svg controls size.
+                    // Strip the XML prolog: this markup is injected into an HTML
+                    // document, where a processing instruction is just garbage.
+                    markup = StripXmlProlog(qr.ToSvgString(3));
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Write("ERROR", "NewChatModal", $"QR encoding failed: {ex}");
+                    markup = QrPlaceholder("QR unavailable");
+                }
+
+                return (tokenCode, inviteLink, markup);
+            });
+
+            myInviteCode = code;
+            myInviteLink = link;
+            myInviteQr   = new MarkupString(svg);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "NewChatModal", $"BuildMyInvite failed: {ex}");
+            myInviteCode = string.Empty;
+            myInviteLink = string.Empty;
+            myInviteQr   = new MarkupString(QrPlaceholder("QR unavailable"));
+        }
+        finally
+        {
+            _isGenerating = false;
+            StateHasChanged();
+        }
+    }
+
+    private static string QrPlaceholder(string text) =>
+        $"<div style='color:#aaa;text-align:center;padding:20px'>{text}</div>";
+
+    private static string StripXmlProlog(string svg)
+    {
+        var idx = svg.IndexOf("<svg", StringComparison.OrdinalIgnoreCase);
+        return idx > 0 ? svg[idx..] : svg;
     }
 
     private Task CopyToClipboard(string text) => CopyToClipboard(text, "link");
@@ -165,8 +247,18 @@ public partial class NewChatModal
         }
         catch
         {
-            await JS.InvokeVoidAsync("eval",
-                $"(function(){{var t=document.createElement('textarea');t.value={System.Text.Json.JsonSerializer.Serialize(text)};document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);}})()");
+            // navigator.clipboard is unavailable in some WebViews — fall back to
+            // the legacy textarea trick, and swallow if that fails too.
+            try
+            {
+                await JS.InvokeVoidAsync("eval",
+                    $"(function(){{var t=document.createElement('textarea');t.value={System.Text.Json.JsonSerializer.Serialize(text)};document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);}})()");
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Write("WARN", "NewChatModal", $"Clipboard copy failed: {ex.Message}");
+                return;
+            }
         }
 
         copied = what;
@@ -192,19 +284,29 @@ public partial class NewChatModal
     {
         newChatError = string.Empty;
 
-        if (!string.IsNullOrWhiteSpace(inviteInput))
+        // Surface failures as an inline error instead of letting them escape and
+        // kill the renderer (see OnParametersSetAsync).
+        try
         {
-            await CreateChatFromInvite(inviteInput.Trim());
-            return;
-        }
+            if (!string.IsNullOrWhiteSpace(inviteInput))
+            {
+                await CreateChatFromInvite(inviteInput.Trim());
+                return;
+            }
 
-        if (!string.IsNullOrWhiteSpace(inviteCodeInput))
+            if (!string.IsNullOrWhiteSpace(inviteCodeInput))
+            {
+                await CreateChatFromCodeAndEmail(inviteCodeInput.Trim(), newChatEmail.Trim());
+                return;
+            }
+
+            await CreateDirectChat();
+        }
+        catch (Exception ex)
         {
-            await CreateChatFromCodeAndEmail(inviteCodeInput.Trim(), newChatEmail.Trim());
-            return;
+            FileLogger.Write("ERROR", "NewChatModal", $"AddContact failed: {ex}");
+            newChatError = $"Could not add contact: {ex.Message}";
         }
-
-        await CreateDirectChat();
     }
 
     private async Task CreateChatFromInvite(string input)
@@ -396,6 +498,19 @@ public partial class NewChatModal
     }
 
     private async Task CreateGroup()
+    {
+        try
+        {
+            await CreateGroupCoreAsync();
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "NewChatModal", $"CreateGroup failed: {ex}");
+            newChatError = $"Could not create group: {ex.Message}";
+        }
+    }
+
+    private async Task CreateGroupCoreAsync()
     {
         newChatError = string.Empty;
         var name = newGroupName.Trim();

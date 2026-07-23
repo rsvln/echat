@@ -168,45 +168,92 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        // Nothing in here may throw: an unhandled exception in a lifecycle method
+        // tears down the Blazor renderer, which on MAUI leaves the WebView on screen
+        // but permanently deaf to input — the user can only kill the app.
         if (IsVisible && !_wasVisible)
         {
             _wasVisible = true;
             _search = string.Empty;
             _showBlocked = false;
-            await JS.InvokeVoidAsync("lockBodyScroll");
+            await SafeJsAsync("lockBodyScroll");
             await LoadAsync();
         }
         else if (!IsVisible && _wasVisible)
         {
             _wasVisible = false;
-            await JS.InvokeVoidAsync("unlockBodyScroll");
+            await SafeJsAsync("unlockBodyScroll");
+        }
+    }
+
+    /// <summary>
+    /// JS interop that can never take the renderer down with it.
+    /// </summary>
+    private async Task SafeJsAsync(string fn)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync(fn);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("WARN", "ContactsModal", $"JS '{fn}' failed: {ex.Message}");
         }
     }
 
     private async Task LoadAsync()
     {
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        _contacts = await db.Contacts.AsNoTracking()
-            .Where(c => c.AccountId == ActiveAccountId)
-            .OrderBy(c => c.DisplayName)
-            .ToListAsync();
+        // Microsoft.Data.Sqlite has no real async I/O — ToListAsync() runs
+        // synchronously on the caller, so this must not run on the UI thread.
+        try
+        {
+            var accountId = ActiveAccountId;
+            _contacts = await Task.Run(async () =>
+            {
+                using var scope = ScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                return await db.Contacts.AsNoTracking()
+                    .Where(c => c.AccountId == accountId)
+                    .OrderBy(c => c.DisplayName)
+                    .ToListAsync();
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ContactsModal", $"Contact load failed: {ex}");
+            _contacts = new List<Contact>();
+        }
     }
 
     private async Task OpenChatAsync(string email)
     {
         // Find existing chat for this account + email
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        var chat = await db.Chats.AsNoTracking()
-            .FirstOrDefaultAsync(c => c.Type == ChatType.OneToOne &&
-                                      !c.Deleted &&
-                                      c.AccountId == ActiveAccountId &&
-                                      c.ContactEmail == email);
-        if (chat != null)
+        string? chatId;
+        try
+        {
+            var accountId = ActiveAccountId;
+            chatId = await Task.Run(async () =>
+            {
+                using var scope = ScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                var chat = await db.Chats.AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.Type == ChatType.OneToOne &&
+                                              !c.Deleted &&
+                                              c.AccountId == accountId &&
+                                              c.ContactEmail == email);
+                return chat?.ChatId;
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ContactsModal", $"Open chat lookup failed for {email}: {ex}");
+            return;
+        }
+
+        if (chatId != null)
         {
             await HandleClose();
-            await OnOpenChat.InvokeAsync(chat.ChatId);
+            await OnOpenChat.InvokeAsync(chatId);
         }
     }
 
@@ -220,27 +267,37 @@
         var email = _deleteTarget.Email;
         _deleteTarget = null;
 
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-
-        var chatIds = await db.Chats
-            .Where(c => c.ContactEmail == email)
-            .Select(c => c.ChatId)
-            .ToListAsync();
-
-        if (chatIds.Count > 0)
+        try
         {
-            await db.Messages
-                .Where(m => chatIds.Contains(m.ChatId))
-                .ExecuteDeleteAsync();
-            await db.Chats
-                .Where(c => chatIds.Contains(c.ChatId))
-                .ExecuteDeleteAsync();
-        }
+            await Task.Run(async () =>
+            {
+                using var scope = ScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
 
-        await db.Contacts
-            .Where(c => c.Email == email)
-            .ExecuteDeleteAsync();
+                var chatIds = await db.Chats
+                    .Where(c => c.ContactEmail == email)
+                    .Select(c => c.ChatId)
+                    .ToListAsync();
+
+                if (chatIds.Count > 0)
+                {
+                    await db.Messages
+                        .Where(m => chatIds.Contains(m.ChatId))
+                        .ExecuteDeleteAsync();
+                    await db.Chats
+                        .Where(c => chatIds.Contains(c.ChatId))
+                        .ExecuteDeleteAsync();
+                }
+
+                await db.Contacts
+                    .Where(c => c.Email == email)
+                    .ExecuteDeleteAsync();
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ContactsModal", $"Delete contact {email} failed: {ex}");
+        }
 
         await LoadAsync();
     }
@@ -248,36 +305,62 @@
     private async Task BlockConfirmedAsync()
     {
         if (_blockTarget == null) return;
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        await db.Contacts
-            .Where(c => c.Email == _blockTarget.Email)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(c => c.IsBlocked, true)
-                .SetProperty(c => c.BlockedAt, DateTimeOffset.UtcNow));
-        await db.Chats
-            .Where(c => c.ContactEmail == _blockTarget.Email && c.AccountId == ActiveAccountId)
-            .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, true));
+        var email = _blockTarget.Email;
         _blockTarget = null;
+
+        try
+        {
+            var accountId = ActiveAccountId;
+            await Task.Run(async () =>
+            {
+                using var scope = ScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                await db.Contacts
+                    .Where(c => c.Email == email)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(c => c.IsBlocked, true)
+                        .SetProperty(c => c.BlockedAt, DateTimeOffset.UtcNow));
+                await db.Chats
+                    .Where(c => c.ContactEmail == email && c.AccountId == accountId)
+                    .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, true));
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ContactsModal", $"Block contact {email} failed: {ex}");
+        }
+
         await LoadAsync();
     }
 
     private async Task UnblockAsync(Contact c)
     {
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-        await db.Contacts
-            .Where(x => x.Email == c.Email)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(x => x.IsBlocked, false)
-                .SetProperty(x => x.BlockedAt, (DateTimeOffset?)null));
+        var email = c.Email;
+        try
+        {
+            await Task.Run(async () =>
+            {
+                using var scope = ScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+                await db.Contacts
+                    .Where(x => x.Email == email)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(x => x.IsBlocked, false)
+                        .SetProperty(x => x.BlockedAt, (DateTimeOffset?)null));
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ContactsModal", $"Unblock contact {email} failed: {ex}");
+        }
+
         await LoadAsync();
     }
 
     private async Task HandleClose()
     {
         _wasVisible = false;
-        await JS.InvokeVoidAsync("unlockBodyScroll");
+        await SafeJsAsync("unlockBodyScroll");
         await OnClose.InvokeAsync();
     }
 

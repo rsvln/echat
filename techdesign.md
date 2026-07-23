@@ -514,7 +514,7 @@ publish-win.bat   # Windows only: Core/UI (if changed) + MAUI
 4. Builds and pushes the Docker image to GHCR, generates `pub/distr/docker-compose.yml`
 5. Copies distributables to `e:\YandexDisk\share\echat\`
 
-`pub/` and `.claude/` directories are excluded from git via `.gitignore`.
+The `pub/` directory and local tooling directories are excluded from git via `.gitignore`.
 
 ### GitHub Actions
 

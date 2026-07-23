@@ -379,15 +379,18 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        // Nothing in here may throw: an unhandled exception in a lifecycle method
+        // tears down the Blazor renderer, which on MAUI leaves the WebView on screen
+        // but permanently deaf to input — the user can only kill the app.
         if (IsVisible && !_wasVisible)
         {
             _wasVisible = true;
-            await JS.InvokeVoidAsync("lockBodyScroll");
+            await SafeJsAsync("lockBodyScroll");
         }
         else if (!IsVisible && _wasVisible)
         {
             _wasVisible = false;
-            await JS.InvokeVoidAsync("unlockBodyScroll");
+            await SafeJsAsync("unlockBodyScroll");
         }
 
         if (IsVisible && !string.IsNullOrEmpty(ChatId))
@@ -396,46 +399,116 @@
         }
     }
 
-    private async Task LoadChatInfoAsync()
+    /// <summary>
+    /// JS interop that can never take the renderer down with it.
+    /// </summary>
+    private async Task SafeJsAsync(string fn)
     {
-        using var scope = ScopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
-
-        chat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.ChatId == ChatId);
-        contact = null;
-
-        if (chat != null)
+        try
         {
-            messageCount = await db.Messages.AsNoTracking().CountAsync(m => m.ChatId == ChatId);
-
-            if (chat.Type == ChatType.OneToOne && !string.IsNullOrEmpty(chat.ContactEmail))
-            {
-                // Not AsNoTracking — we mutate the object for optimistic UI updates
-                contact = await db.Contacts
-                    .FirstOrDefaultAsync(c => c.AccountId == ActiveAccountId && c.Email == chat.ContactEmail);
-            }
-
-            if (chat.Type == ChatType.Group)
-            {
-                members = await db.GroupMembers.AsNoTracking()
-                    .Where(m => m.GroupId == chat.GroupId)
-                    .ToListAsync();
-
-                var emails = members.Select(m => m.MemberEmail).ToList();
-                memberNames = await db.Contacts.AsNoTracking()
-                    .Where(c => c.AccountId == ActiveAccountId && emails.Contains(c.Email) && c.DisplayName != null)
-                    .ToDictionaryAsync(c => c.Email, c => c.DisplayName!);
-
-                contactsWithKeys = await db.Contacts.AsNoTracking()
-                    .Where(c => c.AccountId == ActiveAccountId && c.PublicKey != null && c.PublicKey != "" && !emails.Contains(c.Email))
-                    .OrderBy(c => c.DisplayName)
-                    .ToListAsync();
-                addMemberEmail = string.Empty;
-            }
+            await JS.InvokeVoidAsync(fn);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("WARN", "ChatInfoModal", $"JS '{fn}' failed: {ex.Message}");
         }
     }
 
-    private async Task ToggleMuted()
+    /// <summary>
+    /// Everything loaded for the modal, gathered on a background thread.
+    /// </summary>
+    private sealed record ChatInfoData(
+        Chat? Chat,
+        Contact? Contact,
+        int MessageCount,
+        List<GroupMember>? Members,
+        Dictionary<string, string> MemberNames,
+        List<Contact> ContactsWithKeys);
+
+    private async Task LoadChatInfoAsync()
+    {
+        // Microsoft.Data.Sqlite has no real async I/O — these queries run
+        // synchronously on the caller, so they must not run on the UI thread.
+        ChatInfoData data;
+        try
+        {
+            var chatId = ChatId;
+            var accountId = ActiveAccountId;
+            data = await Task.Run(async () =>
+            {
+                using var scope = ScopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<ChatDbContext>();
+
+                var loadedChat = await db.Chats.AsNoTracking().FirstOrDefaultAsync(c => c.ChatId == chatId);
+                if (loadedChat == null)
+                    return new ChatInfoData(null, null, 0, null, new(), new());
+
+                var count = await db.Messages.AsNoTracking().CountAsync(m => m.ChatId == chatId);
+                Contact? loadedContact = null;
+                List<GroupMember>? loadedMembers = null;
+                var loadedNames = new Dictionary<string, string>();
+                var loadedKeyed = new List<Contact>();
+
+                if (loadedChat.Type == ChatType.OneToOne && !string.IsNullOrEmpty(loadedChat.ContactEmail))
+                {
+                    // Not AsNoTracking — we mutate the object for optimistic UI updates
+                    loadedContact = await db.Contacts
+                        .FirstOrDefaultAsync(c => c.AccountId == accountId && c.Email == loadedChat.ContactEmail);
+                }
+
+                if (loadedChat.Type == ChatType.Group)
+                {
+                    loadedMembers = await db.GroupMembers.AsNoTracking()
+                        .Where(m => m.GroupId == loadedChat.GroupId)
+                        .ToListAsync();
+
+                    var emails = loadedMembers.Select(m => m.MemberEmail).ToList();
+                    loadedNames = await db.Contacts.AsNoTracking()
+                        .Where(c => c.AccountId == accountId && emails.Contains(c.Email) && c.DisplayName != null)
+                        .ToDictionaryAsync(c => c.Email, c => c.DisplayName!);
+
+                    loadedKeyed = await db.Contacts.AsNoTracking()
+                        .Where(c => c.AccountId == accountId && c.PublicKey != null && c.PublicKey != "" && !emails.Contains(c.Email))
+                        .OrderBy(c => c.DisplayName)
+                        .ToListAsync();
+                }
+
+                return new ChatInfoData(loadedChat, loadedContact, count, loadedMembers, loadedNames, loadedKeyed);
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ChatInfoModal", $"Chat info load failed for {ChatId}: {ex}");
+            return;
+        }
+
+        chat = data.Chat;
+        contact = data.Contact;
+        messageCount = data.MessageCount;
+        members = data.Members;
+        memberNames = data.MemberNames;
+        contactsWithKeys = data.ContactsWithKeys;
+        if (chat?.Type == ChatType.Group)
+            addMemberEmail = string.Empty;
+    }
+
+    /// <summary>
+    /// Runs a click handler's body so a failure shows up in the log instead of
+    /// escaping into the renderer and killing the WebView (see OnParametersSetAsync).
+    /// </summary>
+    private async Task SafeAsync(string what, Func<Task> body)
+    {
+        try
+        {
+            await body();
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Write("ERROR", "ChatInfoModal", $"{what} failed: {ex}");
+        }
+    }
+
+    private Task ToggleMuted() => SafeAsync(nameof(ToggleMuted), async () =>
     {
         if (chat == null) return;
         var newValue = !chat.Muted;
@@ -443,9 +516,9 @@
             .Where(c => c.ChatId == chat.ChatId)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Muted, newValue));
         chat.Muted = newValue;
-    }
+    });
 
-    private async Task ArchiveChat()
+    private Task ArchiveChat() => SafeAsync(nameof(ArchiveChat), async () =>
     {
         if (chat == null) return;
         await DbContext.Chats
@@ -453,9 +526,9 @@
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, true));
         await OnClose.InvokeAsync();
         await OnChatArchived.InvokeAsync(chat.ChatId);
-    }
+    });
 
-    private async Task UnarchiveChat()
+    private Task UnarchiveChat() => SafeAsync(nameof(UnarchiveChat), async () =>
     {
         if (chat == null) return;
         await DbContext.Chats
@@ -463,7 +536,7 @@
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Archived, false));
         await OnClose.InvokeAsync();
         await OnChatUnarchived.InvokeAsync();
-    }
+    });
 
     private void ConfirmDelete()
     {
@@ -475,7 +548,7 @@
         showDeleteConfirm = false;
     }
 
-    private async Task DeleteGroupAsAdmin()
+    private Task DeleteGroupAsAdmin() => SafeAsync(nameof(DeleteGroupAsAdmin), async () =>
     {
         if (chat == null) return;
         var c = await DbContext.Chats.FindAsync(chat.ChatId);
@@ -489,9 +562,9 @@
         showDeleteConfirm = false;
         await OnClose.InvokeAsync();
         await OnChatDeleted.InvokeAsync(chat.ChatId);
-    }
+    });
 
-    private async Task LeaveGroup()
+    private Task LeaveGroup() => SafeAsync(nameof(LeaveGroup), async () =>
     {
         if (chat == null) return;
         await DbContext.Chats
@@ -500,9 +573,9 @@
         showDeleteConfirm = false;
         await OnClose.InvokeAsync();
         await OnGroupLeft.InvokeAsync(chat.ChatId);
-    }
+    });
 
-    private async Task DeleteOneToOne()
+    private Task DeleteOneToOne() => SafeAsync(nameof(DeleteOneToOne), async () =>
     {
         if (chat == null) return;
         await DbContext.Chats
@@ -511,14 +584,14 @@
         showDeleteConfirm = false;
         await OnClose.InvokeAsync();
         await OnChatDeleted.InvokeAsync(chat.ChatId);
-    }
+    });
 
     // ── Contact management ────────────────────────────────────────────────────
 
     private void ConfirmBlock() => showBlockConfirm = true;
     private void CancelBlock()  => showBlockConfirm = false;
 
-    private async Task BlockContactAsync()
+    private Task BlockContactAsync() => SafeAsync(nameof(BlockContactAsync), async () =>
     {
         if (contact == null) return;
         await DbContext.Contacts
@@ -538,9 +611,9 @@
             await OnChatArchived.InvokeAsync(chat.ChatId);
         }
         await Close();
-    }
+    });
 
-    private async Task UnblockContactAsync()
+    private Task UnblockContactAsync() => SafeAsync(nameof(UnblockContactAsync), async () =>
     {
         if (contact == null) return;
         await DbContext.Contacts
@@ -550,9 +623,9 @@
                 .SetProperty(c => c.BlockedAt,  (DateTimeOffset?)null));
         contact.IsBlocked = false;
         contact.BlockedAt = null;
-    }
+    });
 
-    private async Task SaveContactNameAsync()
+    private Task SaveContactNameAsync() => SafeAsync(nameof(SaveContactNameAsync), async () =>
     {
         if (contact == null) return;
         var name = _contactNameValue.Trim();
@@ -570,9 +643,9 @@
             ChatEvents.NotifyChatUpdated(chat.ChatId);
         }
         _editingContactName = false;
-    }
+    });
 
-    private async Task SaveNotesAsync()
+    private Task SaveNotesAsync() => SafeAsync(nameof(SaveNotesAsync), async () =>
     {
         if (contact == null) return;
         var notes = _notesValue.Trim();
@@ -581,7 +654,7 @@
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.Notes, notes == "" ? null : notes));
         contact.Notes = notes == "" ? null : notes;
         _editingNotes = false;
-    }
+    });
 
     private async Task AddMemberToGroupAsync()
     {
@@ -970,7 +1043,7 @@
     private async Task Close()
     {
         _wasVisible = false;
-        await JS.InvokeVoidAsync("unlockBodyScroll");
+        await SafeJsAsync("unlockBodyScroll");
         await OnClose.InvokeAsync();
     }
 }

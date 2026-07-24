@@ -339,6 +339,105 @@ public static class ServiceCollectionExtensions
             }
         } // raw connection disposed
 
+        // ── Step 3b2: unconditional schema-integrity heal ──
+        // Step 3b only runs when MigrateAsync throws, and historically it did not
+        // cover every migration. An incomplete run marks ALL migrations as applied
+        // while leaving Contacts.AccountId (20260504194832_ContactPerAccount) or the
+        // PendingInvites table (20260504053759_AddPendingInvitesAndChatToken) missing.
+        // On such a device MigrateAsync then succeeds on every later launch (nothing
+        // pending), so Step 3b never runs again and the schema stays broken forever:
+        //   • "no such column: c.AccountId" on any Contacts query
+        //   • invite-token generation fails silently (PendingInvites missing) → "?????"
+        // This block runs on EVERY launch, is purely additive and idempotent, and
+        // heals devices already left broken by an earlier incomplete repair.
+        SqliteConnection.ClearAllPools();
+        try
+        {
+            var cs = new SqliteConnectionStringBuilder { DataSource = dbPath, Pooling = false }.ToString();
+            using var conn = new SqliteConnection(cs);
+            await conn.OpenAsync();
+
+            async Task<bool> TableExistsAsync(string name)
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=$n";
+                cmd.Parameters.AddWithValue("$n", name);
+                return (long)(await cmd.ExecuteScalarAsync() ?? 0L) > 0;
+            }
+
+            async Task<HashSet<string>> ColumnsAsync(string table)
+            {
+                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = $"SELECT name FROM pragma_table_info('{table}')";
+                using var rdr = await cmd.ExecuteReaderAsync();
+                while (await rdr.ReadAsync()) set.Add(rdr.GetString(0));
+                return set;
+            }
+
+            async Task ExecAsync(string sql)
+            {
+                try { using var cmd = conn.CreateCommand(); cmd.CommandText = sql; await cmd.ExecuteNonQueryAsync(); }
+                catch { /* best-effort, per-statement */ }
+            }
+
+            // (a) Contacts.AccountId — added by 20260504194832_ContactPerAccount.
+            // Add the column then backfill it, otherwise every existing row keeps
+            // AccountId='' and disappears from account-scoped queries.
+            if (await TableExistsAsync("Contacts"))
+            {
+                var contactCols = await ColumnsAsync("Contacts");
+                if (!contactCols.Contains("AccountId"))
+                {
+                    await ExecAsync("ALTER TABLE Contacts ADD COLUMN AccountId TEXT NOT NULL DEFAULT ''");
+
+                    // Prefer the account of whichever chat references the contact.
+                    await ExecAsync(
+                        "UPDATE Contacts SET AccountId = " +
+                        "(SELECT ch.AccountId FROM Chats ch " +
+                        " WHERE ch.ContactEmail = Contacts.Email AND ch.AccountId IS NOT NULL LIMIT 1) " +
+                        "WHERE (AccountId = '' OR AccountId IS NULL) " +
+                        "AND EXISTS (SELECT 1 FROM Chats ch WHERE ch.ContactEmail = Contacts.Email AND ch.AccountId IS NOT NULL)");
+
+                    // Contacts with no chat yet → attach to the sole account, if exactly one exists.
+                    await ExecAsync(
+                        "UPDATE Contacts SET AccountId = (SELECT AccountId FROM Accounts LIMIT 1) " +
+                        "WHERE (AccountId = '' OR AccountId IS NULL) AND (SELECT COUNT(*) FROM Accounts) = 1");
+                }
+            }
+
+            // (b) PendingInvites table — created by 20260504053759_AddPendingInvitesAndChatToken.
+            if (!await TableExistsAsync("PendingInvites"))
+            {
+                await ExecAsync("""
+                    CREATE TABLE "PendingInvites" (
+                        "TokenId"   TEXT NOT NULL CONSTRAINT "PK_PendingInvites" PRIMARY KEY,
+                        "TokenHash" TEXT NOT NULL,
+                        "AccountId" TEXT NOT NULL,
+                        "CreatedAt" TEXT NOT NULL,
+                        "ExpiresAt" TEXT NOT NULL,
+                        "UsedAt"    TEXT,
+                        "Label"     TEXT
+                    );
+                    """);
+                await ExecAsync("CREATE INDEX IF NOT EXISTS \"IX_PendingInvites_AccountId_UsedAt_ExpiresAt\" ON \"PendingInvites\" (\"AccountId\", \"UsedAt\", \"ExpiresAt\")");
+                await ExecAsync("CREATE UNIQUE INDEX IF NOT EXISTS \"IX_PendingInvites_TokenHash\" ON \"PendingInvites\" (\"TokenHash\")");
+            }
+
+            // (c) Chats.PendingOutgoingInviteToken — same migration as PendingInvites.
+            if (await TableExistsAsync("Chats"))
+            {
+                var chatCols = await ColumnsAsync("Chats");
+                if (!chatCols.Contains("PendingOutgoingInviteToken"))
+                    await ExecAsync("ALTER TABLE Chats ADD COLUMN PendingOutgoingInviteToken TEXT");
+            }
+        }
+        catch (Exception healEx)
+        {
+            serviceProvider.GetService<FileLogger>()?.Write("ERROR", "Init",
+                $"Schema-integrity heal failed: {healEx.GetType().Name}: {healEx.Message}");
+        }
+
         // ── Step 3c: post-migration setup ──
         SqliteConnection.ClearAllPools();
 

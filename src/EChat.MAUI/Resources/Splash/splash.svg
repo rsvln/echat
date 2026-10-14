@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Splash screen: background color set in .csproj -->
-<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
-  <text x="64" y="96"
-        font-family="serif"
-        font-size="90"
-        font-weight="bold"
-        fill="white"
-        text-anchor="middle"
-        dominant-baseline="auto">ε</text>
+<!-- Splash screen: background color set in .csproj.
+     The epsilon is a plain path (same shape as AppIcon/appiconfg.svg) on purpose:
+     <text> goes through Svg.Skia/HarfBuzzSharp in the MAUI resizetizer, which throws
+     MissingMethodException on clean CI runners. -->
+<svg width="128" height="128" viewBox="0 0 108 108" xmlns="http://www.w3.org/2000/svg">
+  <path d="M 79,26
+           Q 54,15  30,32
+           Q 19,43  35,53
+           L 76,53
+           M 76,59
+           L 35,59
+           Q 19,65  30,76
+           Q 54,93  79,82"
+        stroke="white" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>

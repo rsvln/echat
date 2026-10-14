@@ -1,8 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
 
 	<PropertyGroup>
-		<TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">net10.0-android;net10.0-windows10.0.19041.0</TargetFrameworks>
-		<TargetFrameworks Condition="!$([MSBuild]::IsOSPlatform('windows'))">net10.0-android;net10.0-windows10.0.19041.0</TargetFrameworks>
+		<TargetFrameworks>net10.0-android;net10.0-windows10.0.19041.0</TargetFrameworks>
+		<!-- CI: build a single platform so restore/workload install do not need the other one's packs.-->
+		<TargetFrameworks Condition="'$(EChatWindowsOnly)'=='true'">net10.0-windows10.0.19041.0</TargetFrameworks>
+		<TargetFrameworks Condition="'$(EChatAndroidOnly)'=='true'">net10.0-android</TargetFrameworks>
 		<!-- Release: no PDB, only ru+en managed satellite DLLs -->
 		<!-- NOTE: PublishSingleFile does NOT work for MAUI Blazor Hybrid — WinUI3 native DLLs cannot be bundled -->
 		<DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>

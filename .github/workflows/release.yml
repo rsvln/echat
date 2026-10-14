@@ -52,14 +52,17 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Install MAUI workloads
-        run: dotnet workload install maui-windows maui-android
+      # Windows-only build (EChatWindowsOnly narrows TargetFrameworks), so the
+      # Android workload and its packs are not needed here.
+      - name: Install MAUI workload
+        run: dotnet workload install maui-windows
 
       - name: Publish
         run: >
           dotnet publish src/EChat.MAUI/EChat.Maui.csproj
           -f net10.0-windows10.0.19041.0
           -c Release
+          -p:EChatWindowsOnly=true
           -p:WindowsPackageType=None
           -o pub/win
 
@@ -100,6 +103,7 @@ jobs:
           dotnet publish src/EChat.MAUI/EChat.Maui.csproj \
             -f net10.0-android \
             -c Release \
+            -p:EChatAndroidOnly=true \
             -p:EnableWindowsTargeting=true \
             -p:AndroidSigningKeyStore="$SIGNING_STORE" \
             -p:AndroidSigningKeyAlias="$SIGNING_ALIAS" \

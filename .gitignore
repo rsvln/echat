@@ -375,3 +375,6 @@ pub/
 .claude/
 # EChat Web runtime data (SQLite DB, logs)
 src/EChat.Web/data/
+# Local build/publish scripts (contain machine-specific paths)
+*.bat
+*.cmd

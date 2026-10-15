@@ -141,6 +141,8 @@ jobs:
 
       - name: Build and push
         uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           file: src/EChat.Web/Dockerfile
@@ -168,8 +170,11 @@ jobs:
           git tag v${{ env.VERSION }}
           git push origin v${{ env.VERSION }}
 
+      # Only our own artifacts: docker/build-push-action also uploads a
+      # *.dockerbuild record that fails to download and is not needed here.
       - uses: actions/download-artifact@v7
         with:
+          pattern: '{windows,android}'
           path: artifacts
           merge-multiple: true
 

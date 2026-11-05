@@ -213,24 +213,29 @@
     color: var(--text);
 }
 
+/* Compact header: the logo square stands in for the "ε" of "εChat", one row. */
+.setup-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+    margin: 0 0 6px;
+}
+
 .setup-logo {
-    width: 72px;
-    height: 72px;
+    width: 40px;
+    height: 40px;
     border-radius: 4px;
     background: var(--primary);
     color: white;
-    font-size: 36px;
+    font-size: 24px;
     font-weight: 700;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 16px;
-}
-
-.setup-title {
-    font-size: 24px;
-    font-weight: 700;
-    margin-bottom: 4px;
+    flex-shrink: 0;
 }
 
 .setup-subtitle {

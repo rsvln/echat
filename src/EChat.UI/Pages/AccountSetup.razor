@@ -24,8 +24,9 @@
                     @onclick="@(() => Navigation.NavigateTo("/chats"))">← Back</button>
         }
 
-        <div class="setup-logo">ε</div>
-        <h1 class="setup-title">εChat</h1>
+        <h1 class="setup-title" aria-label="εChat">
+            <span class="setup-logo" aria-hidden="true">ε</span><span aria-hidden="true">Chat</span>
+        </h1>
         <p class="setup-subtitle">Secure Email Messenger</p>
 
         @if (errorMessage != null)

@@ -66,8 +66,14 @@ jobs:
           -p:WindowsPackageType=None
           -o pub/win
 
+      # Same layout as publish.bat: files under an "echat\" folder and the exe named
+      # echat.exe. The in-app Windows updater (PlatformService) relies on both.
       - name: ZIP
-        run: Compress-Archive -Path pub/win/* -DestinationPath EChat-win.zip
+        run: |
+          Rename-Item pub/win/EChat.Maui.exe echat.exe
+          New-Item -ItemType Directory stage | Out-Null
+          Move-Item pub/win stage/echat
+          Compress-Archive -Path stage/echat -DestinationPath EChat-win.zip
         shell: pwsh
 
       - uses: actions/upload-artifact@v6

@@ -42,6 +42,10 @@
 		<InformationalVersion>$(_VerRaw)+$([System.DateTime]::UtcNow.ToString("yyyyMMddHHmm"))</InformationalVersion>
 
 		<WindowsPackageType>MSIX</WindowsPackageType>
+		<!-- Unpackaged WinUI looks up resources.pri first, then <exe name>.pri. The default
+		     EChat.Maui.pri stops matching once the exe is renamed to echat.exe, and the app
+		     then crashes at startup (cannot locate Microsoft.UI.Xaml themeresources.xaml). -->
+		<ProjectPriFileName Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">resources.pri</ProjectPriFileName>
 
 		<!-- Android -->
 		<SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">24.0</SupportedOSPlatformVersion>

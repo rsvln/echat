@@ -4,19 +4,25 @@
    Scrollbar
    ════════════════════════════════════════════ */
 
-::-webkit-scrollbar {
-    width: 6px;
-}
+/* Mouse devices only. Any ::-webkit-scrollbar rule makes Chromium (including the
+   Android WebView) drop its overlay scrollbar and draw a classic one that takes
+   layout width: on phones that shows up as a permanent strip on the right and
+   shifts centred content to the left. Touch devices keep the native overlay bar. */
+@media (hover: hover) and (pointer: fine) {
+    ::-webkit-scrollbar {
+        width: 6px;
+    }
 
-::-webkit-scrollbar-track {
-    background: transparent;
-}
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
 
-::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 4px;
-}
+    ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 4px;
+    }
 
-::-webkit-scrollbar-thumb:hover {
-    background: var(--text-muted);
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--text-muted);
+    }
 }

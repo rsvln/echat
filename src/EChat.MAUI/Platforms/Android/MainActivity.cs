@@ -4,6 +4,7 @@ using Android.Content.PM;
 using Android.OS;
 using Android.Views;
 using AndroidX.Activity;
+using AndroidX.Core.View;
 using EChat.UI.Services;
 
 namespace EChat.Maui;
@@ -35,12 +36,17 @@ public class MainActivity : MauiAppCompatActivity
 
         base.OnCreate(savedInstanceState);
 
-        // Disable edge-to-edge: content must not go behind the system navigation bar
+        // Disable edge-to-edge: content must not go behind the system navigation bar.
+        // Only honoured up to Android 15 — see BottomInsetsListener for Android 16+.
         if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
             Window?.SetDecorFitsSystemWindows(true);
 
         // Resize WebView when keyboard opens so fixed input bar stays above keyboard
         Window?.SetSoftInputMode(SoftInput.AdjustResize);
+
+        var content = FindViewById(Android.Resource.Id.Content);
+        if (content != null)
+            ViewCompat.SetOnApplyWindowInsetsListener(content, new BottomInsetsListener());
 
         if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
         {
@@ -59,6 +65,32 @@ public class MainActivity : MauiAppCompatActivity
         {
             var uri = resultCode == Result.Ok ? data?.Data : null;
             EChat.Maui.Services.PlatformService.OnSafResult(uri);
+        }
+    }
+
+    /// <summary>
+    /// Keeps the WebView above the button navigation bar and the keyboard.
+    /// Android 16+ ignores the edge-to-edge opt-out for apps targeting API 36, so the
+    /// WebView is drawn under the system bars and AdjustResize no longer resizes it.
+    /// TappableElement is the three-button bar's height and 0 with gesture navigation,
+    /// so the padding appears only when there is a bar to tap. On older Android the
+    /// decor already fits the system windows and these insets arrive as 0.
+    /// </summary>
+    private sealed class BottomInsetsListener : Java.Lang.Object, IOnApplyWindowInsetsListener
+    {
+        public WindowInsetsCompat? OnApplyWindowInsets(Android.Views.View? v, WindowInsetsCompat? insets)
+        {
+            if (v == null || insets == null) return insets;
+
+            var navBar = insets.GetInsets(WindowInsetsCompat.Type.TappableElement()).Bottom;
+            var ime    = insets.GetInsets(WindowInsetsCompat.Type.Ime()).Bottom;
+            var bottom = Math.Max(navBar, ime);
+
+            v.SetPadding(v.PaddingLeft, v.PaddingTop, v.PaddingRight, bottom);
+
+            // Pass the rest down: the WebView still sees the top inset for
+            // env(safe-area-inset-top), and no longer counts the bottom twice.
+            return insets.Inset(0, 0, 0, bottom);
         }
     }
 
